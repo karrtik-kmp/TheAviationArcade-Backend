@@ -1,0 +1,334 @@
+{
+  "id": "30735cf4-da1b-4468-b2a4-3affdb115c79",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.players": {
+      "name": "players",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "status_points": {
+          "name": "status_points",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "miles": {
+          "name": "miles",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "perfect_streak": {
+          "name": "perfect_streak",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "active_rank": {
+          "name": "active_rank",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_class_until": {
+          "name": "first_class_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "players_status_points_check": {
+          "name": "players_status_points_check",
+          "value": "\"players\".\"status_points\" >= 0"
+        },
+        "players_miles_check": {
+          "name": "players_miles_check",
+          "value": "\"players\".\"miles\" >= 0"
+        },
+        "players_perfect_streak_check": {
+          "name": "players_perfect_streak_check",
+          "value": "\"players\".\"perfect_streak\" >= 0"
+        },
+        "players_active_rank_check": {
+          "name": "players_active_rank_check",
+          "value": "\"players\".\"active_rank\" IS NULL OR \"players\".\"active_rank\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.rounds": {
+      "name": "rounds",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "module": {
+          "name": "module",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rank": {
+          "name": "rank",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pleasure_cruise": {
+          "name": "pleasure_cruise",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completion_id": {
+          "name": "completion_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finished": {
+          "name": "finished",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_count": {
+          "name": "error_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "used_hint": {
+          "name": "used_hint",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "time_remaining": {
+          "name": "time_remaining",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completion": {
+          "name": "completion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "speed_bonus": {
+          "name": "speed_bonus",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "streak_miles": {
+          "name": "streak_miles",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_class_pass": {
+          "name": "first_class_pass",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sp_awarded": {
+          "name": "sp_awarded",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "miles_awarded": {
+          "name": "miles_awarded",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "promoted_from": {
+          "name": "promoted_from",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "promoted_to": {
+          "name": "promoted_to",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "rounds_player": {
+          "name": "rounds_player",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issued_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "rounds_open": {
+          "name": "rounds_open",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"rounds\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "rounds_player_id_players_id_fk": {
+          "name": "rounds_player_id_players_id_fk",
+          "tableFrom": "rounds",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "rounds_module_check": {
+          "name": "rounds_module_check",
+          "value": "\"rounds\".\"module\" IN ('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',\n        'military-identifier', 'code-search', 'runway-identifier', 'tail-identifier')"
+        },
+        "rounds_rank_check": {
+          "name": "rounds_rank_check",
+          "value": "\"rounds\".\"rank\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "rounds_status_check": {
+          "name": "rounds_status_check",
+          "value": "\"rounds\".\"status\" IN ('open', 'completed', 'abandoned')"
+        },
+        "rounds_completion_check": {
+          "name": "rounds_completion_check",
+          "value": "\"rounds\".\"completion\" IS NULL OR \"rounds\".\"completion\" IN ('perfect', 'standard', 'unfinished')"
+        },
+        "rounds_promoted_from_check": {
+          "name": "rounds_promoted_from_check",
+          "value": "\"rounds\".\"promoted_from\" IS NULL OR \"rounds\".\"promoted_from\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "rounds_promoted_to_check": {
+          "name": "rounds_promoted_to_check",
+          "value": "\"rounds\".\"promoted_to\" IS NULL OR \"rounds\".\"promoted_to\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "rounds_completed_has_award_check": {
+          "name": "rounds_completed_has_award_check",
+          "value": "\"rounds\".\"status\" <> 'completed'\n        OR (\"rounds\".\"completion_id\" IS NOT NULL AND \"rounds\".\"sp_awarded\" IS NOT NULL AND \"rounds\".\"miles_awarded\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

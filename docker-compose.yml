@@ -1,0 +1,24 @@
+# Local development Postgres. Credentials are throwaway local values (see .env.example).
+# Host port is 5433, not 5432, so it cannot clash with another Postgres already on this machine.
+services:
+  postgres:
+    image: postgres:18.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airplane
+      POSTGRES_PASSWORD: airplane_local_only
+      POSTGRES_DB: airplane_games
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # PostgreSQL 18 images keep data in a version-specific subdirectory of /var/lib/postgresql.
+      - airplane_pgdata:/var/lib/postgresql
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airplane -d airplane_games"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  airplane_pgdata:

@@ -1,0 +1,16 @@
+# Dependencies
+/node_modules/
+
+# Local environment and keys (the template is the only env file that is committed)
+.env*
+!.env.example
+*.pem
+
+# Build output
+/dist/
+*.tsbuildinfo
+
+# Test output
+/coverage/
+
+npm-debug.log*
