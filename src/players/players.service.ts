@@ -49,4 +49,23 @@ export class PlayersService {
       .returning();
     return updated ?? null;
   }
+
+  /**
+   * Erase this backend's data for the principal: the player row, and its Rounds via ON DELETE CASCADE.
+   * Takes the same player row lock as completeRound/issueRound first, so an in-flight Round result
+   * either commits before the delete or finds no player afterwards (404). Idempotent: deleting a
+   * missing player is a no-op. Returns whether a player existed.
+   */
+  async deletePlayer(principal: string): Promise<boolean> {
+    return this.database.withTransaction(async (tx) => {
+      const [player] = await tx
+        .select({ id: players.id })
+        .from(players)
+        .where(eq(players.id, principal))
+        .for("update");
+      if (!player) return false;
+      await tx.delete(players).where(eq(players.id, principal));
+      return true;
+    });
+  }
 }

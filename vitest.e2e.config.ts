@@ -20,7 +20,7 @@ process.env.DATABASE_URL = TEST_DATABASE_URL;
 export default defineConfig({
   plugins: [swc.vite({ module: { type: "es6" } })],
   test: {
-    include: ["test/api.test.ts"],
+    include: ["test/api.test.ts", "test/*.e2e.test.ts"],
     globalSetup: ["./test/global-setup.ts"],
     fileParallelism: false,
     testTimeout: 30_000,
@@ -31,6 +31,10 @@ export default defineConfig({
       FIREBASE_PROJECT_ID: "demo-airplane-games",
       ALLOW_EMULATOR_TOKENS: "true",
       APP_ENV: "test",
+      // test/api.test.ts sends far more than the default per-minute limits from one IP and one principal.
+      // The rate limit tests build their own app with low limits.
+      RATE_LIMIT_AUTH_PER_MIN: "100000",
+      RATE_LIMIT_PUBLIC_PER_MIN: "100000",
     },
   },
 });

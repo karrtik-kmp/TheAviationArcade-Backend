@@ -5,6 +5,8 @@ import type { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module.js";
 import { configureApp } from "./app.setup.js";
 import { loadConfig } from "./config/config.module.js";
+import { installShutdown } from "./platform/shutdown.js";
+import { applyServerTimeouts } from "./platform/server-timeouts.js";
 
 // Local convenience: Node 22+ reads .env itself. Never in production, where the real environment is
 // the only source of configuration (a stray .env must not be able to change it).
@@ -23,12 +25,20 @@ async function bootstrap(): Promise<void> {
   const logger = new ConsoleLogger({ json: true, colors: false });
   // bodyParser: false, because configureApp registers the only body parser (JSON, 16 KB).
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false, logger });
-  configureApp(app);
-  // SIGTERM/SIGINT close the app, which drains the pg pool (DatabaseModule.onApplicationShutdown).
-  app.enableShutdownHooks();
+  configureApp(app, { trustProxy: config.trustProxy });
+  applyServerTimeouts(app.getHttpServer());
+  // SIGTERM/SIGINT drain in-flight requests (bounded by SHUTDOWN_DRAIN_MS), which also closes the pg pool
+  // (DatabaseModule.onApplicationShutdown).
+  installShutdown(app, logger, { prestopMs: config.shutdownPrestopMs, drainMs: config.shutdownDrainMs });
   if (config.emulatorTokens) {
     logger.warn(
       "ALLOW_EMULATOR_TOKENS is enabled: unsigned Firebase Auth Emulator tokens are accepted. Local development only.",
+      "Bootstrap",
+    );
+  }
+  if (config.appEnv === "production" && config.trustProxy === false) {
+    logger.warn(
+      "TRUST_PROXY is off in production: req.ip is the proxy address, so all public-route clients share one rate limit bucket and logs show the proxy IP. Set TRUST_PROXY to the number of proxy hops if behind a load balancer.",
       "Bootstrap",
     );
   }

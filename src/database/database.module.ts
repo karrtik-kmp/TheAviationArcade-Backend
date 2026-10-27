@@ -14,12 +14,25 @@ export type Database = NodePgDatabase<typeof schema>;
 export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 /**
+ * require = encrypted but the server certificate is not checked (libpq's "require"); verify-full checks
+ * chain and hostname against the CA bundle (system roots when none is configured).
+ */
+function sslOptions(config: Pick<AppConfig, "databaseSsl" | "databaseCaCert">): pg.PoolConfig["ssl"] {
+  if (config.databaseSsl === "disable") return false;
+  if (config.databaseSsl === "require") return { rejectUnauthorized: false };
+  return { rejectUnauthorized: true, ...(config.databaseCaCert ? { ca: config.databaseCaCert } : {}) };
+}
+
+/**
  * Bounded waits everywhere, so a stuck lock or a dead connection becomes a quick 503 instead of a
  * request that hangs while holding a pool slot. The server-side timeouts are sent as startup options.
  */
-export function poolOptions(config: Pick<AppConfig, "databaseUrl" | "dbPoolMax">): pg.PoolConfig {
+export function poolOptions(
+  config: Pick<AppConfig, "databaseUrl" | "dbPoolMax" | "databaseSsl" | "databaseCaCert">,
+): pg.PoolConfig {
   return {
     connectionString: config.databaseUrl,
+    ssl: sslOptions(config),
     max: config.dbPoolMax,
     connectionTimeoutMillis: 5000,
     idleTimeoutMillis: 30_000,

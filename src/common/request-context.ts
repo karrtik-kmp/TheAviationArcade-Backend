@@ -30,7 +30,7 @@ export function requestContext(req: Request, res: Response, next: NextFunction):
     const ms = Math.round(Number(process.hrtime.bigint() - started) / 1e4) / 100;
     // Route pattern, not the raw URL, so ids in paths are not logged.
     const route = req.route ? `${req.baseUrl}${String(req.route.path)}` : "(unmatched)";
-    const line = { rid, method: req.method, route, status: res.statusCode, ms, aborted: !res.writableFinished };
+    const line = { rid, ip: req.ip, method: req.method, route, status: res.statusCode, ms, aborted: !res.writableFinished };
     process.stdout.write(`${JSON.stringify(line)}
 `);
   });

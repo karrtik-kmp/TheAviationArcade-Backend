@@ -1,0 +1,592 @@
+openapi: 3.1.0
+info:
+  title: Airplane Games backend API
+  version: 0.2.0
+  description: |
+    Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
+    this file and the code drift (routes, error codes, enums, sample responses).
+
+    - Every route except `/v1/health` and `/v1/health/ready` needs `Authorization: Bearer <Firebase ID token>`.
+    - Bodies are JSON only, at most 16 KB. Unknown fields are rejected (400 `invalid_request`).
+    - Every response carries `X-Request-Id`. `/v1` responses other than `/v1/health` are `Cache-Control: no-store`.
+    - Errors share one body, `Error`. Switch on `error.code`, never on `message`.
+    - A path or method not listed here is 404 `not_found`.
+    - Any route can return 500 `internal_error` for an unexpected server fault.
+    - Rate limit: one sliding 60 s window per player (authenticated) or per IP (public routes), shared across routes.
+      Both health routes are exempt. Over the limit is 429 `rate_limited` with `Retry-After` (seconds until a
+      request would be accepted); there is no extra lockout, so requests succeed again as soon as room frees up.
+    - Client version gate: when the server sets a minimum build, a missing, malformed or too-low
+      `X-Client-Version` is 426 `client_update_required` (checked before the token). Health routes and `DELETE /v1/me` (account deletion
+      must work for outdated clients) are exempt.
+    - Retry guidance: 503 and 429 carry `Retry-After` (seconds). Never retry any other 4xx unchanged.
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local only. Hosting is not chosen yet.
+security:
+  - firebaseBearer: []
+tags:
+  - name: health
+  - name: player
+  - name: rounds
+
+paths:
+  /v1/health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness
+      description: Public. Does not touch the database. Not rate limited, not version gated.
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Liveness" }
+
+  /v1/health/ready:
+    get:
+      tags: [health]
+      operationId: getReady
+      summary: Readiness
+      description: Public. The database must answer within 2 s. Not version gated and not rate limited (the answer is cached for about 1 s). 503 during shutdown, so load balancers stop routing.
+      security: []
+      responses:
+        "200":
+          description: Ready.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/me:
+    put:
+      tags: [player]
+      operationId: signIn
+      summary: Sign-in handshake
+      description: |
+        Call after every Firebase sign-in. Creates the player on first call (201), otherwise 200.
+        Idempotent. No request body.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      responses:
+        "200":
+          description: Existing player.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProgressEnvelope" }
+        "201":
+          description: Player created at zero.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProgressEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    delete:
+      tags: [player]
+      operationId: deleteAccount
+      summary: Delete this player's backend data
+      description: |
+        Account deletion. Erases backend data only; the app deletes the Firebase account itself.
+        Idempotent: 204 whether or not a player existed. A later `PUT /v1/me` with a still-valid token starts
+        a fresh player at zero. No request body. Exempt from the client version gate (never 426).
+      responses:
+        "204":
+          description: Deleted (or nothing to delete).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/me/progress:
+    get:
+      tags: [player]
+      operationId: getProgress
+      summary: Current progress
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      responses:
+        "200":
+          description: Progress.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProgressEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/me/active-rank:
+    put:
+      tags: [player]
+      operationId: setActiveRank
+      summary: Set Active Rank
+      description: |
+        Dial Active Rank down from Certified Rank (Pleasure Cruise) or back up to it. Above Certified is 403.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetActiveRankRequest" }
+      responses:
+        "200":
+          description: Updated progress.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProgressEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Requested rank is above Certified Rank.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [rank_not_certified]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/rounds:
+    post:
+      tags: [rounds]
+      operationId: startRound
+      summary: Issue a Round
+      description: |
+        Issues a single-use Round at the player's Active Rank and abandons any other open Round
+        (its result then fails with 410 `round_closed`). A Round expires 30 minutes after issue.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartRoundRequest" }
+      responses:
+        "201":
+          description: Round issued.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoundEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/rounds/{roundId}/result:
+    post:
+      tags: [rounds]
+      operationId: submitRoundResult
+      summary: Score and bank a Round
+      description: |
+        Reports Round facts; the server computes the award. Resubmitting a banked Round returns the stored
+        award with `replayed: true` and pays nothing, so a retry after a dropped response is safe.
+        A result sooner than 3 s after issue is 429 `round_too_fast` and leaves the Round open: retry
+        after `Retry-After`. A `roundId` that is not a UUID is 404 `round_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - name: roundId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoundResultRequest" }
+      responses:
+        "200":
+          description: Banked, or replayed.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoundResultResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Not this player's Round (or unknown, or `roundId` is not a UUID).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [round_not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: |
+            `round_expired`: the 30 minute window passed. `round_closed`: a newer Round superseded it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [round_expired, round_closed]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429":
+          description: |
+            `rate_limited`: over the request limit. `round_too_fast`: result arrived under 3 s after issue.
+            Both carry `Retry-After`.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [rate_limited, round_too_fast]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+components:
+  securitySchemes:
+    firebaseBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Firebase ID token
+      description: |
+        Firebase ID token (email/password or Google). The server derives the player from the verified token
+        only; no ID, role or name is ever read from a request.
+
+  parameters:
+    XClientVersion:
+      name: X-Client-Version
+      in: header
+      required: false
+      description: |
+        App build number, a positive integer of at most 9 digits. Required in practice once the server sets a
+        minimum build (otherwise 426).
+      schema: { type: string, pattern: "^[1-9][0-9]{0,8}$" }
+
+  headers:
+    XRequestId:
+      description: Request correlation id. Quote it in bug reports. Also echoed as `error.requestId` on errors.
+      schema: { type: string }
+    NoStore:
+      description: Always `no-store`.
+      schema: { type: string, const: no-store }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: string, pattern: "^[0-9]+$" }
+    WWWAuthenticate:
+      description: Always `Bearer`.
+      schema: { type: string, const: Bearer }
+
+  responses:
+    InvalidRequest:
+      description: Malformed JSON, wrong field type or range, or an unknown field.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [invalid_request]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BodyRejected:
+      description: Body over 16 KB (413) or unsupported charset or encoding (415). Same body shape as 400.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [invalid_request]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, malformed, expired or wrongly issued token.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+        WWW-Authenticate: { $ref: "#/components/headers/WWWAuthenticate" }
+      x-error-codes: [unauthorized]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PlayerNotFound:
+      description: No player yet. Call `PUT /v1/me` first.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [player_not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnknownRoute:
+      description: Any path or method not in this document. Not attached to a route.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      x-error-codes: [not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ClientUpdateRequired:
+      description: |
+        `X-Client-Version` missing, malformed or below the server's minimum build. Show an update prompt.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [client_update_required]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Over the request limit. Wait `Retry-After` seconds.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      x-error-codes: [rate_limited]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: |
+        `auth_unavailable`: the Google signing keys could not be fetched. `service_unavailable`: database
+        unreachable or timed out (also readiness failing). Both carry `Retry-After`; retry later with the
+        same token and the same request.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      x-error-codes: [auth_unavailable, service_unavailable]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: Unexpected server fault. Any route can return it; not attached to individual routes.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [internal_error]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Rank:
+      type: string
+      description: Flight Crew Hierarchy, lowest first.
+      enum: [trainee, first-officer, captain, check-airman, chief-pilot]
+    ModuleId:
+      type: string
+      description: Module ID. `military-identifier` is a working title.
+      enum:
+        - airport-spotter
+        - atc-match
+        - call-sign-match
+        - identifier
+        - military-identifier
+        - code-search
+        - runway-identifier
+        - tail-identifier
+    Completion:
+      type: string
+      enum: [perfect, standard, unfinished]
+    Liveness:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean, const: true }
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: ready }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, requestId]
+          properties:
+            code:
+              type: string
+              description: Stable. Switch on this.
+              enum:
+                - unauthorized
+                - auth_unavailable
+                - invalid_request
+                - player_not_found
+                - round_not_found
+                - round_expired
+                - round_closed
+                - round_too_fast
+                - rank_not_certified
+                - not_found
+                - rate_limited
+                - client_update_required
+                - service_unavailable
+                - internal_error
+            message:
+              type: string
+              description: For logs, not for display or logic.
+            requestId:
+              type: string
+              description: Same value as the `X-Request-Id` header.
+    NextRank:
+      type: object
+      additionalProperties: false
+      required: [rank, statusPoints]
+      properties:
+        rank: { $ref: "#/components/schemas/Rank" }
+        statusPoints: { type: integer, minimum: 0, description: Lifetime Status Points needed. }
+    Progress:
+      type: object
+      additionalProperties: false
+      required:
+        - statusPoints
+        - miles
+        - certifiedRank
+        - activeRank
+        - pleasureCruise
+        - selectableRanks
+        - nextRank
+        - perfectStreak
+        - firstClassPass
+      properties:
+        statusPoints: { type: integer, minimum: 0, description: Lifetime Status Points. }
+        miles: { type: integer, minimum: 0 }
+        certifiedRank: { $ref: "#/components/schemas/Rank" }
+        activeRank: { $ref: "#/components/schemas/Rank" }
+        pleasureCruise:
+          type: boolean
+          description: True when Active Rank is below Certified Rank.
+        selectableRanks:
+          type: array
+          description: Ranks the player may fly, Certified down to Trainee.
+          items: { $ref: "#/components/schemas/Rank" }
+        nextRank:
+          description: Null at Chief Pilot.
+          oneOf:
+            - { $ref: "#/components/schemas/NextRank" }
+            - { type: "null" }
+        perfectStreak: { type: integer, minimum: 0, description: Consecutive Perfect Completions. }
+        firstClassPass: { type: boolean }
+    ProgressEnvelope:
+      type: object
+      additionalProperties: false
+      required: [progress]
+      properties:
+        progress: { $ref: "#/components/schemas/Progress" }
+    SetActiveRankRequest:
+      type: object
+      additionalProperties: false
+      required: [rank]
+      properties:
+        rank: { $ref: "#/components/schemas/Rank" }
+    StartRoundRequest:
+      type: object
+      additionalProperties: false
+      required: [module]
+      properties:
+        module: { $ref: "#/components/schemas/ModuleId" }
+    IssuedRound:
+      type: object
+      additionalProperties: false
+      required: [roundId, module, rank, pleasureCruise, expiresAt]
+      properties:
+        roundId: { type: string, format: uuid }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        rank: { $ref: "#/components/schemas/Rank" }
+        pleasureCruise: { type: boolean }
+        expiresAt: { type: string, format: date-time }
+    RoundEnvelope:
+      type: object
+      additionalProperties: false
+      required: [round]
+      properties:
+        round: { $ref: "#/components/schemas/IssuedRound" }
+    RoundResultRequest:
+      type: object
+      additionalProperties: false
+      required: [finished, errorCount, usedHint, timeRemainingFraction]
+      properties:
+        finished: { type: boolean }
+        errorCount: { type: integer, minimum: 0, maximum: 1000 }
+        usedHint: { type: boolean }
+        timeRemainingFraction:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Fraction of the timer left at finish.
+    Award:
+      type: object
+      additionalProperties: false
+      required: [completion, speedBonus, streakMiles, statusPoints, miles, firstClassPass, pleasureCruise]
+      properties:
+        completion: { $ref: "#/components/schemas/Completion" }
+        speedBonus: { type: boolean }
+        streakMiles: { type: integer, minimum: 0 }
+        statusPoints: { type: integer, minimum: 0 }
+        miles: { type: integer, minimum: 0 }
+        firstClassPass: { type: boolean, description: Whether First Class Pass applied to this Round. }
+        pleasureCruise: { type: boolean, description: Whether this Round was flown below Certified Rank. }
+    Promotion:
+      type: object
+      additionalProperties: false
+      required: [from, to]
+      properties:
+        from: { $ref: "#/components/schemas/Rank" }
+        to: { $ref: "#/components/schemas/Rank" }
+    RoundResultResponse:
+      type: object
+      additionalProperties: false
+      required: [award, promotion, replayed, progress]
+      properties:
+        award: { $ref: "#/components/schemas/Award" }
+        promotion:
+          description: Null unless this Round raised Certified Rank.
+          oneOf:
+            - { $ref: "#/components/schemas/Promotion" }
+            - { type: "null" }
+        replayed:
+          type: boolean
+          description: True when this Round was already banked; nothing was paid again.
+        progress: { $ref: "#/components/schemas/Progress" }

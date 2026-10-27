@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Put, Res } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, Put, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
+import { SkipClientVersion } from "../platform/client-version.js";
 import { Principal } from "../auth/firebase-auth.guard.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
@@ -22,6 +23,20 @@ export class PlayersController {
     const { player, created } = await this.players.ensurePlayer(principal, now);
     res.status(created ? 201 : 200);
     return { progress: progressView(player, now) };
+  }
+
+  /**
+   * Account deletion (App Store requirement). Erases this backend's data only; the app deletes the
+   * Firebase account itself, since the backend holds no Firebase admin credentials. Idempotent: 204
+   * whether or not a player existed, so a retry after a dropped response succeeds. A later PUT /v1/me
+   * with a still-valid token starts a fresh player at zero.
+   */
+  // App Store: deletion must work for outdated clients, so the version gate does not apply.
+  @SkipClientVersion()
+  @Delete()
+  @HttpCode(204)
+  async deleteAccount(@Principal() principal: string): Promise<void> {
+    await this.players.deletePlayer(principal);
   }
 
   @Get("progress")

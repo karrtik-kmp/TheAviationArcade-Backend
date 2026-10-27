@@ -9,6 +9,7 @@ export default defineConfig({
       "test/config.test.ts",
       "test/database-errors.test.ts",
       "test/guard-filter.test.ts",
+      "test/platform.test.ts",
     ],
   },
 });

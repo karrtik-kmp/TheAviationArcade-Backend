@@ -51,6 +51,7 @@ src/db/                   drizzle schema + pg Pool provider; migrations in drizz
 src/common/               ApiError + ErrorCode, exception filter, ZodValidationPipe, request-id middleware
 src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal()
 src/rules/                pure, Unity-mirrored logic (+ products.ts catalog later)
+src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
 src/players/, src/rounds/ feature modules: controller (HTTP) + service (transactions, domain outcomes)
 ```
 

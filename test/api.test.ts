@@ -40,7 +40,7 @@ async function send(
   headers: Record<string, string>,
   body?: unknown,
 ): Promise<Reply> {
-  let req = request(server)[method.toLowerCase() as "get" | "put" | "post"](path).set(headers);
+  let req = request(server)[method.toLowerCase() as "get" | "put" | "post" | "delete"](path).set(headers);
   if (body !== undefined) req = req.send(body as object);
   const res = await req;
   return { status: res.status, body: res.body, headers: res.headers as Record<string, string> };
@@ -146,6 +146,67 @@ describe("player identity", () => {
   it("progress needs a registered player", async () => {
     const { call } = newPlayer();
     expect((await call("GET", "/v1/me/progress")).status).toBe(404);
+  });
+});
+
+describe("account deletion", () => {
+  const countRows = async (table: "players" | "rounds", column: "id" | "player_id", principal: string) =>
+    (await sql.query(`SELECT COUNT(*)::int AS n FROM ${table} WHERE ${column} = $1`, [principal])).rows[0]
+      .n as number;
+
+  it("DELETE /v1/me removes the player and cascades its rounds, leaving others untouched", async () => {
+    const doomed = newPlayer();
+    const other = newPlayer();
+    await doomed.call("PUT", "/v1/me");
+    await other.call("PUT", "/v1/me");
+    await playRound(doomed);
+    await startRound(doomed.call);
+    await playRound(other);
+    expect(await countRows("rounds", "player_id", doomed.principal)).toBe(2);
+
+    const response = await doomed.call("DELETE", "/v1/me");
+    expect(response.status).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect((await doomed.call("GET", "/v1/me/progress")).status).toBe(404);
+    expect(await countRows("players", "id", doomed.principal)).toBe(0);
+    expect(await countRows("rounds", "player_id", doomed.principal)).toBe(0);
+
+    expect(await countRows("rounds", "player_id", other.principal)).toBe(1);
+    expect((await other.call("GET", "/v1/me/progress")).body.progress.statusPoints).toBe(70);
+    await expectLedgerBalanced(other.principal);
+  });
+
+  it("is 204 when no player exists, and again when repeated", async () => {
+    const never = newPlayer();
+    expect((await never.call("DELETE", "/v1/me")).status).toBe(204);
+    const twice = newPlayer();
+    await twice.call("PUT", "/v1/me");
+    expect((await twice.call("DELETE", "/v1/me")).status).toBe(204);
+    expect((await twice.call("DELETE", "/v1/me")).status).toBe(204);
+  });
+
+  it("a fresh PUT /v1/me after deletion creates a new player at zero", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await playRound(player);
+    await player.call("DELETE", "/v1/me");
+    const again = await player.call("PUT", "/v1/me");
+    expect(again.status).toBe(201);
+    expect(again.body.progress).toMatchObject({ statusPoints: 0, miles: 0, perfectStreak: 0 });
+  });
+
+  it("a round and a result submitted after deletion are clean 404s", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    const roundId = await startRound(player.call);
+    await backdate(player.principal);
+    await player.call("DELETE", "/v1/me");
+    const result = await player.call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
+    expect(result.status).toBe(404);
+    expect(result.body.error.code).toBe("round_not_found");
+    const issue = await player.call("POST", "/v1/rounds", { module: "atc-match" });
+    expect(issue.status).toBe(404);
+    expect(issue.body.error.code).toBe("player_not_found");
   });
 });
 
@@ -512,7 +573,7 @@ describe("authorization header and global guard", () => {
     },
   );
 
-  it("every route except health returns 401 without a token", async () => {
+  it("every route except the health routes returns 401 without a token", async () => {
     const router = (app.getHttpAdapter().getInstance() as any).router;
     const routes: { method: string; path: string }[] = [];
     for (const layer of router.stack) {
@@ -521,12 +582,12 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 5 guarded routes plus health.
-    expect(routes.length).toBe(6);
+    // Guard against the enumeration silently finding nothing: 6 guarded routes plus two health routes.
+    expect(routes.length).toBe(8);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID());
       const response = await send(method, concrete, {});
-      const expected = path === "/v1/health" ? 200 : 401;
+      const expected = path.startsWith("/v1/health") ? 200 : 401;
       expect(response.status, `${method} ${path}`).toBe(expected);
     }
   });
@@ -611,6 +672,23 @@ describe("player row lock and concurrency", () => {
     expect(settled).toBe(false);
     await lock.release();
     expect((await pending).status).toBe(201);
+  });
+
+  it("account deletion waits for the player row lock, and the late result is then a clean 404", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await backdate(principal);
+    const lock = await lockPlayer(principal);
+    let settled = false;
+    const pending = call("DELETE", "/v1/me").finally(() => (settled = true));
+    await sleep(SETTLE_MS);
+    expect(settled).toBe(false);
+    await lock.release();
+    expect((await pending).status).toBe(204);
+    const late = await call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
+    expect(late.status).toBe(404);
+    expect(late.body.error.code).toBe("round_not_found");
   });
 
   it("six concurrent PUT /v1/me create the player exactly once", async () => {
