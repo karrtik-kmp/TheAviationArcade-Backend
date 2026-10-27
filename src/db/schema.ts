@@ -8,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -39,6 +40,7 @@ export const players = pgTable(
     check("players_miles_check", sql`${t.miles} >= 0`),
     check("players_perfect_streak_check", sql`${t.perfectStreak} >= 0`),
     check("players_active_rank_check", sql`${t.activeRank} IS NULL OR ${t.activeRank} IN ${RANK_LIST}`),
+    check("players_version_check", sql`${t.version} >= 1`),
   ],
 );
 
@@ -78,7 +80,8 @@ export const rounds = pgTable(
   },
   (t) => [
     index("rounds_player").on(t.playerId, t.issuedAt),
-    index("rounds_open").on(t.playerId).where(sql`${t.status} = 'open'`),
+    // At most one in-flight Round per player, enforced by the database, not just by issueRound.
+    uniqueIndex("rounds_one_open_per_player").on(t.playerId).where(sql`${t.status} = 'open'`),
     check(
       "rounds_module_check",
       sql`${t.module} IN ('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',
@@ -95,6 +98,15 @@ export const rounds = pgTable(
       sql`${t.promotedFrom} IS NULL OR ${t.promotedFrom} IN ${RANK_LIST}`,
     ),
     check("rounds_promoted_to_check", sql`${t.promotedTo} IS NULL OR ${t.promotedTo} IN ${RANK_LIST}`),
+    check("rounds_error_count_check", sql`${t.errorCount} IS NULL OR ${t.errorCount} >= 0`),
+    check(
+      "rounds_time_remaining_check",
+      sql`${t.timeRemaining} IS NULL OR ${t.timeRemaining} BETWEEN 0 AND 1`,
+    ),
+    check("rounds_sp_awarded_check", sql`${t.spAwarded} IS NULL OR ${t.spAwarded} >= 0`),
+    check("rounds_miles_awarded_check", sql`${t.milesAwarded} IS NULL OR ${t.milesAwarded} >= 0`),
+    check("rounds_streak_miles_check", sql`${t.streakMiles} IS NULL OR ${t.streakMiles} >= 0`),
+    check("rounds_expires_after_issue_check", sql`${t.expiresAt} > ${t.issuedAt}`),
     check(
       "rounds_completed_has_award_check",
       sql`${t.status} <> 'completed'

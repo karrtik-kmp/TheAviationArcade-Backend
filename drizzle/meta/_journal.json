@@ -8,6 +8,13 @@
       "when": 1793082920828,
       "tag": "0000_players_and_rounds",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793083763660,
+      "tag": "0001_schema_hardening",
+      "breakpoints": true
     }
   ]
 }

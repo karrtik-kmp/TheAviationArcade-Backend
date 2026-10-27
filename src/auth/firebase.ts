@@ -8,7 +8,6 @@ import type { JWTPayload, JWTVerifyGetKey } from "jose";
 const FIREBASE_JWKS = new URL(
   "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
 );
-const remoteFirebaseKeys = createRemoteJWKSet(FIREBASE_JWKS);
 
 /** Product login is Firebase email/password and Google only (project rule). */
 const ALLOWED_PROVIDERS = new Set(["password", "google.com"]);
@@ -52,6 +51,26 @@ export class AuthUnavailableError extends Error {
 export function emulatorTokensAllowed(projectId: string, flag: string | undefined): boolean {
   return flag === "true" && projectId === EMULATOR_PROJECT_ID;
 }
+
+/**
+ * Wrap a key resolver so that any failure to obtain keys (non-200, bad JSON, timeout, network) is an
+ * AuthUnavailableError, i.e. 503, never a 401 that would sign players out during a Google outage. Only
+ * "this token's kid is not in the key set" is a property of the token, so it stays a validation error.
+ */
+export function failClosedKeys(inner: JWTVerifyGetKey): JWTVerifyGetKey {
+  return async (protectedHeader, token) => {
+    try {
+      return await inner(protectedHeader, token);
+    } catch (error) {
+      if (error instanceof errors.JWKSNoMatchingKey || error instanceof errors.JWKSMultipleMatchingKeys) {
+        throw error;
+      }
+      throw new AuthUnavailableError();
+    }
+  };
+}
+
+const remoteFirebaseKeys = failClosedKeys(createRemoteJWKSet(FIREBASE_JWKS));
 
 function invalidToken(): never {
   throw new InvalidTokenError();
@@ -143,7 +162,7 @@ export async function verifyFirebaseToken(
     });
     return validateIdentity(payload, options.projectId);
   } catch (error) {
-    if (error instanceof InvalidTokenError) throw error;
+    if (error instanceof InvalidTokenError || error instanceof AuthUnavailableError) throw error;
     // Key-fetch trouble is infrastructure, not a bad token. A missing kid (JWKSNoMatchingKey) and
     // every other JOSE error is a genuine validation failure. Non-JOSE errors (fetch TypeError)
     // can only come from the key fetch here.

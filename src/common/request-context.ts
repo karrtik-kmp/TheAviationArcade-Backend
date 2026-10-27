@@ -24,11 +24,15 @@ export function requestContext(req: Request, res: Response, next: NextFunction):
   req.requestId = rid;
   res.setHeader("X-Request-Id", rid);
   const started = process.hrtime.bigint();
-  res.on("finish", () => {
+  // "close" fires exactly once per response, including when the client hangs up first, so aborted
+  // requests are logged too (writableFinished is false when the response never completed).
+  res.on("close", () => {
     const ms = Math.round(Number(process.hrtime.bigint() - started) / 1e4) / 100;
     // Route pattern, not the raw URL, so ids in paths are not logged.
     const route = req.route ? `${req.baseUrl}${String(req.route.path)}` : "(unmatched)";
-    process.stdout.write(`${JSON.stringify({ rid, method: req.method, route, status: res.statusCode, ms })}\n`);
+    const line = { rid, method: req.method, route, status: res.statusCode, ms, aborted: !res.writableFinished };
+    process.stdout.write(`${JSON.stringify(line)}
+`);
   });
   next();
 }

@@ -37,8 +37,18 @@ emulator from the website repo (`npm run auth:emulator` in `../website`, port 90
 mint tokens. Emulator tokens are honoured only for exactly `demo-airplane-games`; the production project
 can never accept them.
 
-Hosting is not chosen yet; production needs a managed Postgres, `DATABASE_URL`, and
-`FIREBASE_PROJECT_ID=airplane-games-auth-20261022` with `ALLOW_EMULATOR_TOKENS` unset.
+### Configuration
+
+| Variable | Notes |
+|---|---|
+| `APP_ENV` | Required: `local`, `test` or `production`. `.env` is never loaded when it is `production` |
+| `DATABASE_URL` | Postgres connection string |
+| `FIREBASE_PROJECT_ID` | `demo-airplane-games` locally; `airplane-games-auth-20261022` in production |
+| `ALLOW_EMULATOR_TOKENS` | Local only. Production refuses to boot with it on, or with a `demo-` project |
+| `HOST` / `PORT` | Default `127.0.0.1` / `3000`. Use `0.0.0.0` inside a container |
+| `DB_POOL_MAX` | Default 10. Statement/lock timeouts 5 s, idle-in-transaction 15 s |
+
+The server runs locally only for now; hosting is not chosen.
 
 ## API
 
@@ -56,8 +66,11 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 
 Result status codes: 200 banked (or `replayed: true` for a Round already banked — safe to retry),
 404 not this player's Round, 410 expired or abandoned, 429 submitted too soon after issue (retry after
-`Retry-After`), 503 `auth_unavailable` when Google's signing keys cannot be fetched. Unknown routes are
-404 `not_found`; malformed or extra-field bodies are 400 `invalid_request`.
+`Retry-After`), 503 `auth_unavailable` when Google's signing keys cannot be fetched, 503
+`service_unavailable` when the database is unreachable or times out (both with `Retry-After`).
+Unknown routes are 404 `not_found`. Bodies are JSON only, at most 16 KB: malformed or extra-field
+bodies are 400 `invalid_request`, oversized 413, wrong charset/encoding 415 (same code). 401s carry
+`WWW-Authenticate: Bearer`; `/v1` responses other than health are `Cache-Control: no-store`.
 
 Ranks and module IDs on the wire are kebab-case: `trainee`, `first-officer`, `captain`, `check-airman`,
 `chief-pilot`; modules follow the Unity ModuleRegistry and website catalog (`atc-match`, `identifier`,

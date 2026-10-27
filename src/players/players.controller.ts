@@ -1,7 +1,7 @@
-import { Body, Controller, Get, Put, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Put, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
-import { FirebaseAuthGuard, Principal } from "../auth/firebase-auth.guard.js";
+import { Principal } from "../auth/firebase-auth.guard.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { RANKS } from "../rules/ranks.js";
@@ -12,7 +12,6 @@ const activeRankBody = z.strictObject({ rank: z.enum(RANKS) });
 type ActiveRankBody = z.infer<typeof activeRankBody>;
 
 @Controller("v1/me")
-@UseGuards(FirebaseAuthGuard)
 export class PlayersController {
   constructor(private readonly players: PlayersService) {}
 

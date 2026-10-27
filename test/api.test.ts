@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { INestApplication } from "@nestjs/common";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import pg from "pg";
 import request from "supertest";
@@ -11,14 +12,14 @@ import { emulatorToken } from "./tokens.js";
 
 const PRINCIPAL_PREFIX = "firebase:demo-airplane-games:";
 
-let app: INestApplication;
+let app: NestExpressApplication;
 let server: ReturnType<INestApplication["getHttpServer"]>;
 // Test-side connection for arranging and inspecting rows; the app has its own pool.
 let sql: pg.Pool;
 
 beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-  app = moduleRef.createNestApplication({ logger: ["error"] });
+  app = moduleRef.createNestApplication<NestExpressApplication>({ logger: ["error"], bodyParser: false });
   configureApp(app);
   // A real listening socket, so concurrent requests really are concurrent connections.
   await app.listen(0, "127.0.0.1");
@@ -287,7 +288,9 @@ describe("rounds", () => {
     const { principal, call } = newPlayer();
     await call("PUT", "/v1/me");
     const roundId = await startRound(call);
-    await sql.query("UPDATE rounds SET expires_at = $1 WHERE id = $2 AND player_id = $3", [
+    // Both timestamps move into the past: the schema requires expires_at > issued_at.
+    await sql.query("UPDATE rounds SET issued_at = $1, expires_at = $2 WHERE id = $3 AND player_id = $4", [
+      new Date(Date.UTC(1999, 0, 1)),
       new Date(Date.UTC(2000, 0, 1)),
       roundId,
       principal,
@@ -425,5 +428,241 @@ describe("request ids, errors and routing", () => {
     expect(response.status).toBe(404);
     expect(response.body.error).toMatchObject({ code: "not_found" });
     expect(response.body.error.requestId).toBe(response.headers["x-request-id"]);
+  });
+});
+
+describe("request hardening", () => {
+  it("sends no X-Powered-By and marks /v1 responses no-store, except health", async () => {
+    const { call } = newPlayer();
+    const me = await call("PUT", "/v1/me");
+    expect(me.headers["x-powered-by"]).toBeUndefined();
+    expect(me.headers["cache-control"]).toBe("no-store");
+    const unauthorized = await send("GET", "/v1/me/progress", {});
+    expect(unauthorized.headers["cache-control"]).toBe("no-store");
+    const health = await send("GET", "/v1/health", {});
+    expect(health.headers["x-powered-by"]).toBeUndefined();
+    expect(health.headers["cache-control"]).toBeUndefined();
+  });
+
+  it("rejects a body over 16 KB as 413 invalid_request", async () => {
+    const { uid } = newPlayer();
+    const response = await request(server)
+      .put("/v1/me/active-rank")
+      .set("Authorization", `Bearer ${emulatorToken(uid)}`)
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify({ rank: "x".repeat(17 * 1024) }));
+    expect(response.status).toBe(413);
+    expect(response.body.error).toMatchObject({ code: "invalid_request", message: "Request could not be read." });
+    expect(response.body.error.requestId).toBe(response.headers["x-request-id"]);
+  });
+
+  it("rejects an unsupported charset as 415 invalid_request", async () => {
+    const response = await request(server)
+      .put("/v1/me/active-rank")
+      .set("Content-Type", "application/json; charset=latin1")
+      .send('{"rank":"trainee"}');
+    expect(response.status).toBe(415);
+    expect(response.body.error.code).toBe("invalid_request");
+  });
+
+  it("rejects an unsupported Content-Encoding as 415 invalid_request", async () => {
+    const response = await request(server)
+      .put("/v1/me/active-rank")
+      .set("Content-Type", "application/json")
+      .set("Content-Encoding", "compress")
+      .send('{"rank":"trainee"}');
+    expect(response.status).toBe(415);
+    expect(response.body.error.code).toBe("invalid_request");
+  });
+
+  it("does not accept urlencoded bodies", async () => {
+    const { uid } = newPlayer();
+    const response = await request(server)
+      .put("/v1/me/active-rank")
+      .set("Authorization", `Bearer ${emulatorToken(uid)}`)
+      .type("form")
+      .send("rank=trainee");
+    expect([400, 415]).toContain(response.status);
+    expect(response.body.error.code).toBe("invalid_request");
+  });
+
+  it("a non-UUID round id is 404 round_not_found", async () => {
+    const { call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const response = await call("POST", "/v1/rounds/not-a-uuid/result", PERFECT_FAST);
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("round_not_found");
+  });
+});
+
+describe("authorization header and global guard", () => {
+  it("accepts the Bearer scheme case-insensitively", async () => {
+    const { uid } = newPlayer();
+    const response = await send("PUT", "/v1/me", { Authorization: `bearer ${emulatorToken(uid)}` });
+    expect(response.status).toBe(201);
+  });
+
+  it.each([["Bearer"], ["Bearer  x"], ["Basic x"], ["Bearer a b"]])(
+    "rejects Authorization: %s with 401 and WWW-Authenticate",
+    async (header) => {
+      const response = await send("PUT", "/v1/me", { Authorization: header });
+      expect(response.status).toBe(401);
+      expect(response.headers["www-authenticate"]).toBe("Bearer");
+      expect(response.body.error.code).toBe("unauthorized");
+    },
+  );
+
+  it("every route except health returns 401 without a token", async () => {
+    const router = (app.getHttpAdapter().getInstance() as any).router;
+    const routes: { method: string; path: string }[] = [];
+    for (const layer of router.stack) {
+      if (!layer.route) continue;
+      for (const method of Object.keys(layer.route.methods)) {
+        routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
+      }
+    }
+    // Guard against the enumeration silently finding nothing: 5 guarded routes plus health.
+    expect(routes.length).toBe(6);
+    for (const { method, path } of routes) {
+      const concrete = path.replace(":roundId", randomUUID());
+      const response = await send(method, concrete, {});
+      const expected = path === "/v1/health" ? 200 : 401;
+      expect(response.status, `${method} ${path}`).toBe(expected);
+    }
+  });
+});
+
+describe("schema constraints", () => {
+  it("the database refuses a second open round for one player", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    await startRound(call);
+    const now = new Date();
+    await expect(
+      sql.query(
+        `INSERT INTO rounds (id, player_id, module, rank, pleasure_cruise, status, issued_at, expires_at)
+         VALUES ($1, $2, 'atc-match', 'trainee', false, 'open', $3, $4)`,
+        [randomUUID(), principal, now, new Date(now.getTime() + 60_000)],
+      ),
+    ).rejects.toMatchObject({ code: "23505", constraint: "rounds_one_open_per_player" });
+  });
+
+  it("the database refuses out-of-range round and player values", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await expect(sql.query("UPDATE rounds SET time_remaining = 2 WHERE id = $1", [roundId])).rejects.toMatchObject({
+      code: "23514",
+    });
+    await expect(sql.query("UPDATE rounds SET error_count = -1 WHERE id = $1", [roundId])).rejects.toMatchObject({
+      code: "23514",
+    });
+    await expect(
+      sql.query("UPDATE rounds SET expires_at = issued_at WHERE id = $1", [roundId]),
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(sql.query("UPDATE players SET version = 0 WHERE id = $1", [principal])).rejects.toMatchObject({
+      code: "23514",
+    });
+  });
+});
+
+describe("player row lock and concurrency", () => {
+  const SETTLE_MS = 300;
+  const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+  /** Hold the player's row lock on a separate connection, as a concurrent writer would. */
+  async function lockPlayer(principal: string) {
+    const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await holder.connect();
+    await holder.query("BEGIN");
+    await holder.query("SELECT 1 FROM players WHERE id = $1 FOR UPDATE", [principal]);
+    return {
+      release: async () => {
+        await holder.query("COMMIT");
+        await holder.end();
+      },
+    };
+  }
+
+  it("a result waits for the player row lock, then banks", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await backdate(principal);
+    const lock = await lockPlayer(principal);
+    let settled = false;
+    const pending = call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST).finally(() => (settled = true));
+    await sleep(SETTLE_MS);
+    expect(settled).toBe(false);
+    await lock.release();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(response.body.progress.statusPoints).toBe(70);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("issuing a round waits for the player row lock, then succeeds", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const lock = await lockPlayer(principal);
+    let settled = false;
+    const pending = call("POST", "/v1/rounds", { module: "atc-match" }).finally(() => (settled = true));
+    await sleep(SETTLE_MS);
+    expect(settled).toBe(false);
+    await lock.release();
+    expect((await pending).status).toBe(201);
+  });
+
+  it("six concurrent PUT /v1/me create the player exactly once", async () => {
+    const { principal, call } = newPlayer();
+    const responses = await Promise.all(Array.from({ length: 6 }, () => call("PUT", "/v1/me")));
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 200, 200, 200, 200, 201]);
+    const count = (await sql.query("SELECT COUNT(*)::int AS n FROM players WHERE id = $1", [principal])).rows[0];
+    expect(count.n).toBe(1);
+  });
+
+  it("a storm of interleaved issue and result calls keeps the ledger and one-open-round invariants", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const first = await startRound(call);
+    await backdate(principal);
+    const results = Array.from({ length: 4 }, () => call("POST", `/v1/rounds/${first}/result`, PERFECT_FAST));
+    const issues = Array.from({ length: 4 }, () => call("POST", "/v1/rounds", { module: "atc-match" }));
+    const [resultReplies, issueReplies] = await Promise.all([Promise.all(results), Promise.all(issues)]);
+    // Banked (200) if the result won the lock, closed (410) if an issue superseded the Round first.
+    for (const response of resultReplies) expect([200, 410]).toContain(response.status);
+    for (const response of issueReplies) expect(response.status).toBe(201);
+    const open = (
+      await sql.query("SELECT COUNT(*)::int AS n FROM rounds WHERE player_id = $1 AND status = 'open'", [principal])
+    ).rows[0];
+    expect(open.n).toBe(1);
+    const completed = (
+      await sql.query("SELECT COUNT(*)::int AS n FROM rounds WHERE player_id = $1 AND status = 'completed'", [
+        principal,
+      ])
+    ).rows[0];
+    const player = (await sql.query("SELECT version FROM players WHERE id = $1", [principal])).rows[0];
+    expect(player.version).toBe(1 + completed.n);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("a database failure is a generic 500 internal_error with no SQL, and the player is not stuck", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await backdate(principal);
+    // The credit would overflow the integer column: a real driver error inside the transaction.
+    await sql.query("UPDATE players SET status_points = 2147483647 WHERE id = $1", [principal]);
+    const response = await call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
+    expect(response.status).toBe(500);
+    expect(response.body.error).toMatchObject({ code: "internal_error", message: "Something went wrong." });
+    const text = JSON.stringify(response.body).toLowerCase();
+    for (const leak of ["update", "players", "select", "status_points", "2147483647", "$1"]) {
+      expect(text).not.toContain(leak);
+    }
+    // Rolled back: the Round is still open, and the player's row is unlocked and readable.
+    const row = (await sql.query("SELECT status FROM rounds WHERE id = $1", [roundId])).rows[0];
+    expect(row.status).toBe("open");
+    expect((await call("GET", "/v1/me/progress")).status).toBe(200);
   });
 });

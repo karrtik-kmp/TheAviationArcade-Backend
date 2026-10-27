@@ -5,6 +5,8 @@
 | First slice on Cloudflare Worker (Hono + D1) | Superseded | 2026-10-27: identity, progress, Rounds, review fixes; 66 tests. Replaced by the Node platform |
 | Architecture baseline vs nodeDemo | Done | [ARCHITECTURE.md](ARCHITECTURE.md): what to adopt/adapt/reject, layout, purchases design |
 | Re-platform to NestJS + PostgreSQL (Drizzle, Docker Compose) | Done (local) | NestJS 12.1.3, Postgres 18.4, Drizzle 0.45.4; row-locked transactions; `ApiError` + request id + JSON log line. Independent review pending |
+| NestJS review fixes | Done (local) | Production config guard, 413/415 mapping, 503 on JWKS/DB failure, pool timeouts + client-leak fix, global auth guard, unique open-Round index (migration 0001), lock tests, JSON logs |
+| Production readiness (before hosting) | Not started | DB readiness probe; drain deadline + keepAlive/headers timeouts; `trust proxy`; SSL + pool sizing for managed Postgres; DB clock for Round timing across instances; `.dockerignore` with `.env*`; ignore service-account JSON |
 | Hosting choice and deployment | Deferred | Local only for now (decided 2026-10-27); revisit before Unity integration testing on devices |
 | Unity client integration | Not started | Firebase Auth in Unity, call `PUT /v1/me`, start/submit Rounds; `X-Client-Version` gate; OpenAPI contract |
 | Content releases to the game | Not started | Admin-approved packages → versioned release + rollback; tie Rounds to a release; server-side answer checks |
@@ -29,6 +31,11 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-27 (review fixes): typecheck and `nest build` clean; `npm test` 70/70; `npm run test:e2e`
+  47/47 (incl. deterministic player-lock tests via a second connection, concurrent `PUT /v1/me` → one
+  201, issue/result storm, 413/415, Bearer variants, every route 401 without a token). Implementer
+  verified `APP_ENV=production` refuses emulator tokens and demo projects. Local only.
 
 - 2026-10-27 (NestJS + Postgres): in the repo after a clean `npm ci` — typecheck clean, `nest build`
   clean, `npm test` 42/42 (rules + tokens), `npm run test:e2e` 28/28 against Postgres 18.4 in Docker

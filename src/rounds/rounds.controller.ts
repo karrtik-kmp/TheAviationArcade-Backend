@@ -1,6 +1,7 @@
-import { Body, Controller, HttpCode, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, HttpCode, Param, Post } from "@nestjs/common";
+import type { PipeTransform } from "@nestjs/common";
 import { z } from "zod";
-import { FirebaseAuthGuard, Principal } from "../auth/firebase-auth.guard.js";
+import { Principal } from "../auth/firebase-auth.guard.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { progressView } from "../players/progress-view.js";
@@ -18,8 +19,17 @@ const roundResultBody = z.strictObject({
 });
 type RoundResultBody = z.infer<typeof roundResultBody>;
 
+/** A non-UUID id cannot name a Round: 404 without a database round trip. */
+class RoundIdPipe implements PipeTransform<string, string> {
+  transform(value: string): string {
+    if (!z.uuid().safeParse(value).success) {
+      throw new ApiError(404, "round_not_found", "No such Round for this player.");
+    }
+    return value;
+  }
+}
+
 @Controller("v1/rounds")
-@UseGuards(FirebaseAuthGuard)
 export class RoundsController {
   constructor(private readonly rounds: RoundsService) {}
 
@@ -37,7 +47,7 @@ export class RoundsController {
   @HttpCode(200)
   async result(
     @Principal() principal: string,
-    @Param("roundId") roundId: string,
+    @Param("roundId", new RoundIdPipe()) roundId: string,
     @Body(
       new ZodValidationPipe(
         roundResultBody,

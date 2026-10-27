@@ -30,6 +30,7 @@ export default defineConfig({
       // Tests never touch the real Firebase project: demo- project with emulator tokens.
       FIREBASE_PROJECT_ID: "demo-airplane-games",
       ALLOW_EMULATOR_TOKENS: "true",
+      APP_ENV: "test",
     },
   },
 });

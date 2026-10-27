@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Inject, Injectable } from "@nestjs/common";
-import { and, eq } from "drizzle-orm";
-import { DATABASE } from "../database/database.module.js";
-import type { Database } from "../database/database.module.js";
+import { Injectable } from "@nestjs/common";
+import { and, eq, sql } from "drizzle-orm";
+import { DatabaseService } from "../database/database.module.js";
 import { players, rounds } from "../db/schema.js";
 import type { PlayerRow, RoundRow } from "../db/schema.js";
 import { hasFirstClassPass } from "../players/progress-view.js";
@@ -69,7 +68,7 @@ function storedAward(round: RoundRow): CompletedRound["award"] {
  */
 @Injectable()
 export class RoundsService {
-  constructor(@Inject(DATABASE) private readonly db: Database) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /**
    * Issue a Round. The player's other open Rounds are abandoned in the same transaction, so only one
@@ -77,7 +76,7 @@ export class RoundsService {
    * untouched, so their replays keep working. Returns null if the player does not exist.
    */
   async issueRound(principal: string, module: ModuleId, now: Date): Promise<IssuedRound | null> {
-    return this.db.transaction(async (tx) => {
+    return this.database.withTransaction(async (tx) => {
       const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
       if (!player) return null;
 
@@ -114,7 +113,7 @@ export class RoundsService {
     input: RoundResultInput,
     now: Date,
   ): Promise<CompleteRoundOutcome> {
-    return this.db.transaction(async (tx): Promise<CompleteRoundOutcome> => {
+    return this.database.withTransaction(async (tx): Promise<CompleteRoundOutcome> => {
       // Lock order is always player, then round (issueRound does the same), so no deadlocks.
       const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
       if (!player) return { kind: "not_found" };
@@ -181,10 +180,12 @@ export class RoundsService {
       const [updated] = await tx
         .update(players)
         .set({
-          statusPoints: player.statusPoints + award.statusPoints,
-          miles: player.miles + award.miles,
+          // Relative increments as defence in depth: even if the row lock were ever lost, a credit
+          // adds to the current balance instead of overwriting it with a stale read.
+          statusPoints: sql`${players.statusPoints} + ${award.statusPoints}`,
+          miles: sql`${players.miles} + ${award.miles}`,
           perfectStreak: streak,
-          version: player.version + 1,
+          version: sql`${players.version} + 1`,
           updatedAt: now,
         })
         .where(eq(players.id, principal))

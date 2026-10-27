@@ -54,8 +54,12 @@ src/rules/                pure, Unity-mirrored logic (+ products.ts catalog late
 src/players/, src/rounds/ feature modules: controller (HTTP) + service (transactions, domain outcomes)
 ```
 
-Concurrency rule: every balance change runs in one transaction that first locks the player row
-(`SELECT … FOR UPDATE`), and bumps `players.version`. No write overwrites another.
+Concurrency rule: every balance change runs in `DatabaseService.withTransaction` (explicit client,
+destroyed on failure), first locks the player row (`SELECT … FOR UPDATE`), and bumps `players.version`.
+No write overwrites another. The database also enforces one open Round per player (unique partial index).
+
+Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health). Production config refuses
+emulator tokens and demo projects, and never reads `.env`.
 
 ## Purchases (design for the purchases slice)
 

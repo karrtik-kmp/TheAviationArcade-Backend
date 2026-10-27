@@ -1,9 +1,13 @@
-import { errors, generateKeyPair, SignJWT } from "jose";
+import { createServer } from "node:http";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { createRemoteJWKSet, errors, exportJWK, generateKeyPair, SignJWT } from "jose";
 import type { JWTVerifyGetKey } from "jose";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   AuthUnavailableError,
   emulatorTokensAllowed,
+  failClosedKeys,
   InvalidTokenError,
   verifyFirebaseToken,
 } from "../src/auth/firebase.js";
@@ -209,5 +213,67 @@ describe("emulatorTokensAllowed", () => {
   it("needs both the flag and the demo-airplane-games project", () => {
     expect(emulatorTokensAllowed("demo-airplane-games", "true")).toBe(true);
     expect(emulatorTokensAllowed("demo-airplane-games", undefined)).toBe(false);
+  });
+});
+
+describe("failClosedKeys (remote key fetch)", () => {
+  // A local stub standing in for Google's JWKS endpoint. The production path uses the same wrapper
+  // around createRemoteJWKSet pointed at Google's fixed URL.
+  let stub: Server;
+  let base: string;
+  let mode: "http500" | "badjson" | "empty" | "ok" = "ok";
+  let publicJwk: object;
+
+  beforeAll(async () => {
+    publicJwk = { ...(await exportJWK((await generateKeyPair("RS256", { extractable: true })).publicKey)), kid: "other" };
+    stub = createServer((_req, res) => {
+      if (mode === "http500") {
+        res.writeHead(500).end("nope");
+      } else if (mode === "badjson") {
+        res.writeHead(200, { "content-type": "application/json" }).end("{ not json");
+      } else {
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({ keys: mode === "empty" ? [] : [publicJwk] }),
+        );
+      }
+    });
+    await new Promise<void>((done) => stub.listen(0, "127.0.0.1", done));
+    base = `http://127.0.0.1:${(stub.address() as AddressInfo).port}/jwks`;
+  });
+
+  afterAll(async () => {
+    await new Promise((done) => stub.close(done));
+  });
+
+  // A fresh resolver per case: createRemoteJWKSet caches successful fetches.
+  const resolverFor = (timeoutDuration = 1000) =>
+    failClosedKeys(createRemoteJWKSet(new URL(base), { timeoutDuration }));
+
+  it("reports an HTTP 500 from the key endpoint as AuthUnavailableError", async () => {
+    mode = "http500";
+    await expect(verifyFirebaseToken(await signed(), production, resolverFor())).rejects.toBeInstanceOf(
+      AuthUnavailableError,
+    );
+  });
+
+  it("reports malformed JSON from the key endpoint as AuthUnavailableError", async () => {
+    mode = "badjson";
+    await expect(verifyFirebaseToken(await signed(), production, resolverFor())).rejects.toBeInstanceOf(
+      AuthUnavailableError,
+    );
+  });
+
+  it("reports an unreachable key endpoint as AuthUnavailableError", async () => {
+    const dead = failClosedKeys(createRemoteJWKSet(new URL("http://127.0.0.1:1/jwks"), { timeoutDuration: 500 }));
+    await expect(verifyFirebaseToken(await signed(), production, dead)).rejects.toBeInstanceOf(
+      AuthUnavailableError,
+    );
+  });
+
+  it("keeps an unknown kid a token problem, not an outage", async () => {
+    mode = "ok";
+    await expect(verifyFirebaseToken(await signed(), production, resolverFor())).rejects.toBeInstanceOf(
+      InvalidTokenError,
+    );
   });
 });

@@ -10,6 +10,7 @@ export type ErrorCode =
   | "round_too_fast"
   | "rank_not_certified"
   | "not_found"
+  | "service_unavailable"
   | "internal_error";
 
 /** The one error type the API throws on purpose. The global filter turns it into the response body. */
