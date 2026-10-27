@@ -34,7 +34,7 @@ reachable server (LAN or tunnel first; hosting is Phase 6).
 | 3.1 | Miles ledger | Not started | Append-only, idempotent refs; Round credits written as entries |
 | 3.2 | Spending (hints, skips) | Not started | Prices from `../docs/points-progression.md`; overspend is a clean error |
 | 3.3 | Flight Segment set bonuses | Blocked | Josh: per Module? does a hint break Perfect Manifest? |
-| 3.4 | Rule rulings | Blocked | Josh: Chief Pilot 200k vs 400k, hint vs streak, per-Module/rank minimum Round time |
+| 3.4 | Rule rulings | Blocked | Josh: hint vs streak, per-Module/rank minimum Round time |
 
 ### Phase 4 — Purchases
 
@@ -63,6 +63,7 @@ verified email for ranked play).
 - 2026-10-27: runs locally only for now; no hosting yet.
 - 2026-10-27: sandbox (TestFlight / App Review) purchases grant real rewards in production.
 - 2026-10-27: a refunded Status Point boost is reversed only if unused.
+- 2026-10-27: Chief Pilot is certified at 400,000 SP (user ruling; matches the Unity app).
 
 ## Open questions for Josh
 

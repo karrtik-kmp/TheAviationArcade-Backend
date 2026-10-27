@@ -129,14 +129,16 @@ describe("ranks", () => {
     expect(certifiedRankFor(100_000)).toBe("check-airman");
   });
 
-  it("ASSUMPTION: chief pilot is certified at 200,000 SP, not 400,000", () => {
-    expect(RANK_THRESHOLDS["chief-pilot"]).toBe(200_000);
-    expect(certifiedRankFor(200_000)).toBe("chief-pilot");
+  it("chief pilot is certified at 400,000 SP", () => {
+    expect(RANK_THRESHOLDS["chief-pilot"]).toBe(400_000);
+    expect(certifiedRankFor(399_999)).toBe("check-airman");
+    expect(certifiedRankFor(400_000)).toBe("chief-pilot");
   });
 
   it("next rank reports the following threshold, and none at the top", () => {
     expect(nextRankFor(12_000)).toEqual({ rank: "captain", statusPoints: 50_000 });
-    expect(nextRankFor(250_000)).toBeNull();
+    expect(nextRankFor(250_000)).toEqual({ rank: "chief-pilot", statusPoints: 400_000 });
+    expect(nextRankFor(450_000)).toBeNull();
   });
 
   it("active rank defaults to certified when none is stored", () => {

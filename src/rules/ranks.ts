@@ -9,16 +9,14 @@ export type Rank = (typeof RANKS)[number];
 /**
  * Lifetime Status Points needed to be certified at each rank (docs/points-progression.md §5).
  *
- * ASSUMPTION: Chief Pilot is 200,000 SP. The source spec says 200,000 in the detailed milestone
- * table and 400,000 in the diagram. 200,000 is used because the same table's "~2,500+ games"
- * estimate only reconciles with it. Still open for Josh; locked by a named test.
+ * Chief Pilot is 400,000 SP (ruled 2026-10-27; the spec also listed 200,000). Matches the Unity app.
  */
 export const RANK_THRESHOLDS: Readonly<Record<Rank, number>> = {
   trainee: 0,
   "first-officer": 10_000,
   captain: 50_000,
   "check-airman": 100_000,
-  "chief-pilot": 200_000,
+  "chief-pilot": 400_000,
 };
 
 export function isRank(value: unknown): value is Rank {

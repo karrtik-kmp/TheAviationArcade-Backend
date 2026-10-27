@@ -117,7 +117,8 @@ Ranks and module IDs on the wire are kebab-case: `trainee`, `first-officer`, `ca
   backend holds no Firebase admin credentials); until it does, a still-valid token plus `PUT /v1/me`
   creates a fresh player at zero. The delete takes the player lock first, so an in-flight Round result
   either banks before it or gets 404 after.
-- **Rules mirror Unity.** `src/rules/` ports `ScoreCalculator`, `FlightRank` and `PilotProgression`.
+- **Rules mirror Unity.** `src/rules/` ports `ScoreCalculator`, `FlightRank` and `PilotProgression`. Ranks: Trainee 0, First Officer 10k, Captain 50k,
+  Check Airman 100k, Chief Pilot 400k SP.
   Change both together. Test names match the Unity tests.
 - **Spec ambiguities are asserted, not buried** (Unity ADR-0004). Each is a test named `ASSUMPTION: …`.
 
@@ -132,14 +133,12 @@ revocation is not checked: a disabled account's token works until it expires (ab
 
 Asserted in code and tests until ruled:
 
-1. Chief Pilot threshold: **200,000 SP** used (spec also says 400,000). ⚠️ The Unity app currently uses
-   **400,000** (flagged in its IMPLEMENTATION_STATUS), so app and server disagree until Josh rules.
-2. Speed bonus additive with completion award (spec's worked example implies it).
-3. Pleasure Cruise cap applied before the First Class multiplier.
-4. Unfinished Round pays nothing and breaks the streak (Unity prototype ruling).
-5. Streak Miles pay on the streak carried *into* a Round, even if that Round breaks it (matches Unity).
-6. Does a hint break the Perfect Streak? Server says yes (a hinted Round is not a Perfect Completion);
+1. Speed bonus additive with completion award (spec's worked example implies it).
+2. Pleasure Cruise cap applied before the First Class multiplier.
+3. Unfinished Round pays nothing and breaks the streak (Unity prototype ruling).
+4. Streak Miles pay on the streak carried *into* a Round, even if that Round breaks it (matches Unity).
+5. Does a hint break the Perfect Streak? Server says yes (a hinted Round is not a Perfect Completion);
    Unity's `AtcMatchScreen` currently advances the streak on zero errors alone.
-7. Minimum Round duration is a provisional 3 s; needs per-module/per-rank timer lengths. Source of
+6. Minimum Round duration is a provisional 3 s; needs per-module/per-rank timer lengths. Source of
    truth is the app's TripProfiles (e.g. ATC Match 15/20/25 s, Call Sign 15/20/20/15/15 s by rank); no
    consolidated table yet.
