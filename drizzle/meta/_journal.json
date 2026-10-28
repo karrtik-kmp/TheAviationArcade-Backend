@@ -15,6 +15,13 @@
       "when": 1793083763660,
       "tag": "0001_schema_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793164215668,
+      "tag": "0002_military_module_id",
+      "breakpoints": true
     }
   ]
 }

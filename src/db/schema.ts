@@ -85,7 +85,7 @@ export const rounds = pgTable(
     check(
       "rounds_module_check",
       sql`${t.module} IN ('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',
-        'military-identifier', 'code-search', 'runway-identifier', 'tail-identifier')`,
+        'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')`,
     ),
     check("rounds_rank_check", sql`${t.rank} IN ${RANK_LIST}`),
     check("rounds_status_check", sql`${t.status} IN ('open', 'completed', 'abandoned')`),

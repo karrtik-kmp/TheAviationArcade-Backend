@@ -1,13 +1,14 @@
 /**
- * Backend module IDs. These follow the Unity ModuleRegistry and the website catalog
- * (website/lib/catalog.ts), so all three agree. "military-identifier" is a working title.
+ * Backend module IDs: exactly the Unity ModuleRegistry BackendIds (the ids the app sends on the wire).
+ * The website catalog keys Military as "military-identifier"; that id never reaches this API.
+ * The Military game's final name is a working title.
  */
 export const MODULE_IDS = [
   "airport-spotter",
   "atc-match",
   "call-sign-match",
   "identifier",
-  "military-identifier",
+  "aircraft-identifier-military",
   "code-search",
   "runway-identifier",
   "tail-identifier",

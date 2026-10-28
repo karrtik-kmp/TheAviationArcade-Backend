@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
+import { MODULE_IDS } from "../src/rules/modules.js";
 import { emulatorToken } from "./tokens.js";
 
 const PRINCIPAL_PREFIX = "firebase:demo-airplane-games:";
@@ -368,10 +369,22 @@ describe("rounds", () => {
     expect(new Date(started.round.expiresAt).toISOString()).toBe(started.round.expiresAt);
   });
 
+  it("issues and banks a Round for every Unity ModuleRegistry BackendId", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    for (const module of MODULE_IDS) {
+      const roundId = await startRound(player.call, module);
+      await backdate(player.principal);
+      expect((await player.call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST)).status).toBe(200);
+    }
+  });
+
   it("rejects unknown modules and client-supplied economy fields", async () => {
     const { call } = newPlayer();
     await call("PUT", "/v1/me");
     expect((await call("POST", "/v1/rounds", { module: "space-invaders" })).status).toBe(400);
+    // The pre-split Military id; Unity sends aircraft-identifier-military.
+    expect((await call("POST", "/v1/rounds", { module: "military-identifier" })).status).toBe(400);
     const roundId = await startRound(call);
     const response = await call("POST", `/v1/rounds/${roundId}/result`, {
       ...PERFECT_FAST,

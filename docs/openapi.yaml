@@ -411,13 +411,13 @@ components:
       enum: [trainee, first-officer, captain, check-airman, chief-pilot]
     ModuleId:
       type: string
-      description: Module ID. `military-identifier` is a working title.
+      description: Module ID = the Unity ModuleRegistry BackendId. The Military game's final name is a working title.
       enum:
         - airport-spotter
         - atc-match
         - call-sign-match
         - identifier
-        - military-identifier
+        - aircraft-identifier-military
         - code-search
         - runway-identifier
         - tail-identifier
