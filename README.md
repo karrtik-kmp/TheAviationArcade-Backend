@@ -1,6 +1,6 @@
 # Airplane Games — game backend
 
-The server the mobile app (Unity, `C:\Unity\Projects\AviationArcade`) calls for player identity and
+The server the mobile app (Unity, `C:\Unity\Projects\AviationArcade_v2`) calls for player identity and
 progress. A standalone Node server — **NestJS + PostgreSQL (Drizzle)** — verifying Firebase ID tokens from
 the same Firebase project the website (`../website`) uses, so a player is one principal across app,
 website and backend. Deployed separately from the website. Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -36,6 +36,11 @@ npm run db:generate           # new migration from src/db/schema.ts (never edit 
 emulator from the website repo (`npm run auth:emulator` in `../website`, port 9099) and sign in there to
 mint tokens. Emulator tokens are honoured only for exactly `demo-airplane-games`; the production project
 can never accept them.
+
+To accept real sign-ins from the cloud project locally (e.g. a Unity build signed in with Firebase), set
+`FIREBASE_PROJECT_ID=airplane-games-auth-20261022` and `ALLOW_EMULATOR_TOKENS=false` (in `.env` or the
+shell; shell values win). No credentials are needed: the backend only fetches Google's public signing
+keys. Players created this way live in your local database only.
 
 ### Configuration
 
@@ -99,8 +104,8 @@ routes and `DELETE /v1/me` exempt, so an outdated app can still delete its accou
 returns 201.
 
 Ranks and module IDs on the wire are kebab-case: `trainee`, `first-officer`, `captain`, `check-airman`,
-`chief-pilot`; modules follow the Unity ModuleRegistry and website catalog (`atc-match`, `identifier`,
-`military-identifier`, …) — see `src/rules/`.
+`chief-pilot`; modules are the Unity `ModuleRegistry` BackendIds (`atc-match`, `identifier`,
+`aircraft-identifier-military`, …) — see `src/rules/`.
 
 ## Design rules
 

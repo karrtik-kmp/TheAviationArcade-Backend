@@ -4,7 +4,7 @@ Standalone Node game backend: NestJS + PostgreSQL (Drizzle) + Firebase ID tokens
 separately from the website. Read `README.md`, `docs/TASKS.md` and `docs/ARCHITECTURE.md` (what we build
 and deliberately don't) first.
 Sibling repos: website `../website` (same Firebase project, same principal format), Unity game
-`C:\Unity\Projects\AviationArcade` (economy rules originate there). Design docs: `../docs/`.
+`C:\Unity\Projects\AviationArcade_v2` (economy rules originate there; v1 is superseded). Design docs: `../docs/`.
 
 ## Commands
 
@@ -17,7 +17,9 @@ sign-off.
   Google. Never trust a client-supplied ID, role, name or email.
 - Cloud project `airplane-games-auth-20261022`; local/tests use only `demo-airplane-games`. Unsigned
   emulator tokens are accepted for exactly that demo project. Never commit `.env*` (except
-  `.env.example`) or keys.
+  `.env.example`), keys or Bunny passwords.
+- File/blob storage is Bunny Storage (S3 API), as on the website; private by default. See
+  ARCHITECTURE.md "File storage".
 - The server computes every award. Clients report Round facts only; request schemas stay strict.
 - Every balance-changing write runs in one transaction that locks the player row first and bumps
   `players.version`. Never overwrite another write; never retry under a different identity.

@@ -62,6 +62,21 @@ No write overwrites another. The database also enforces one open Round per playe
 Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health). Production config refuses
 emulator tokens and demo projects, and never reads `.env`.
 
+## File storage: Bunny (decided 2026-10-27, user)
+
+Any file or blob the backend stores (content-release packages and images, exports) goes to **Bunny
+Storage** through its S3-compatible API, the same provider as the website (`../website/docs/BUNNY_STORAGE_SETUP.md`).
+Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only keys/metadata.
+
+- Website zone: `aviation-arcade-website`, Frankfurt `de`, endpoint `https://de-s3.storage.bunnycdn.com`,
+  S3 compatibility on (it can only be enabled when a zone is created). Whether the backend shares that
+  zone (under its own key prefix) or gets its own zone is decided with the first slice that stores files.
+- Private by default: no public pull zone for originals; serve through authenticated routes or
+  short-lived signed URLs. A public CDN pull zone only for content that is meant to be public.
+- The read-write Storage Zone Password (S3 secret) comes from the host environment, never the repo or
+  logs; not the Bunny account API key. No zone creation or other Bunny account change without user sign-off.
+- Verify with a probe like the website's `npm run bunny:check` (upload one random object, compare bytes, delete).
+
 ## Purchases (design for the purchases slice)
 
 - Client sends only a store reference (Apple `transactionId`, Google `purchaseToken` + `productId`).
@@ -85,6 +100,33 @@ emulator tokens and demo projects, and never reads `.env`.
 - **Decided 2026-10-27 (user):** a refunded Status Point boost is reversed only if it has **not been used**;
   once used it stays. Implies a boost is held as an unused item and applied when the player uses it, so
   "Certified Rank never drops" holds. (Interpretation of "used" to confirm when the boost slice starts.)
+
+## Unity Gaming Services (decided 2026-10-27, user)
+
+This backend's Postgres is the **single source of truth** for Miles, Status Points, ranks, Rounds and
+entitlements. UGS never holds a copy of player progress: no Cloud Save mirror, no UGS Economy currency.
+UGS is used only where it adds something we don't build (e.g. Analytics).
+
+State found on 2026-10-27 in Unity v2: `authentication`, `cloudsave`, `cloudcode`, `analytics` packages are
+installed, but Authentication is never called (backlog BLK-10). The only Cloud Save/Cloud Code code is
+Unity's Blocks Achievements sample; the game's Field Awards are separate (`_Project`). Nothing to sync.
+
+If a UGS service that needs a player is adopted later:
+
+- **Identity:** UGS Authentication with Firebase as an OpenID Connect custom ID provider (issuer
+  `https://securetoken.google.com/<projectId>`); the game calls `SignInWithOpenIdConnectAsync` with the
+  Firebase ID token. The UGS player then derives from a verified Firebase token. Never accept a
+  client-supplied UGS player ID as a link to our principal.
+- **UGS → backend:** Triggers webhook action, authenticated with `{{ hmac_sha256 "SECRET" }}` over the
+  rendered body (or the `{{ jwt }}` header, checking project/environment claims). Idempotent on
+  `X-Unity-Event-ID`; return non-2xx only on transient failure (5xx/timeout/429 are retried, then
+  dead-lettered; other 4xx are dropped). Public URL only, so local testing needs a tunnel.
+- **Backend → UGS:** Admin REST with a service account, via `POST
+  https://services.api.unity.com/auth/v1/token-exchange` (1 h JWT; 20 req/s). Credentials come from the
+  host environment, never the repo.
+
+Docs: docs.unity.com — `triggers/webhooks`, `authentication/openid-connect`,
+`services-web-apis/service-account-auth`. Re-check before building; these were read on 2026-10-27.
 
 ## Sign in with Apple (if the project rule changes)
 

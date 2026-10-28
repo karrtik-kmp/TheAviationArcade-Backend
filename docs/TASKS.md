@@ -23,9 +23,27 @@ Done so far:
 
 ### Phase 2 — Unity client integration
 
-Blocked on Unity: Firebase Auth in Unity (BLK-10) and an integer build-number scheme. App side: sign in,
+Unblocked on policy: Unity ADR-0006 was Accepted 2026-10-27 (D1–D7; BLK-10 decided) and CON-03 makes this
+repo's `docs/openapi.yaml` the app's account contract. Build number decided: `X-Client-Version` = Android
+`versionCode` = iOS `buildNumber`, one increasing integer. Tokens: `FirebaseUser.TokenAsync`; on 401 refresh
+once, then re-authenticate. Policies that touch the backend: sign-in required before any scored Round, no
+Anonymous Auth (D1); no demo-progress import, accounts start from `PUT /v1/me` 201 (D2); deletion = re-auth,
+`DELETE /v1/me` (204, 426-exempt), then `FirebaseUser.DeleteAsync()` (D3); a signed-out player's open Round
+just expires (30 min); iOS offers email/password only for v1 (D5). Unity has uncommitted `UnityHttpApiClient`
+work reading `error.code`, `Retry-After` and `requestId`, and adding PUT/DELETE. App side still: sign in,
 `PUT /v1/me`, issue/submit Rounds, show the server's award, retry safely on replay. Device testing needs a
 reachable server (LAN or tunnel first; hosting is Phase 6).
+
+Backend side is ready for real tokens from `airplane-games-auth-20261022` (README, "Commands").
+Registered 2026-10-27 (user sign-off) in that project: Android `1:657564884414:android:f166e2432061335ef2adef`
+and iOS `1:657564884414:ios:741c0e926d1b0fb5f2adef`, both `com.airplane.games`. Config files are in
+`H:\Work\TheAviationArcade\firebase-apps\` (outside every repo). Missing, all outside this repo: the
+Android signing key's SHA-1/SHA-256 (then re-download `google-services.json`), Apple Team ID, Firebase Unity SDK, sign-in
+screens, `Authorization`/`X-Client-Version` headers in `UnityHttpApiClient`, and a per-build base URL.
+
+Module IDs on the wire are the Unity `ModuleRegistry` BackendIds. Unity split Commercial/Military on
+2026-10-23 (`bd67f06`) and sends `aircraft-identifier-military`; the backend accepted only
+`military-identifier` until migration 0002 (2026-10-28). The website catalog still keys it `military-identifier`.
 
 ### Phase 3 — Economy completion
 
@@ -34,7 +52,8 @@ reachable server (LAN or tunnel first; hosting is Phase 6).
 | 3.1 | Miles ledger | Not started | Append-only, idempotent refs; Round credits written as entries |
 | 3.2 | Spending (hints, skips) | Not started | Prices from `../docs/points-progression.md`; overspend is a clean error |
 | 3.3 | Flight Segment set bonuses | Blocked | Josh: per Module? does a hint break Perfect Manifest? |
-| 3.4 | Rule rulings | Blocked | Josh: hint vs streak, per-Module/rank minimum Round time |
+| 3.4 | Rule rulings | Blocked | Josh: per-Module/rank minimum Round time (the app still owes the timer table; 3 s floor stays). Hint vs streak: the app now agrees with the server (a hinted Round is Standard and breaks the streak, Unity `9576a63`); the ruling itself is still Josh's |
+| 3.5 | Field Awards | Not started | Client source is now `../docs/Field Awards #1.xlsx` (2026-10-28, 28 rows; supersedes `Draft_for_FieldAwards v2.xlsx`: Go Around is redefined as a full green Trip after a non-full one, Quad-Engine Royalty lists military types). Awards pay no Miles or Status Points. Use exactly the client's rows; Unity owns the catalog |
 
 ### Phase 4 — Purchases
 
@@ -46,6 +65,7 @@ Google RTDN. Design in ARCHITECTURE.md.
 
 Admin-approved packages from the website → versioned release + rollback; Rounds tied to a release;
 server-side answer checks (closes the client-reported-results gap). Needs the website export format.
+Package files and images live in Bunny Storage (zone choice: share the website's or a new one, sign-off).
 
 ### Phase 6 — Hosting and launch
 
@@ -63,7 +83,13 @@ verified email for ranked play).
 - 2026-10-27: runs locally only for now; no hosting yet.
 - 2026-10-27: sandbox (TestFlight / App Review) purchases grant real rewards in production.
 - 2026-10-27: a refunded Status Point boost is reversed only if unused.
+- 2026-10-27: file/blob storage is Bunny Storage (S3 API), as on the website; private by default.
+  See ARCHITECTURE.md "File storage".
 - 2026-10-27: Chief Pilot is certified at 400,000 SP (user ruling; matches the Unity app).
+- 2026-10-28: module IDs on the wire are exactly the Unity `ModuleRegistry` BackendIds (Military =
+  `aircraft-identifier-military`, migration 0002). Final Military name/ID still a working title.
+- 2026-10-27: backend Postgres owns all progress; UGS keeps no copy (no Cloud Save mirror, no UGS
+  Economy). Firebase-OIDC link and webhooks only if a UGS service is adopted. See ARCHITECTURE.md.
 
 ## Open questions for Josh
 
@@ -71,6 +97,16 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-28 (Military module ID): `npm run typecheck` clean, `npm test` 91/91, `npm run db:migrate`
+  applied 0002 to local Postgres, `npm run test:e2e` 77/77 (new: a Round issued and banked for every module
+  ID; the old `military-identifier` is 400). Migration generated by drizzle-kit plus a hand-added `UPDATE` of
+  old rows between the drop and re-add of the check. Local only.
+
+- 2026-10-27 (real Firebase project, local): `node dist/main.js` with
+  `FIREBASE_PROJECT_ID=airplane-games-auth-20261022`, `ALLOW_EMULATOR_TOKENS=false`: boots, `/ready` 200,
+  securetoken JWKS reachable (200), garbage token 401, unsigned `alg:none` token for that project 401. Not
+  verified: a real signed-in token (needs an account in the cloud project). No code change.
 
 - 2026-10-27 (Phase 1): implemented by subagents, independent Opus review (3 real defects: shutdown hung
   on keep-alive sockets; `DATABASE_URL` could bypass the SSL rules; readiness flipped as the listener
