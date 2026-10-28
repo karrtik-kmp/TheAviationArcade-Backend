@@ -19,6 +19,9 @@ const roundResultBody = z.strictObject({
 });
 type RoundResultBody = z.infer<typeof roundResultBody>;
 
+// No body is expected; { } is tolerated because some HTTP clients always send one.
+const emptyBody = z.strictObject({}).optional();
+
 /** A non-UUID id cannot name a Round: 404 without a database round trip. */
 class RoundIdPipe implements PipeTransform<string, string> {
   transform(value: string): string {
@@ -76,6 +79,30 @@ export class RoundsController {
         const { award, player, promotion, replayed } = outcome.result;
         return { award, promotion, replayed, progress: progressView(player, now) };
       }
+    }
+  }
+
+  /** Spend this Round's one hint. No body. Idempotent: a repeat is a 200 replay and costs nothing. */
+  @Post(":roundId/hint")
+  @HttpCode(200)
+  async hint(
+    @Principal() principal: string,
+    @Param("roundId", new RoundIdPipe()) roundId: string,
+    @Body(new ZodValidationPipe(emptyBody, "Expected no body.")) _body: undefined,
+  ) {
+    const now = new Date();
+    const outcome = await this.rounds.spendHint(principal, roundId, now);
+    switch (outcome.kind) {
+      case "not_found":
+        throw new ApiError(404, "round_not_found", "No such Round for this player.");
+      case "expired":
+        throw new ApiError(410, "round_expired", "This Round expired.");
+      case "closed":
+        throw new ApiError(410, "round_closed", "This Round is no longer open.");
+      case "no_hints":
+        throw new ApiError(409, "insufficient_hints", "No hints left.");
+      case "spent":
+        return { hint: { roundId, replayed: outcome.replayed }, progress: progressView(outcome.player, now) };
     }
   }
 }

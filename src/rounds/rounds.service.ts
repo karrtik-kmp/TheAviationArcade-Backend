@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { Injectable } from "@nestjs/common";
 import { and, eq, sql } from "drizzle-orm";
 import { DatabaseService } from "../database/database.module.js";
-import { players, rounds } from "../db/schema.js";
+import { hintLedger, milesLedger, players, rounds } from "../db/schema.js";
 import type { PlayerRow, RoundRow } from "../db/schema.js";
 import { hasFirstClassPass } from "../players/progress-view.js";
 import type { ModuleId } from "../rules/modules.js";
+import { HINTS_PER_ROUND } from "../rules/hints.js";
 import { activeRankFor, certifiedRankFor, rankIndex } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import { nextPerfectStreak, scoreRound } from "../rules/scoring.js";
@@ -48,6 +49,13 @@ export type CompleteRoundOutcome =
   | { kind: "expired" }
   | { kind: "closed" }
   | { kind: "too_fast" };
+
+export type SpendHintOutcome =
+  | { kind: "spent"; player: PlayerRow; replayed: boolean }
+  | { kind: "not_found" }
+  | { kind: "expired" }
+  | { kind: "closed" }
+  | { kind: "no_hints" };
 
 function storedAward(round: RoundRow): CompletedRound["award"] {
   return {
@@ -144,8 +152,12 @@ export class RoundsService {
       if (now.getTime() < round.issuedAt.getTime() + MIN_ROUND_MS) return { kind: "too_fast" };
 
       const firstClassPass = hasFirstClassPass(player, now);
+      // A hint the player paid for cannot be hidden by the client; claiming one that was never paid for
+      // only lowers the player's own award.
+      const usedHint = input.usedHint || round.hintUsed;
       const award = scoreRound({
         ...input,
+        usedHint,
         perfectStreak: player.perfectStreak,
         firstClassPass,
         pleasureCruise: round.pleasureCruise,
@@ -164,7 +176,7 @@ export class RoundsService {
           completedAt: now,
           finished: input.finished,
           errorCount: input.errorCount,
-          usedHint: input.usedHint,
+          usedHint,
           timeRemaining: input.timeRemainingFraction,
           completion: award.completion,
           speedBonus: award.speedBonus,
@@ -191,6 +203,12 @@ export class RoundsService {
         .where(eq(players.id, principal))
         .returning();
       if (!updated) throw new Error("Player row missing after credit.");
+      // Same transaction as the balance, one entry per Round (the unique key makes a double pay impossible).
+      if (award.miles > 0) {
+        await tx
+          .insert(milesLedger)
+          .values({ playerId: principal, delta: award.miles, kind: "round_award", ref: roundId, createdAt: now });
+      }
 
       return {
         kind: "completed",
@@ -201,6 +219,45 @@ export class RoundsService {
           replayed: false,
         },
       };
+    });
+  }
+
+  /**
+   * Spend the Round's one hint (HINTS_PER_ROUND). Idempotent: a Round that already has its hint answers
+   * with replayed = true and debits nothing, whatever state the Round has moved on to. Otherwise only the
+   * player's own open, unexpired Round qualifies. Same lock order as completeRound: player, then round.
+   */
+  async spendHint(principal: string, roundId: string, now: Date): Promise<SpendHintOutcome> {
+    return this.database.withTransaction(async (tx): Promise<SpendHintOutcome> => {
+      const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
+      if (!player) return { kind: "not_found" };
+      const [round] = await tx
+        .select()
+        .from(rounds)
+        .where(and(eq(rounds.id, roundId), eq(rounds.playerId, principal)))
+        .for("update");
+      if (!round) return { kind: "not_found" };
+
+      if (round.hintUsed) return { kind: "spent", player, replayed: true };
+      if (round.status !== "open") return { kind: "closed" };
+      if (now.getTime() > round.expiresAt.getTime()) return { kind: "expired" };
+      if (player.hints < HINTS_PER_ROUND) return { kind: "no_hints" };
+
+      await tx.update(rounds).set({ hintUsed: true }).where(eq(rounds.id, roundId));
+      await tx
+        .insert(hintLedger)
+        .values({ playerId: principal, delta: -HINTS_PER_ROUND, kind: "round_spend", ref: roundId, createdAt: now });
+      const [updated] = await tx
+        .update(players)
+        .set({
+          hints: sql`${players.hints} - ${HINTS_PER_ROUND}`,
+          version: sql`${players.version} + 1`,
+          updatedAt: now,
+        })
+        .where(eq(players.id, principal))
+        .returning();
+      if (!updated) throw new Error("Player row missing after hint spend.");
+      return { kind: "spent", player: updated, replayed: false };
     });
   }
 }

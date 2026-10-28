@@ -49,11 +49,15 @@ Module IDs on the wire are the Unity `ModuleRegistry` BackendIds. Unity split Co
 
 | # | Job | State | Notes |
 |---|---|---|---|
-| 3.1 | Miles ledger | Not started | Append-only, idempotent refs; Round credits written as entries |
-| 3.2 | Spending (hints, skips) | Not started | Prices from `../docs/points-progression.md`; overspend is a clean error |
+| 3.1 | Miles ledger | Done (local) | `miles_ledger`, UNIQUE(player, kind, ref); Round awards and hint-pack debits written as entries; backfilled from completed Rounds (migration 0003) |
+| 3.2 | Spending (hints, skips) | Partial (local) | Server hint bank: 5 starter hints, `POST /v1/rounds/:id/hint` (1 per Round, idempotent), `POST /v1/shop/miles-hint-pack` 5,000 Miles → 10 hints (CF-53), `hint_ledger`. Numbers from Unity `HintBank`/`MilesHintPack`. Not built: Trip/7-day hint grants (need a server Trip concept), skips (no price anywhere) |
 | 3.3 | Flight Segment set bonuses | Blocked | Josh: per Module? does a hint break Perfect Manifest? |
 | 3.4 | Rule rulings | Blocked | Josh: per-Module/rank minimum Round time (the app still owes the timer table; 3 s floor stays). Hint vs streak: the app now agrees with the server (a hinted Round is Standard and breaks the streak, Unity `9576a63`); the ruling itself is still Josh's |
 | 3.5 | Field Awards | Not started | Client source is now `../docs/Field Awards #1.xlsx` (2026-10-28, 28 rows; supersedes `Draft_for_FieldAwards v2.xlsx`: Go Around is redefined as a full green Trip after a non-full one, Quad-Engine Royalty lists military types). Awards pay no Miles or Status Points. Use exactly the client's rows; Unity owns the catalog |
+
+Deploy note for migration 0003: apply it with no old-image instance serving (stop the world). An old
+image would create players without starter hints and bank Rounds without ledger rows, and nothing would
+reconcile them. Irrelevant while local-only; matters for the first hosted deploy.
 
 ### Phase 4 — Purchases
 
@@ -97,6 +101,16 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-28 (3.1 Miles ledger + hint bank): implemented by a Sonnet subagent; independent Opus review found
+  no double debit/credit, race or leak (lock order player→round everywhere; replay checked before funds;
+  keys scoped per player; backfill verified on a populated scratch DB: miles 300/300, hints 5/5). Fixed from
+  the review: the hint route accepted any body (now strict, 400 in the contract); an openapi test set Miles
+  without a ledger row. Logged: stop-the-world deploy for 0003, starter re-grant after deletion (ASSUMPTION
+  test, question 7), 409-then-reuse of a key buys later (documented: new key per attempt). My run:
+  typecheck clean, `npm test` 94/94, `npm run db:migrate` applied 0003, `npm run test:e2e` 108/108,
+  `npm run build` OK. Vitest must run from an uppercase `H:` cwd (PowerShell); Git Bash `h:` fails to find
+  the runner. Local only.
 
 - 2026-10-28 (Military module ID): `npm run typecheck` clean, `npm test` 91/91, `npm run db:migrate`
   applied 0002 to local Postgres, `npm run test:e2e` 77/77 (new: a Round issued and banked for every module

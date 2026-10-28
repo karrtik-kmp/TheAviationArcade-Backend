@@ -5,6 +5,7 @@ import {
   nextRankFor,
   RANK_THRESHOLDS,
 } from "../src/rules/ranks.js";
+import { HINTS_PER_ROUND, MILES_HINT_PACK, STARTER_HINTS } from "../src/rules/hints.js";
 import { nextPerfectStreak, scoreRound } from "../src/rules/scoring.js";
 import type { RoundInput } from "../src/rules/scoring.js";
 
@@ -148,5 +149,19 @@ describe("ranks", () => {
   it("a stored active rank above certified is clamped to certified", () => {
     expect(activeRankFor(0, "chief-pilot")).toBe("trainee");
     expect(activeRankFor(60_000, "not-a-rank")).toBe("captain");
+  });
+});
+
+describe("hints", () => {
+  it("a new player starts with five hints (Unity HintBank.StarterHints)", () => {
+    expect(STARTER_HINTS).toBe(5);
+  });
+
+  it("a Round allows one hint (Unity TripProfiles.Hints)", () => {
+    expect(HINTS_PER_ROUND).toBe(1);
+  });
+
+  it("the Miles hint pack is 10 hints for 5,000 Miles (client ruling CF-53, Unity MilesHintPack)", () => {
+    expect(MILES_HINT_PACK).toEqual({ hints: 10, priceMiles: 5000 });
   });
 });

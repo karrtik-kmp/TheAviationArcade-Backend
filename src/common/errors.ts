@@ -9,6 +9,8 @@ export const ERROR_CODES = [
   "round_closed",
   "round_too_fast",
   "rank_not_certified",
+  "insufficient_hints",
+  "insufficient_miles",
   "not_found",
   "rate_limited",
   "client_update_required",

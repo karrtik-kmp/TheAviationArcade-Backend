@@ -28,6 +28,7 @@ tags:
   - name: health
   - name: player
   - name: rounds
+  - name: shop
 
 paths:
   /v1/health:
@@ -84,7 +85,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProgressEnvelope" }
         "201":
-          description: Player created at zero.
+          description: Player created at zero, with the 5 starter hints.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -281,6 +282,117 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/rounds/{roundId}/hint:
+    post:
+      tags: [rounds]
+      operationId: spendRoundHint
+      summary: Spend this Round's hint
+      description: |
+        Spends one Co-Pilot hint on the player's own open, unexpired Round. A Round allows one hint, so this
+        is idempotent: when the Round already has its hint the answer is 200 with `replayed: true` and nothing
+        is debited (also after the Round was banked or superseded). A paid hint cannot be hidden: the result
+        is scored as used even if the client reports `usedHint: false`. No request body. No hints left is 409
+        `insufficient_hints`. A Round that is banked or superseded without a hint is 410 `round_closed`.
+        A `roundId` that is not a UUID is 404 `round_not_found`. `progress` is the current balance, also on a
+        replay; don't derive deltas from it. A spent hint is final: issuing a new Round abandons this one
+        without a refund.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - name: roundId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Hint spent, or already spent for this Round (`replayed`).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HintResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Not this player's Round (or unknown, or `roundId` is not a UUID).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [round_not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The player has no hints left.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [insufficient_hints]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: |
+            `round_expired`: the 30 minute window passed. `round_closed`: the Round was superseded or already banked.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [round_expired, round_closed]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/shop/miles-hint-pack:
+    post:
+      tags: [shop]
+      operationId: buyMilesHintPack
+      summary: Buy the hint pack with Miles
+      description: |
+        Spends 5,000 Miles for 10 hints (client ruling CF-53). Requires an `Idempotency-Key` header (1-128
+        characters of letters, digits, `_` and `-`); a missing or malformed key is 400 `invalid_request`.
+        The first request with a key buys the pack; any later request with the same key returns the original
+        receipt with `replayed: true` and charges nothing, so a retry after a dropped response is safe. A new
+        key is a new purchase. Not enough Miles is 409 `insufficient_miles` and records nothing, so the same
+        key can buy later: mint a new key per purchase attempt. `progress` is the current balance, also on a
+        replay. No request body (an empty object is accepted; any field is 400).
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+      responses:
+        "200":
+          description: Purchased, or already purchased under this key (`replayed`).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "409":
+          description: Fewer than 5,000 Miles.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [insufficient_miles]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
 components:
   securitySchemes:
     firebaseBearer:
@@ -459,6 +571,8 @@ components:
                 - round_closed
                 - round_too_fast
                 - rank_not_certified
+                - insufficient_hints
+                - insufficient_miles
                 - not_found
                 - rate_limited
                 - client_update_required
@@ -483,6 +597,7 @@ components:
       required:
         - statusPoints
         - miles
+        - hints
         - certifiedRank
         - activeRank
         - pleasureCruise
@@ -493,6 +608,7 @@ components:
       properties:
         statusPoints: { type: integer, minimum: 0, description: Lifetime Status Points. }
         miles: { type: integer, minimum: 0 }
+        hints: { type: integer, minimum: 0, description: Co-Pilot hints left. }
         certifiedRank: { $ref: "#/components/schemas/Rank" }
         activeRank: { $ref: "#/components/schemas/Rank" }
         pleasureCruise:
@@ -589,4 +705,37 @@ components:
         replayed:
           type: boolean
           description: True when this Round was already banked; nothing was paid again.
+        progress: { $ref: "#/components/schemas/Progress" }
+    HintReceipt:
+      type: object
+      additionalProperties: false
+      required: [roundId, replayed]
+      properties:
+        roundId: { type: string, format: uuid }
+        replayed:
+          type: boolean
+          description: True when this Round already had its hint; nothing was debited again.
+    HintResponse:
+      type: object
+      additionalProperties: false
+      required: [hint, progress]
+      properties:
+        hint: { $ref: "#/components/schemas/HintReceipt" }
+        progress: { $ref: "#/components/schemas/Progress" }
+    PurchaseReceipt:
+      type: object
+      additionalProperties: false
+      required: [hints, priceMiles, replayed]
+      properties:
+        hints: { type: integer, minimum: 1, description: Hints added by the pack. }
+        priceMiles: { type: integer, minimum: 1, description: Miles charged. }
+        replayed:
+          type: boolean
+          description: True when this Idempotency-Key was already billed; nothing was charged again.
+    PurchaseResponse:
+      type: object
+      additionalProperties: false
+      required: [purchase, progress]
+      properties:
+        purchase: { $ref: "#/components/schemas/PurchaseReceipt" }
         progress: { $ref: "#/components/schemas/Progress" }

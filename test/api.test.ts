@@ -85,7 +85,12 @@ async function playRound(
   return call("POST", `/v1/rounds/${roundId}/result`, result);
 }
 
-/** Ledger invariant: completed Rounds account for every SP and Mile above the starting balance. */
+/**
+ * Ledger invariants: completed Rounds account for every SP above the starting balance, and the append-only
+ * ledgers account for every Mile and hint (players.miles = SUM(miles_ledger), players.hints =
+ * SUM(hint_ledger)). Each Round that paid Miles has exactly one round_award entry for exactly that amount.
+ * `baseline` is for balances arranged by raw SQL without a ledger entry.
+ */
 async function expectLedgerBalanced(principal: string, baseline = { statusPoints: 0, miles: 0 }) {
   const sums = (
     await sql.query<{ sp: number; miles: number }>(
@@ -95,13 +100,53 @@ async function expectLedgerBalanced(principal: string, baseline = { statusPoints
     )
   ).rows[0];
   const player = (
-    await sql.query<{ status_points: number; miles: number }>(
-      "SELECT status_points, miles FROM players WHERE id = $1",
+    await sql.query<{ status_points: number; miles: number; hints: number }>(
+      "SELECT status_points, miles, hints FROM players WHERE id = $1",
+      [principal],
+    )
+  ).rows[0];
+  const ledger = (
+    await sql.query<{ miles: number; hints: number; awards: number; award_miles: number }>(
+      `SELECT (SELECT COALESCE(SUM(delta), 0)::int FROM miles_ledger WHERE player_id = $1) AS miles,
+              (SELECT COALESCE(SUM(delta), 0)::int FROM hint_ledger WHERE player_id = $1) AS hints,
+              (SELECT COUNT(*)::int FROM miles_ledger l JOIN rounds r ON r.id = l.ref
+                 WHERE l.player_id = $1 AND l.kind = 'round_award') AS awards,
+              (SELECT COALESCE(SUM(l.delta), 0)::int FROM miles_ledger l JOIN rounds r ON r.id = l.ref
+                 WHERE l.player_id = $1 AND l.kind = 'round_award' AND r.miles_awarded = l.delta) AS award_miles`,
+      [principal],
+    )
+  ).rows[0];
+  const paying = (
+    await sql.query<{ n: number }>(
+      "SELECT COUNT(*)::int AS n FROM rounds WHERE player_id = $1 AND status = 'completed' AND miles_awarded > 0",
       [principal],
     )
   ).rows[0];
   expect(player?.status_points).toBe(baseline.statusPoints + (sums?.sp ?? NaN));
-  expect(player?.miles).toBe(baseline.miles + (sums?.miles ?? NaN));
+  expect(player?.miles).toBe(baseline.miles + (ledger?.miles ?? NaN));
+  expect(player?.hints).toBe(ledger?.hints);
+  expect(ledger?.awards).toBe(paying?.n);
+  expect(ledger?.award_miles).toBe(sums?.miles);
+}
+
+/** Arrange a Miles balance the honest way: balance and ledger entry together, so the invariant still holds. */
+async function grantMiles(principal: string, amount: number) {
+  await sql.query("UPDATE players SET miles = miles + $1 WHERE id = $2", [amount, principal]);
+  await sql.query(
+    "INSERT INTO miles_ledger (player_id, delta, kind, ref, created_at) VALUES ($1, $2, 'round_award', $3, now())",
+    [principal, amount, `arranged-${randomUUID()}`],
+  );
+}
+
+/** Arrange a hint balance (balance and ledger entry together). */
+async function setHints(principal: string, target: number) {
+  const current = (await sql.query("SELECT hints FROM players WHERE id = $1", [principal])).rows[0].hints as number;
+  if (current === target) return;
+  await sql.query("UPDATE players SET hints = $1 WHERE id = $2", [target, principal]);
+  await sql.query(
+    "INSERT INTO hint_ledger (player_id, delta, kind, ref, created_at) VALUES ($1, $2, 'hint_pack', $3, now())",
+    [principal, target - current, `arranged-${randomUUID()}`],
+  );
 }
 
 describe("auth", () => {
@@ -595,8 +640,8 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 6 guarded routes plus two health routes.
-    expect(routes.length).toBe(8);
+    // Guard against the enumeration silently finding nothing: 8 guarded routes plus two health routes.
+    expect(routes.length).toBe(10);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID());
       const response = await send(method, concrete, {});
@@ -755,5 +800,471 @@ describe("player row lock and concurrency", () => {
     const row = (await sql.query("SELECT status FROM rounds WHERE id = $1", [roundId])).rows[0];
     expect(row.status).toBe("open");
     expect((await call("GET", "/v1/me/progress")).status).toBe(200);
+  });
+});
+
+const HINT_PACK_KEY = () => `key-${randomUUID()}`;
+
+/** Rows of one ledger for a principal, oldest first, optionally one kind. */
+async function ledgerRows(table: "miles_ledger" | "hint_ledger", principal: string, kind?: string) {
+  const result = await sql.query(
+    `SELECT delta, kind, ref FROM ${table} WHERE player_id = $1 ${kind ? "AND kind = $2" : ""} ORDER BY id`,
+    kind ? [principal, kind] : [principal],
+  );
+  return result.rows as { delta: number; kind: string; ref: string }[];
+}
+
+async function versionOf(principal: string): Promise<number> {
+  return (await sql.query("SELECT version FROM players WHERE id = $1", [principal])).rows[0].version;
+}
+
+describe("miles ledger", () => {
+  it("a paying Round writes one round_award entry with the Round id, and a replay writes no second", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await backdate(principal);
+    await call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
+    await call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
+    expect(await ledgerRows("miles_ledger", principal)).toEqual([{ delta: 70, kind: "round_award", ref: roundId }]);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("an unfinished Round pays no Miles and writes no entry", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await playRound(player, { finished: false, errorCount: 0, usedHint: false, timeRemainingFraction: 0 });
+    expect(await ledgerRows("miles_ledger", player.principal)).toEqual([]);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("the database refuses a zero delta, an unknown kind and a duplicate idempotency key", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const insert = (delta: number, kind: string, ref: string) =>
+      sql.query(
+        "INSERT INTO miles_ledger (player_id, delta, kind, ref, created_at) VALUES ($1, $2, $3, $4, now())",
+        [principal, delta, kind, ref],
+      );
+    await expect(insert(0, "round_award", "a")).rejects.toThrow();
+    await expect(insert(5, "bonus", "a")).rejects.toThrow();
+    await insert(5, "round_award", "a");
+    await expect(insert(5, "round_award", "a")).rejects.toThrow();
+    // The key is per kind: the same ref under another kind is a different entry.
+    await insert(5, "hint_pack", "a");
+  });
+});
+
+describe("hints", () => {
+  const spend = (roundId: string) => `/v1/rounds/${roundId}/hint`;
+
+  it("a new player starts with 5 hints and one starter ledger entry, and signing in again adds none", async () => {
+    const { principal, call } = newPlayer();
+    const created = await call("PUT", "/v1/me");
+    expect(created.status).toBe(201);
+    expect(created.body.progress.hints).toBe(5);
+    await call("PUT", "/v1/me");
+    expect((await call("GET", "/v1/me/progress")).body.progress.hints).toBe(5);
+    expect(await ledgerRows("hint_ledger", principal)).toEqual([{ delta: 5, kind: "starter", ref: "starter" }]);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("a hint request with a body field is 400 and spends nothing", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    const roundId = await startRound(player.call);
+    const response = await player.call("POST", spend(roundId), { anything: 1 });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("invalid_request");
+    expect((await player.call("POST", spend(roundId), {})).status).toBe(200);
+    expect((await player.call("GET", "/v1/me/progress")).body.progress.hints).toBe(4);
+  });
+
+  // Full erasure keeps no record of the starter grant, so a new account gets it again. Open for Josh.
+  it("ASSUMPTION: deleting the account and signing up again re-grants the starter hints", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await player.call("POST", spend(await startRound(player.call)));
+    await player.call("DELETE", "/v1/me");
+    expect((await player.call("PUT", "/v1/me")).body.progress.hints).toBe(5);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("six concurrent sign-ins write the starter entry exactly once", async () => {
+    const { principal, call } = newPlayer();
+    await Promise.all(Array.from({ length: 6 }, () => call("PUT", "/v1/me")));
+    expect(await ledgerRows("hint_ledger", principal)).toHaveLength(1);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("spending debits once, and a repeat is a 200 replay with no second debit", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    const versionBefore = await versionOf(principal);
+
+    const first = await call("POST", spend(roundId));
+    expect(first.status).toBe(200);
+    expect(first.body.hint).toEqual({ roundId, replayed: false });
+    expect(first.body.progress.hints).toBe(4);
+
+    const again = await call("POST", spend(roundId));
+    expect(again.status).toBe(200);
+    expect(again.body.hint).toEqual({ roundId, replayed: true });
+    expect(again.body.progress.hints).toBe(4);
+
+    expect(await ledgerRows("hint_ledger", principal, "round_spend")).toEqual([
+      { delta: -1, kind: "round_spend", ref: roundId },
+    ]);
+    expect(await versionOf(principal)).toBe(versionBefore + 1);
+    const row = (await sql.query("SELECT hint_used FROM rounds WHERE id = $1", [roundId])).rows[0];
+    expect(row.hint_used).toBe(true);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("three concurrent spends on one Round debit exactly once", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    const responses = await Promise.all([0, 1, 2].map(() => call("POST", spend(roundId))));
+    expect(responses.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(responses.filter((r) => r.body.hint.replayed === false)).toHaveLength(1);
+    expect(responses.filter((r) => r.body.hint.replayed === true)).toHaveLength(2);
+    expect((await call("GET", "/v1/me/progress")).body.progress.hints).toBe(4);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("with no hints left it is 409 insufficient_hints and changes nothing; a Round that has its hint still replays", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    await setHints(principal, 0);
+    const roundId = await startRound(call);
+    const versionBefore = await versionOf(principal);
+    const refused = await call("POST", spend(roundId));
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("insufficient_hints");
+    const row = (await sql.query("SELECT hint_used FROM rounds WHERE id = $1", [roundId])).rows[0];
+    expect(row.hint_used).toBe(false);
+    expect(await ledgerRows("hint_ledger", principal, "round_spend")).toEqual([]);
+    expect(await versionOf(principal)).toBe(versionBefore);
+
+    // Spend the last hint: the balance is 0 again, yet the same Round still answers its replay.
+    await setHints(principal, 1);
+    expect((await call("POST", spend(roundId))).body.progress.hints).toBe(0);
+    const replay = await call("POST", spend(roundId));
+    expect(replay.status).toBe(200);
+    expect(replay.body.hint.replayed).toBe(true);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("the database refuses a negative hint balance", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    await expect(sql.query("UPDATE players SET hints = -1 WHERE id = $1", [principal])).rejects.toThrow();
+  });
+
+  it("an expired Round is 410 round_expired and keeps its hint", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await sql.query("UPDATE rounds SET issued_at = $1, expires_at = $2 WHERE id = $3", [
+      new Date(Date.UTC(1999, 0, 1)),
+      new Date(Date.UTC(2000, 0, 1)),
+      roundId,
+    ]);
+    const response = await call("POST", spend(roundId));
+    expect(response.status).toBe(410);
+    expect(response.body.error.code).toBe("round_expired");
+    expect((await call("GET", "/v1/me/progress")).body.progress.hints).toBe(5);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("a superseded or already banked Round is 410 round_closed and keeps its hint", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const superseded = await startRound(call);
+    const banked = await startRound(call);
+    const stale = await call("POST", spend(superseded));
+    expect(stale.status).toBe(410);
+    expect(stale.body.error.code).toBe("round_closed");
+
+    await backdate(principal);
+    await call("POST", `/v1/rounds/${banked}/result`, PERFECT_FAST);
+    const late = await call("POST", spend(banked));
+    expect(late.status).toBe(410);
+    expect(late.body.error.code).toBe("round_closed");
+    expect((await call("GET", "/v1/me/progress")).body.progress.hints).toBe(5);
+    await expectLedgerBalanced(principal);
+  });
+
+  it("another player's Round, an unknown Round and a non-UUID id are 404 round_not_found", async () => {
+    const owner = newPlayer();
+    const intruder = newPlayer();
+    await owner.call("PUT", "/v1/me");
+    await intruder.call("PUT", "/v1/me");
+    const roundId = await startRound(owner.call);
+    for (const id of [roundId, randomUUID(), "not-a-uuid"]) {
+      const response = await intruder.call("POST", spend(id));
+      expect(response.status, id).toBe(404);
+      expect(response.body.error.code).toBe("round_not_found");
+    }
+    expect((await owner.call("GET", "/v1/me/progress")).body.progress.hints).toBe(5);
+    expect((await intruder.call("GET", "/v1/me/progress")).body.progress.hints).toBe(5);
+  });
+
+  it("a player who was never registered gets 404 round_not_found", async () => {
+    const response = await newPlayer().call("POST", spend(randomUUID()));
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("round_not_found");
+  });
+
+  it("a paid hint forces a Standard award and breaks the streak even if the client says usedHint false", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    expect((await json(await playRound(player))).progress.perfectStreak).toBe(1);
+
+    const roundId = await startRound(player.call);
+    await player.call("POST", spend(roundId));
+    await backdate(player.principal);
+    const body = await json(await player.call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST));
+    // Standard 30 + speed 20 = 50 SP; Miles also carry the streak-1 bonus of 5.
+    expect(body.award).toMatchObject({ completion: "standard", statusPoints: 50, miles: 55 });
+    expect(body.progress.perfectStreak).toBe(0);
+    const row = (await sql.query("SELECT used_hint FROM rounds WHERE id = $1", [roundId])).rows[0];
+    expect(row.used_hint).toBe(true);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("claiming an unpaid hint only lowers the player's own award and costs no hint", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    const body = await json(await playRound(player, { ...PERFECT_FAST, usedHint: true }));
+    expect(body.award).toMatchObject({ completion: "standard", statusPoints: 50, miles: 50 });
+    expect(body.progress.hints).toBe(5);
+    expect(await ledgerRows("hint_ledger", player.principal, "round_spend")).toEqual([]);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("a Round that paid for its hint and also reports one is a Standard award", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    const roundId = await startRound(player.call);
+    await player.call("POST", spend(roundId));
+    await backdate(player.principal);
+    const body = await json(
+      await player.call("POST", `/v1/rounds/${roundId}/result`, { ...PERFECT_FAST, usedHint: true }),
+    );
+    expect(body.award.completion).toBe("standard");
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("a hint can still be replayed after the Round is banked", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    const roundId = await startRound(player.call);
+    await player.call("POST", spend(roundId));
+    await backdate(player.principal);
+    await player.call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
+    const replay = await player.call("POST", spend(roundId));
+    expect(replay.status).toBe(200);
+    expect(replay.body.hint.replayed).toBe(true);
+    expect(replay.body.progress.hints).toBe(4);
+    await expectLedgerBalanced(player.principal);
+  });
+});
+
+describe("miles hint pack", () => {
+  const PACK = "/v1/shop/miles-hint-pack";
+  const buy = (player: ReturnType<typeof newPlayer>, key: string | undefined, body?: unknown) => {
+    const headers: Record<string, string> = { Authorization: `Bearer ${emulatorToken(player.uid)}` };
+    if (key !== undefined) headers["Idempotency-Key"] = key;
+    return send("POST", PACK, headers, body);
+  };
+
+  it("below 5,000 Miles it is 409 insufficient_miles and changes nothing", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 4999);
+    const versionBefore = await versionOf(player.principal);
+    const response = await buy(player, HINT_PACK_KEY());
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("insufficient_miles");
+    const row = (await sql.query("SELECT miles, hints, version FROM players WHERE id = $1", [player.principal]))
+      .rows[0];
+    expect(row).toEqual({ miles: 4999, hints: 5, version: versionBefore });
+    expect(await ledgerRows("miles_ledger", player.principal, "hint_pack")).toEqual([]);
+    expect(await ledgerRows("hint_ledger", player.principal, "hint_pack")).toEqual([]);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("with 5,000 Miles it moves 5,000 Miles into 10 hints, and the same key still answers at 0 Miles", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 5000);
+    const key = HINT_PACK_KEY();
+    const versionBefore = await versionOf(player.principal);
+
+    const bought = await buy(player, key);
+    expect(bought.status).toBe(200);
+    expect(bought.body.purchase).toEqual({ hints: 10, priceMiles: 5000, replayed: false });
+    expect(bought.body.progress).toMatchObject({ miles: 0, hints: 15 });
+    expect(await ledgerRows("miles_ledger", player.principal, "hint_pack")).toEqual([
+      { delta: -5000, kind: "hint_pack", ref: key },
+    ]);
+    expect(await ledgerRows("hint_ledger", player.principal, "hint_pack")).toEqual([
+      { delta: 10, kind: "hint_pack", ref: key },
+    ]);
+    expect(await versionOf(player.principal)).toBe(versionBefore + 1);
+
+    // Now at 0 Miles: the same key is still the original receipt, not a 409.
+    const replay = await buy(player, key);
+    expect(replay.status).toBe(200);
+    expect(replay.body.purchase).toEqual({ hints: 10, priceMiles: 5000, replayed: true });
+    expect(replay.body.progress).toMatchObject({ miles: 0, hints: 15 });
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("the same key replays without a second debit", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 12_000);
+    const key = HINT_PACK_KEY();
+    await buy(player, key);
+    const replay = await buy(player, key);
+    expect(replay.body.purchase.replayed).toBe(true);
+    expect(replay.body.progress).toMatchObject({ miles: 7000, hints: 15 });
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("three concurrent requests with one key bank exactly once", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 12_000);
+    const key = HINT_PACK_KEY();
+    const responses = await Promise.all([0, 1, 2].map(() => buy(player, key)));
+    expect(responses.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(responses.filter((r) => r.body.purchase.replayed === false)).toHaveLength(1);
+    expect(responses.filter((r) => r.body.purchase.replayed === true)).toHaveLength(2);
+    expect((await player.call("GET", "/v1/me/progress")).body.progress).toMatchObject({ miles: 7000, hints: 15 });
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("different keys are different purchases", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 10_000);
+    expect((await buy(player, HINT_PACK_KEY())).body.purchase.replayed).toBe(false);
+    expect((await buy(player, HINT_PACK_KEY())).body.purchase.replayed).toBe(false);
+    expect((await player.call("GET", "/v1/me/progress")).body.progress).toMatchObject({ miles: 0, hints: 25 });
+    expect((await buy(player, HINT_PACK_KEY())).status).toBe(409);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("two players may use the same key independently", async () => {
+    const a = newPlayer();
+    const b = newPlayer();
+    for (const p of [a, b]) {
+      await p.call("PUT", "/v1/me");
+      await grantMiles(p.principal, 5000);
+    }
+    const key = HINT_PACK_KEY();
+    expect((await buy(a, key)).body.purchase.replayed).toBe(false);
+    expect((await buy(b, key)).body.purchase.replayed).toBe(false);
+    await expectLedgerBalanced(a.principal);
+    await expectLedgerBalanced(b.principal);
+  });
+
+  it("bought hints can be spent on a Round", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await setHints(player.principal, 0);
+    await grantMiles(player.principal, 5000);
+    await buy(player, HINT_PACK_KEY());
+    const roundId = await startRound(player.call);
+    const spent = await player.call("POST", `/v1/rounds/${roundId}/hint`);
+    expect(spent.body.progress).toMatchObject({ miles: 0, hints: 9 });
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("a missing or malformed Idempotency-Key is 400 invalid_request and charges nothing", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 5000);
+    for (const key of [undefined, "", "has space", "bad/key", "a".repeat(129)]) {
+      const response = await buy(player, key);
+      expect(response.status, String(key)).toBe(400);
+      expect(response.body.error.code).toBe("invalid_request");
+    }
+    expect((await player.call("GET", "/v1/me/progress")).body.progress).toMatchObject({ miles: 5000, hints: 5 });
+    // The longest allowed key works.
+    expect((await buy(player, "a".repeat(128))).status).toBe(200);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("an extra body field is 400, while an empty object or no body is accepted", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 15_000);
+    for (const body of [{ priceMiles: 1 }, { hints: 100 }, []]) {
+      const response = await buy(player, HINT_PACK_KEY(), body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+      expect(response.body.error.code).toBe("invalid_request");
+    }
+    expect((await buy(player, HINT_PACK_KEY(), {})).status).toBe(200);
+    expect((await buy(player, HINT_PACK_KEY())).status).toBe(200);
+    expect((await player.call("GET", "/v1/me/progress")).body.progress.miles).toBe(5000);
+    await expectLedgerBalanced(player.principal);
+  });
+
+  it("an unregistered player gets 404 player_not_found", async () => {
+    const response = await buy(newPlayer(), HINT_PACK_KEY());
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("player_not_found");
+  });
+
+  it("waits for the player row lock, then buys", async () => {
+    const player = newPlayer();
+    await player.call("PUT", "/v1/me");
+    await grantMiles(player.principal, 5000);
+    const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await holder.connect();
+    await holder.query("BEGIN");
+    await holder.query("SELECT 1 FROM players WHERE id = $1 FOR UPDATE", [player.principal]);
+    let settled = false;
+    const pending = buy(player, HINT_PACK_KEY()).finally(() => (settled = true));
+    await new Promise((done) => setTimeout(done, 300));
+    expect(settled).toBe(false);
+    await holder.query("COMMIT");
+    await holder.end();
+    expect((await pending).status).toBe(200);
+    await expectLedgerBalanced(player.principal);
+  });
+});
+
+describe("ledgers and account deletion", () => {
+  it("DELETE /v1/me cascades both ledgers and leaves other players' untouched", async () => {
+    const doomed = newPlayer();
+    const other = newPlayer();
+    await doomed.call("PUT", "/v1/me");
+    await other.call("PUT", "/v1/me");
+    for (const p of [doomed, other]) {
+      await playRound(p);
+      const roundId = await startRound(p.call);
+      await p.call("POST", `/v1/rounds/${roundId}/hint`);
+    }
+    expect(await ledgerRows("miles_ledger", doomed.principal)).toHaveLength(1);
+    expect(await ledgerRows("hint_ledger", doomed.principal)).toHaveLength(2);
+
+    expect((await doomed.call("DELETE", "/v1/me")).status).toBe(204);
+    expect(await ledgerRows("miles_ledger", doomed.principal)).toEqual([]);
+    expect(await ledgerRows("hint_ledger", doomed.principal)).toEqual([]);
+    expect(await ledgerRows("miles_ledger", other.principal)).toHaveLength(1);
+    expect(await ledgerRows("hint_ledger", other.principal)).toHaveLength(2);
+    await expectLedgerBalanced(other.principal);
+
+    // A fresh sign-in starts over: 5 starter hints, one starter entry, no old history.
+    const again = await doomed.call("PUT", "/v1/me");
+    expect(again.body.progress).toMatchObject({ miles: 0, hints: 5 });
+    expect(await ledgerRows("hint_ledger", doomed.principal)).toEqual([{ delta: 5, kind: "starter", ref: "starter" }]);
   });
 });

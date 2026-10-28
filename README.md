@@ -89,6 +89,8 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | POST | `/v1/rounds` | `{ module }`. Issues a single-use Round; abandons any other open Round |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
 | POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction }`. Scores and banks it |
+| POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
+| POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
 
 Result status codes: 200 banked (or `replayed: true` for a Round already banked — safe to retry),
 404 not this player's Round, 410 expired or abandoned, 429 submitted too soon after issue (retry after
@@ -143,7 +145,10 @@ Asserted in code and tests until ruled:
 3. Unfinished Round pays nothing and breaks the streak (Unity prototype ruling).
 4. Streak Miles pay on the streak carried *into* a Round, even if that Round breaks it (matches Unity).
 5. Does a hint break the Perfect Streak? Server says yes (a hinted Round is not a Perfect Completion);
-   Unity's `AtcMatchScreen` currently advances the streak on zero errors alone.
+   since 2026-10-27 the Unity app agrees (`9576a63`). Still Josh's ruling.
 6. Minimum Round duration is a provisional 3 s; needs per-module/per-rank timer lengths. Source of
    truth is the app's TripProfiles (e.g. ATC Match 15/20/25 s, Call Sign 15/20/20/15/15 s by rank); no
    consolidated table yet.
+7. Deleting the account and signing up again re-grants the 5 starter hints (full erasure keeps no
+   record of the grant). Acceptable, or keep a minimal tombstone?
+8. Trip-completion and 7-day-streak hint grants (Unity `HintBank`) need a server Trip concept; not built.

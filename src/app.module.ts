@@ -12,6 +12,7 @@ import { ClientVersionGuard } from "./platform/client-version.js";
 import { RateLimitGuard, throttlerOptions } from "./platform/rate-limit.js";
 import { PlayersModule } from "./players/players.module.js";
 import { RoundsModule } from "./rounds/rounds.module.js";
+import { ShopModule } from "./shop/shop.module.js";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { RoundsModule } from "./rounds/rounds.module.js";
     }),
     PlayersModule,
     RoundsModule,
+    ShopModule,
     HealthModule,
   ],
   providers: [

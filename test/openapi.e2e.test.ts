@@ -150,6 +150,45 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("RoundResultResponse", replay.body);
     expect(replay.body.replayed).toBe(true);
 
+    const next = await request(server).post("/v1/rounds").set(auth).send({ module: "identifier" });
+    const hintPath = `/v1/rounds/${next.body.round.roundId}/hint`;
+    const spent = await request(server).post(hintPath).set(auth);
+    expect(spent.status).toBe(200);
+    check("HintResponse", spent.body);
+    expect(spent.body.hint.replayed).toBe(false);
+    const respent = await request(server).post(hintPath).set(auth);
+    check("HintResponse", respent.body);
+    expect(respent.body.hint.replayed).toBe(true);
+
+    const poor = await request(server).post("/v1/shop/miles-hint-pack").set(auth).set("Idempotency-Key", "k1");
+    expect(poor.status).toBe(409);
+    check("Error", poor.body);
+    expect(poor.body.error.code).toBe("insufficient_miles");
+    // Arrange the balance with its ledger row, so players.miles = SUM(miles_ledger.delta) still holds.
+    const principal = `firebase:demo-airplane-games:${uid}`;
+    await sql.query("UPDATE players SET miles = miles + 5000 WHERE id = $1", [principal]);
+    await sql.query(
+      "INSERT INTO miles_ledger (player_id, delta, kind, ref, created_at) VALUES ($1, 5000, 'round_award', $2, now())",
+      [principal, randomUUID()],
+    );
+    const bought = await request(server).post("/v1/shop/miles-hint-pack").set(auth).set("Idempotency-Key", "k1");
+    expect(bought.status).toBe(200);
+    check("PurchaseResponse", bought.body);
+    expect(bought.body.purchase.replayed).toBe(false);
+    const rebought = await request(server).post("/v1/shop/miles-hint-pack").set(auth).set("Idempotency-Key", "k1");
+    check("PurchaseResponse", rebought.body);
+    expect(rebought.body.purchase.replayed).toBe(true);
+    const keyless = await request(server).post("/v1/shop/miles-hint-pack").set(auth);
+    expect(keyless.status).toBe(400);
+    check("Error", keyless.body);
+
+    await sql.query("UPDATE players SET hints = 0 WHERE id = $1", [`firebase:demo-airplane-games:${uid}`]);
+    const second = await request(server).post("/v1/rounds").set(auth).send({ module: "identifier" });
+    const dry = await request(server).post(`/v1/rounds/${second.body.round.roundId}/hint`).set(auth);
+    expect(dry.status).toBe(409);
+    check("Error", dry.body);
+    expect(dry.body.error.code).toBe("insufficient_hints");
+
     const rankUp = await request(server).put("/v1/me/active-rank").set(auth).send({ rank: "captain" });
     expect(rankUp.status).toBe(403);
     check("Error", rankUp.body);
@@ -202,6 +241,7 @@ describe("openapi contract: real responses validate against the spec", () => {
 
   it("response schemas are strict: an extra field or wrong enum fails validation", () => {
     rejects("ProgressEnvelope", { progress: { nope: 1 } });
+    rejects("PurchaseResponse", { purchase: { hints: 10, priceMiles: 5000 }, progress: {} });
     rejects("Error", { error: { code: "made_up", message: "x", requestId: "y" } });
   });
 });

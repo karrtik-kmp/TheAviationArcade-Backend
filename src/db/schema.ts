@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   doublePrecision,
@@ -25,6 +26,8 @@ export const players = pgTable(
     id: text("id").primaryKey(),
     statusPoints: integer("status_points").notNull().default(0),
     miles: integer("miles").notNull().default(0),
+    // Co-Pilot hint balance. Created with STARTER_HINTS by PUT /v1/me (the column default is only a floor).
+    hints: integer("hints").notNull().default(0),
     perfectStreak: integer("perfect_streak").notNull().default(0),
     // NULL means "fly at Certified Rank" and follows promotions. A value is a dialled-down Active Rank.
     activeRank: text("active_rank"),
@@ -38,6 +41,7 @@ export const players = pgTable(
   (t) => [
     check("players_status_points_check", sql`${t.statusPoints} >= 0`),
     check("players_miles_check", sql`${t.miles} >= 0`),
+    check("players_hints_check", sql`${t.hints} >= 0`),
     check("players_perfect_streak_check", sql`${t.perfectStreak} >= 0`),
     check("players_active_rank_check", sql`${t.activeRank} IS NULL OR ${t.activeRank} IN ${RANK_LIST}`),
     check("players_version_check", sql`${t.version} >= 1`),
@@ -65,7 +69,10 @@ export const rounds = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     finished: boolean("finished"),
     errorCount: integer("error_count"),
+    // What the client reported (OR-ed with hintUsed at submit); NULL until the result arrives.
     usedHint: boolean("used_hint"),
+    // Set by POST /v1/rounds/:roundId/hint when a hint was paid for. A paid hint cannot be hidden at submit.
+    hintUsed: boolean("hint_used").notNull().default(false),
     timeRemaining: doublePrecision("time_remaining"),
     completion: text("completion"),
     speedBonus: boolean("speed_bonus"),
@@ -112,6 +119,51 @@ export const rounds = pgTable(
       sql`${t.status} <> 'completed'
         OR (${t.completionId} IS NOT NULL AND ${t.spAwarded} IS NOT NULL AND ${t.milesAwarded} IS NOT NULL)`,
     ),
+  ],
+);
+
+/**
+ * Append-only Miles ledger. players.miles = SUM(delta) per player. UNIQUE (player_id, kind, ref) is the
+ * idempotency key: a Round pays once (ref = roundId), a hint pack bills once per Idempotency-Key.
+ */
+export const milesLedger = pgTable(
+  "miles_ledger",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    delta: integer("delta").notNull(),
+    kind: text("kind").notNull(),
+    ref: text("ref").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("miles_ledger_idempotency").on(t.playerId, t.kind, t.ref),
+    index("miles_ledger_player_time").on(t.playerId, t.createdAt),
+    check("miles_ledger_delta_check", sql`${t.delta} <> 0`),
+    check("miles_ledger_kind_check", sql`${t.kind} IN ('round_award', 'hint_pack')`),
+  ],
+);
+
+/** Append-only hint ledger, same shape as the Miles one. players.hints = SUM(delta) per player. */
+export const hintLedger = pgTable(
+  "hint_ledger",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    delta: integer("delta").notNull(),
+    kind: text("kind").notNull(),
+    ref: text("ref").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("hint_ledger_idempotency").on(t.playerId, t.kind, t.ref),
+    index("hint_ledger_player_time").on(t.playerId, t.createdAt),
+    check("hint_ledger_delta_check", sql`${t.delta} <> 0`),
+    check("hint_ledger_kind_check", sql`${t.kind} IN ('starter', 'hint_pack', 'round_spend')`),
   ],
 );
 

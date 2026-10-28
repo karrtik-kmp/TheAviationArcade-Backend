@@ -5,6 +5,8 @@ import type { Rank } from "../rules/ranks.js";
 export type ProgressView = {
   statusPoints: number;
   miles: number;
+  /** Co-Pilot hints left. */
+  hints: number;
   certifiedRank: Rank;
   activeRank: Rank;
   pleasureCruise: boolean;
@@ -25,6 +27,7 @@ export function progressView(player: PlayerRow, now: Date): ProgressView {
   return {
     statusPoints: player.statusPoints,
     miles: player.miles,
+    hints: player.hints,
     certifiedRank,
     activeRank,
     pleasureCruise: rankIndex(activeRank) < rankIndex(certifiedRank),
