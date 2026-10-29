@@ -26,7 +26,9 @@ sign-off.
 - `src/rules/` mirrors Unity `ScoreCalculator`/`FlightRank`/`PilotProgression`. Change both together;
   keep test names aligned. Spec ambiguities become `ASSUMPTION:` tests, never silent picks.
 - Use Unity `CONTEXT.md` vocabulary: Miles (not coins), Status Points, Round, Module, Certified/Active
-  Rank, Pleasure Cruise, Flight Segment.
+  Rank, Pleasure Cruise, Flight Segment. Unity ADR-0007 renamed two terms: a backend **Round** is one
+  **Flight** and a **Flight Segment** is a **Trip**. Keep the backend type names; use the mapping in contracts
+  and messages to other repos.
 - Applied migrations are immutable: generate a new one.
 
 ## Workflow

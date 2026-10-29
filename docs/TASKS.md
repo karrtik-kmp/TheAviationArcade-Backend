@@ -152,7 +152,11 @@ verified email for ranked play).
 - 2026-10-29 (user) D-1: an Active Rank change and a UGS re-link bump `players.version`, and `GET /v1/me/progress`
   exposes `version` (needed for C3). D-4: cross-instance UGS budget is a shared Postgres row (S7); link-proof
   calls get their own row. D-5: the module catalog originates in Unity `ModuleRegistry`; the backend mirrors it.
-  Still open: D-3 (Perfect Streak per Trip or lifetime) — Josh.
+  D-3 (relayed by the docs session as a user ruling, recorded in `../docs/PROJECT_STATE.md` §3): the Perfect
+  Streak counts per Trip (Unity's 2026-09-03 ruling); the backend's lifetime counter changes to per Trip before the
+  server Trip work (B5). D-2: game content for Military, Aircraft Identifier and Plane of the Day moves to this admin
+  store (photographer submissions stay in website D1), so the website will need admin endpoints for those modules.
+- 2026-10-29 (user): this session owns the Backend repo (one session per repo); other backend sessions are read-only.
 
 ## Open questions for Josh
 
