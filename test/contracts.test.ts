@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { renderCatalogJson } from "../src/rules/catalog.js";
+import { renderDealerJson } from "../src/rules/dealer-fixture.js";
 import { RANKS } from "../src/rules/ranks.js";
 
 type CatalogFile = {
@@ -57,5 +58,26 @@ describe("contracts/catalog.v1.json", () => {
       expect(catalog.trip).toEqual({ flightsPerTrip: 10, maxFlightsAtOwnRank: 6 });
       expect(catalog.format).toBe("catalog.v1");
     });
+  });
+});
+
+const dealerFile = new URL("../contracts/dealer.v1.json", import.meta.url);
+
+describe("contracts/dealer.v1.json", () => {
+  it("is exactly what renderDealerJson() produces (byte for byte)", () => {
+    const committed = readFileSync(dealerFile, "utf8");
+    expect(
+      committed === renderDealerJson(),
+      "contracts/dealer.v1.json is out of date. Run `npm run contracts:write` and commit the result; never hand-edit it.",
+    ).toBe(true);
+  });
+
+  it("is stable: 2-space indent, LF, one trailing newline, format tag first", () => {
+    const text = renderDealerJson();
+    expect(text.endsWith("}\n")).toBe(true);
+    expect(text.endsWith("\n\n")).toBe(false);
+    expect(text).not.toContain("\r");
+    expect(text.startsWith('{\n  "format": "dealer.v1",\n  "rng": "fnv1a32-utf16+xorshift32",\n')).toBe(true);
+    expect(renderDealerJson()).toBe(text);
   });
 });

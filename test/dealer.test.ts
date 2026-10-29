@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { militaryMapping } from "../src/content/modules/military.js";
 import { readFirstSheet } from "../src/content/xlsx.js";
-import { FLIGHTS_PER_TRIP, MAX_FLIGHTS_AT_OWN_RANK } from "../src/rules/catalog.js";
+import { FLIGHTS_PER_TRIP, MAX_FLIGHTS_AT_OWN_RANK, RANK_CATALOG } from "../src/rules/catalog.js";
 import { militaryCardKey } from "../src/rules/clipper-cards.js";
 import {
   DEAL_POLICY,
@@ -20,6 +20,7 @@ import {
   type DealtFlight,
 } from "../src/rules/dealer.js";
 import { MODULE_IDS, type ModuleId } from "../src/rules/modules.js";
+import { DEALER_POOLS, dealerCases, renderDealerJson } from "./dealer-cases.js";
 import { RANKS, rankIndex, type Rank } from "../src/rules/ranks.js";
 
 // Mirrors Unity MilitaryMockDeckTests and InProcessMockDeckParityTests (names kept aligned), on in-memory pools.
@@ -522,5 +523,75 @@ describe("golden decks: hand-checked against an independent Python port of the U
     const deck = dealTrip(MILITARY, indexedPool([0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 0, 1]), "trainee", "");
     expect(deck.map((f) => `${f.itemId}:${f.correctIndex}`)).toEqual(["q0:2", "q5:2", "q7:3", "q3:3", "q2:0", "q10:1", "q6:0", "q1:1", "q11:0", "q4:1"]);
     expect(deck[9]?.choices).toEqual(["w4a", "Ans 4", "w4b", "w4c"]);
+  });
+});
+
+describe("contracts/dealer.v1.json cases (B4): self-consistency", () => {
+  const cases = dealerCases();
+  const published = JSON.parse(renderDealerJson()) as { cases: typeof cases; pools: Record<string, DealItem[]>; coverage: { pool: string; policy: DealPolicy; perRank: Record<Rank, number> }[] };
+
+  it("replays every fixture case through dealTripWithPolicy to the same deck", () => {
+    expect(published.cases.length).toBe(cases.length);
+    expect(new Set(published.cases.map((c) => c.name)).size).toBe(published.cases.length);
+    for (const c of published.cases) {
+      const deck = dealTripWithPolicy(c.policy, published.pools[c.pool] as DealItem[], c.rank, c.seed);
+      expect(deck.map((f) => ({ itemId: f.itemId, choices: [...f.choices], correctIndex: f.correctIndex })), c.name).toEqual(c.expect.deck);
+    }
+  });
+
+  it("covers every rank x 3 seeds x both policies on military-v1 and each synthetic pool", () => {
+    for (const policy of ["lower-ranks", "nearest-ranks"] as const) {
+      for (const rank of RANKS) {
+        const seeds = cases.filter((c) => c.pool === "military-v1" && c.policy === policy && c.rank === rank).map((c) => c.seed);
+        expect(seeds.length, `${policy} ${rank}`).toBeGreaterThanOrEqual(3);
+        for (const pool of ["thin-trainee", "duplicate-answers", "duplicate-photos", "too-small"]) {
+          expect(cases.some((c) => c.pool === pool && c.policy === policy && c.rank === rank), `${pool} ${policy} ${rank}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("no pool has a blank or whitespace photoKey, and every string is portable for dealAnswerKey", () => {
+    for (const [name, pool] of Object.entries(DEALER_POOLS)) {
+      expect(new Set(pool.map((p) => p.id)).size, `${name} ids`).toBe(pool.length);
+      for (const p of pool) {
+        expect(p.photoKey.trim(), `${name} ${p.id} photoKey`).not.toBe("");
+        expect(p.wrong.length).toBe(3);
+        for (const text of [p.answer, ...p.wrong]) expect(dealAnswerKeyIsPortable(text), `${name} ${p.id} ${text}`).toBe(true);
+      }
+      expect(dealablePool(pool).length, name).toBe(pool.length);
+    }
+  });
+
+  it("the synthetic pools exercise what they are named for", () => {
+    const lower = (pool: string, rank: Rank) => dealTripWithPolicy("lower-ranks", DEALER_POOLS[pool] as DealItem[], rank, "trip-1");
+    const nearest = (pool: string, rank: Rank) => dealTripWithPolicy("nearest-ranks", DEALER_POOLS[pool] as DealItem[], rank, "trip-1");
+    expect(lower("thin-trainee", "trainee").length).toBe(3);
+    expect(nearest("thin-trainee", "trainee").length).toBe(FLIGHTS_PER_TRIP);
+    const keys = nearest("duplicate-answers", "trainee").map((f) => dealAnswerKey(f.choices[f.correctIndex] as string));
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.length).toBe(FLIGHTS_PER_TRIP);
+    const photoOf = new Map(DEALER_POOLS["duplicate-photos"]!.map((p) => [p.id, p.photoKey]));
+    for (const policy of ["lower-ranks", "nearest-ranks"] as const) {
+      const photos = dealTripWithPolicy(policy, DEALER_POOLS["duplicate-photos"] as DealItem[], "captain", "trip-1").map((f) => photoOf.get(f.itemId));
+      expect(new Set(photos).size).toBe(photos.length);
+    }
+    for (const rank of RANKS) expect(lower("too-small", rank).length).toBeLessThan(FLIGHTS_PER_TRIP);
+    expect(nearest("too-small", "trainee").length).toBe(9);
+  });
+
+  it("publishes military-v1 coverage for both policies, equal to tripCoverage", () => {
+    expect(published.coverage.map((c) => `${c.pool}/${c.policy}`)).toEqual(["military-v1/lower-ranks", "military-v1/nearest-ranks"]);
+    expect(published.coverage[0]!.perRank).toEqual(tripCoverage(COMMERCIAL, DEALER_POOLS["military-v1"] as DealItem[]));
+    expect(published.coverage[1]!.perRank).toEqual(tripCoverage(MILITARY, DEALER_POOLS["military-v1"] as DealItem[]));
+  });
+
+  const UNITY_MILITARY = "C:/Unity/Projects/AviationArcade_v2/Assets/_Project/Resources/ClientContent/military_questions.json";
+  it.skipIf(!existsSync(UNITY_MILITARY))("military-v1 equals Unity's bundled military_questions.json (this machine only)", () => {
+    const unity = (JSON.parse(readFileSync(UNITY_MILITARY, "utf8")) as { questions: { id: string; photoId: string; level: string; answer: string; wrong: string[] }[] }).questions;
+    const unityName = (rank: Rank) => RANK_CATALOG[rank].unity;
+    expect((DEALER_POOLS["military-v1"] as DealItem[]).map((p) => ({ id: p.id, photoId: p.photoKey, level: unityName(p.rank), answer: p.answer, wrong: [...p.wrong] }))).toEqual(
+      unity.map((q) => ({ id: q.id, photoId: q.photoId, level: q.level, answer: q.answer, wrong: q.wrong })),
+    );
   });
 });
