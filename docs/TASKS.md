@@ -192,6 +192,12 @@ verified email for ranked play).
   separate until the client supplies a family mapping (client question). Commercial Cards keep Unity's families.
   The Unity app's undocumented `Idempotency-Key` on the Round result route is documented as accepted and ignored
   (the Round id already makes it idempotent).
+- 2026-10-29 (user), contract design questions U1–U14 (`docs/design/trips-awards-logbook.md` §12): all take the
+  recommended answer. Notably U8: Unity's aircraft tag table (authored by us, not the client) is seeded marked
+  `provisional` and the tag awards count it until the client's attribute grid arrives (client question J5); U2:
+  earning a Field Award does not bump `players.version`; U11: manifest and documents require sign-in; U12: a
+  mismatched `localDate` is 422; U14: `POST /v1/trips` takes a required `Idempotency-Key` (contract updated).
+  Josh's J1–J11 stay open.
 - 2026-10-29 (user, from the S3 review): the UGS copy names its owner. Snapshot `schemaVersion` 2 adds `uid` (the
   Firebase uid); the game uses a copy only when `uid` is the signed-in user, and compares `version` only between copies
   of one owner. Reason: after a link move or an erase + re-link, the UGS item can hold the previous owner's copy (with

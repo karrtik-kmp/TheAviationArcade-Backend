@@ -355,6 +355,14 @@ accepted and become derived, so the change is additive. Until then the trust gap
 
 ### User decides
 
+**Resolved 2026-10-29 (user): every U item below takes the recommended answer.** U1 copy stays `schemaVersion` 2
+without Field Awards. U2 no bump. U3 content item id. U4 30 min after last activity; a full segment is completed.
+U5 yes. U6 yes, as written. U7 as written. U8 seed Unity's table marked `provisional`; tag awards count it until
+the client's grid (J5). U9 yes. U10 show the client's text verbatim; staff edits come with T6 and are recorded.
+U11 sign-in required. U12 reject with 422 `local_date_mismatch` beyond ±15 min. U13 confirmed. U14 **add** a
+required `Idempotency-Key` to `POST /v1/trips` (same key replays the segment it opened). The original questions
+stay below for the record.
+
 - **U1** UGS copy: keep `schemaVersion` 2 without Field Awards (recommended), or add earned ids in v3?
 - **U2** Does earning a Field Award bump `players.version` (needs a PlayerBalance "touch")? Recommended: no, while
   awards are not in Progress or the copy.
@@ -411,7 +419,7 @@ nothing · A12 Military tag awards count only Military Cards, the other tag awar
 | # | Slice | Size | Contents | Gate |
 |---|---|---|---|---|
 | T1 | Pure rules | S | `src/rules/trips.ts` (day-streak step, `withTrip` counters, outcome, Go Around, night window, hint cadence), `src/rules/field-awards.ts` (28 ids, metric evaluation, Card key normalisation); test names aligned with Unity EditMode tests (`FieldAwardsTests`, `AchievementBoardTests`, `HintBankTests`, `DailyFlightLogTests`, `LifetimeFlightStatsTests`, `LogbookCollectionTests`); ASSUMPTION tests | `npm test` |
-| T2 | Segments and Rounds | M | migration 0009; `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
+| T2 | Segments and Rounds | M | migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
 | T3 | Complete | M | migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
 | T4 | Content documents and manifest | M | migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
 | T5 | Logbook | S | `GET /v1/me/logbook` | e2e against a seeded history; schema parity |

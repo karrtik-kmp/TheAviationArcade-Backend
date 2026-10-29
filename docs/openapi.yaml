@@ -575,17 +575,31 @@ paths:
         phone clock cannot earn a second grant). `contentVersion` is the app's bundled pack version; it is recorded,
         and checked against releases only once releases exist.
 
-        Not idempotent: a retry after a dropped response opens another segment and abandons the first, which has no
-        Rounds yet, so nothing is lost. A segment expires 30 minutes after its last activity (open, Round issue or
-        Round result); see `expiresAt`.
+        Requires an `Idempotency-Key` header (1-128 of `A-Z a-z 0-9 _ -`, U14, 2026-10-29): repeating a key this
+        player already used answers 200 with the segment that key opened (and its current state) instead of opening
+        another, so a retry after a dropped response never abandons the segment it just opened. Mint a new key per
+        new segment. A segment expires 30 minutes after its last activity (open, Round issue or Round result); see
+        `expiresAt`.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/OpenFlightSegmentRequest" }
       responses:
+        "200":
+          description: Replay of an `Idempotency-Key` already used by this player; the segment it opened.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlightSegmentEnvelope" }
         "201":
           description: Flight Segment opened.
           headers:
