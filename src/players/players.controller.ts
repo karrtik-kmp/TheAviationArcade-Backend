@@ -51,13 +51,15 @@ export class PlayersController {
     @Principal() principal: string,
     @Body(new ZodValidationPipe(activeRankBody, "Expected { rank }.")) body: ActiveRankBody,
   ) {
-    const player = await this.players.getPlayer(principal);
-    if (!player) throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
     const now = new Date();
-    const updated = await this.players.setActiveRank(player, body.rank, now);
-    if (!updated) {
-      throw new ApiError(403, "rank_not_certified", "Active Rank cannot be above Certified Rank.");
+    const outcome = await this.players.setActiveRank(principal, body.rank, now);
+    switch (outcome.kind) {
+      case "no_player":
+        throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
+      case "above_certified":
+        throw new ApiError(403, "rank_not_certified", "Active Rank cannot be above Certified Rank.");
+      case "set":
+        return { progress: progressView(outcome.player, now) };
     }
-    return { progress: progressView(updated, now) };
   }
 }

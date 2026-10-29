@@ -749,6 +749,21 @@ describe("player row lock and concurrency", () => {
     expect(late.body.error.code).toBe("round_not_found");
   });
 
+  it("an Active Rank change queued behind an account deletion is 404 player_not_found", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const lock = await lockPlayer(principal);
+    const deletion = call("DELETE", "/v1/me");
+    await sleep(SETTLE_MS);
+    const dial = call("PUT", "/v1/me/active-rank", { rank: "trainee" });
+    await sleep(SETTLE_MS);
+    await lock.release();
+    expect((await deletion).status).toBe(204);
+    const response = await dial;
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("player_not_found");
+  });
+
   it("six concurrent PUT /v1/me create the player exactly once", async () => {
     const { principal, call } = newPlayer();
     const responses = await Promise.all(Array.from({ length: 6 }, () => call("PUT", "/v1/me")));

@@ -9,6 +9,11 @@ import type { Rank } from "../rules/ranks.js";
 import { mirrorDeletionDueAt } from "../ugs/mirror-policy.js";
 import { enqueueMirror } from "../ugs/outbox.js";
 
+export type SetActiveRankOutcome =
+  | { kind: "set"; player: PlayerRow }
+  | { kind: "no_player" }
+  | { kind: "above_certified"; certified: Rank };
+
 @Injectable()
 export class PlayersService {
   constructor(private readonly database: DatabaseService) {}
@@ -45,27 +50,29 @@ export class PlayersService {
   }
 
   /**
-   * Dial Active Rank. Returns null when the rank is above Certified. Choosing Certified clears the
-   * stored value so Active follows future promotions again. Runs under the player row lock like every other
-   * progress write, so the ceiling check and the UGS mirror enqueue see one consistent row. The version is
-   * deliberately NOT bumped: Round scoring uses the rank snapshotted at issue, and this is not a balance change.
-   * The mirror still carries Active Rank, so it is enqueued (its generation, not the version, records the change).
+   * Dial Active Rank. Choosing Certified clears the stored value so Active follows future promotions again.
+   * Runs under the player row lock like every other progress write, so the existence check, the ceiling check and
+   * the UGS mirror enqueue see one consistent row; a player deleted while this waited for the lock is `no_player`.
+   * The version is deliberately NOT bumped yet: Round scoring uses the rank snapshotted at issue, and this is not a
+   * balance change (D-1, 2026-10-29, moves the bump into PlayerBalance in S2/S3). The mirror still carries Active
+   * Rank, so it is enqueued (its generation, not the version, records the change).
    */
-  async setActiveRank(player: PlayerRow, rank: Rank, now: Date): Promise<PlayerRow | null> {
+  async setActiveRank(principal: string, rank: Rank, now: Date): Promise<SetActiveRankOutcome> {
     return this.database.withTransaction(async (tx) => {
-      const [locked] = await tx.select().from(players).where(eq(players.id, player.id)).for("update");
-      if (!locked) return null;
+      const [locked] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
+      if (!locked) return { kind: "no_player" };
       const certified = certifiedRankFor(locked.statusPoints);
-      if (rankIndex(rank) > rankIndex(certified)) return null;
+      if (rankIndex(rank) > rankIndex(certified)) return { kind: "above_certified", certified };
       const stored = rank === certified ? null : rank;
       const [updated] = await tx
         .update(players)
         .set({ activeRank: stored, updatedAt: now })
-        .where(eq(players.id, player.id))
+        .where(eq(players.id, principal))
         .returning();
-      if (!updated) return null;
+      // The row is locked, so it cannot vanish between the SELECT and the UPDATE.
+      if (!updated) throw new Error("Locked player row was not updated.");
       if (locked.activeRank !== stored) await enqueueMirror(tx, updated.id, updated.version, now);
-      return updated;
+      return { kind: "set", player: updated };
     });
   }
 
