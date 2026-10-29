@@ -40,11 +40,16 @@ afterAll(async () => {
   await app.close();
 });
 
-function specRoutes(): string[] {
+/** `x-planned: true` marks a designed but not yet built operation, schema, parameter, header or response. */
+const isPlanned = (node: unknown): boolean =>
+  !!node && typeof node === "object" && (node as Record<string, unknown>)["x-planned"] === true;
+
+/** Built operations by default; with `planned`, only the x-planned ones. */
+function specRoutes(which: "built" | "planned" = "built"): string[] {
   const out: string[] = [];
   for (const [path, item] of Object.entries<any>(spec.paths)) {
     for (const method of Object.keys(item)) {
-      if (HTTP_METHODS.includes(method)) {
+      if (HTTP_METHODS.includes(method) && isPlanned(item[method]) === (which === "planned")) {
         out.push(`${method.toUpperCase()} ${path.replace(/\{(\w+)\}/g, ":$1")}`);
       }
     }
@@ -64,33 +69,72 @@ function expressRoutes(): string[] {
   return out.sort();
 }
 
-/** Every `x-error-codes` list in paths and components, plus the Error schema's enum. */
-function collectErrorCodes(node: unknown, found: Set<string>): void {
+/**
+ * Every `x-error-codes` list in paths and components. Codes under an `x-planned` node count as planned only:
+ * by default they are skipped, with `planned` only they are collected.
+ */
+function collectErrorCodes(node: unknown, found: Set<string>, planned = false, inPlanned = false): void {
   if (Array.isArray(node)) {
-    for (const item of node) collectErrorCodes(item, found);
+    for (const item of node) collectErrorCodes(item, found, planned, inPlanned);
   } else if (node && typeof node === "object") {
+    const here = inPlanned || isPlanned(node);
     for (const [key, value] of Object.entries(node)) {
-      if (key === "x-error-codes") for (const code of value as string[]) found.add(code);
-      else collectErrorCodes(value, found);
+      if (key === "x-error-codes") {
+        if (here === planned) for (const code of value as string[]) found.add(code);
+      } else collectErrorCodes(value, found, planned, here);
     }
   }
 }
 
+/** Sample values for path parameters of planned operations. */
+const PLANNED_PATH_SAMPLES: Record<string, string> = { name: "field-awards", version: "1" };
+
 describe("openapi contract parity", () => {
-  it("documents exactly the routes Express registers", () => {
+  it("documents exactly the routes Express registers (x-planned operations excluded)", () => {
     const registered = expressRoutes();
     // Guard against the enumeration silently finding nothing.
     expect(registered.length).toBeGreaterThan(0);
     expect(specRoutes()).toEqual(registered);
   });
 
-  it("uses exactly the ErrorCode values, and its Error enum lists them all", () => {
+  it("x-planned operations are not served yet: not registered, and 404 not_found", async () => {
+    const planned = specRoutes("planned");
+    expect(planned.length).toBeGreaterThan(0);
+    const registered = new Set(expressRoutes());
+    const auth = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    for (const route of planned) {
+      expect(registered.has(route), `${route} is registered: drop its x-planned mark`).toBe(false);
+      const [method, path] = route.split(" ") as [string, string];
+      const url = path.replace(/:(\w+)/g, (_match, param: string) => PLANNED_PATH_SAMPLES[param] ?? randomUUID());
+      const res = await (request(server) as any)[method.toLowerCase()](url).set(auth);
+      expect(res.status, `${route} -> ${res.status}`).toBe(404);
+      expect(res.body.error.code, route).toBe("not_found");
+    }
+    // Every planned operation says why it is not built and where it is designed.
+    for (const item of Object.values<any>(spec.paths)) {
+      for (const method of Object.keys(item).filter((m) => HTTP_METHODS.includes(m))) {
+        if (isPlanned(item[method])) expect(typeof item[method]["x-planned-note"]).toBe("string");
+      }
+    }
+  });
+
+  it("uses exactly the ErrorCode values, and its Error enum lists them all (planned codes apart)", () => {
     const used = new Set<string>();
     collectErrorCodes({ paths: spec.paths, responses: spec.components.responses }, used);
     expect([...used].sort()).toEqual([...ERROR_CODES].sort());
     expect([...spec.components.schemas.Error.properties.error.properties.code.enum].sort()).toEqual(
       [...ERROR_CODES].sort(),
     );
+  });
+
+  it("planned-only error codes are listed in x-planned-enum and are not ErrorCode values yet", () => {
+    const known = new Set<string>(ERROR_CODES);
+    const used = new Set<string>();
+    collectErrorCodes({ paths: spec.paths, responses: spec.components.responses }, used, true);
+    const plannedOnly = [...used].filter((code) => !known.has(code)).sort();
+    const listed: string[] = spec.components.schemas.Error.properties.error.properties.code["x-planned-enum"] ?? [];
+    expect([...listed].sort()).toEqual(plannedOnly);
+    for (const code of listed) expect(known.has(code), `${code} is built: move it to enum`).toBe(false);
   });
 
   it("UgsMirrorProgress matches the value the mirror writes", () => {
@@ -162,11 +206,14 @@ describe("openapi contract: real responses validate against the spec", () => {
       [roundId],
     );
     const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 };
-    const banked = await request(server).post(`/v1/rounds/${roundId}/result`).set(auth).send(result);
+    // The Unity outbox sends an Idempotency-Key here; it is documented as accepted and ignored.
+    const banked = await request(server)
+      .post(`/v1/rounds/${roundId}/result`).set(auth).set("Idempotency-Key", "outbox-r1").send(result);
     expect(banked.status).toBe(200);
     check("RoundResultResponse", banked.body);
     expect(banked.body.replayed).toBe(false);
-    const replay = await request(server).post(`/v1/rounds/${roundId}/result`).set(auth).send(result);
+    const replay = await request(server)
+      .post(`/v1/rounds/${roundId}/result`).set(auth).set("Idempotency-Key", "a-different-key").send(result);
     check("RoundResultResponse", replay.body);
     expect(replay.body.replayed).toBe(true);
 
@@ -312,5 +359,94 @@ describe("openapi contract: real responses validate against the spec", () => {
     rejects("ProgressEnvelope", { progress: { nope: 1 } });
     rejects("PurchaseResponse", { purchase: { hints: 10, priceMiles: 5000 }, progress: {} });
     rejects("Error", { error: { code: "made_up", message: "x", requestId: "y" } });
+  });
+});
+
+describe("openapi contract: planned schemas are coherent (not served yet)", () => {
+  const ajv = new Ajv2020({ strict: false, validateFormats: false, allErrors: true });
+  ajv.addSchema({ $id: "spec", components: spec.components });
+  const valid = (schemaName: string, value: unknown) =>
+    ajv.compile({ $ref: `spec#/components/schemas/${schemaName}` })(value) as boolean;
+
+  it("planned request bodies are strict", () => {
+    const open = { module: "identifier", flightCount: 10, localDate: "2026-10-29", utcOffsetMinutes: 330, contentVersion: "2026-10-28+a41ae3b7" };
+    expect(valid("OpenFlightSegmentRequest", open)).toBe(true);
+    expect(valid("OpenFlightSegmentRequest", { ...open, flightCount: 9 })).toBe(false);
+    expect(valid("OpenFlightSegmentRequest", { ...open, utcOffsetMinutes: 841 })).toBe(false);
+    expect(valid("OpenFlightSegmentRequest", { ...open, localDate: "29/10/2026" })).toBe(false);
+    expect(valid("OpenFlightSegmentRequest", { ...open, rank: "captain" })).toBe(false);
+
+    const tripId = randomUUID();
+    expect(valid("StartRoundInSegmentRequest", { tripId })).toBe(true);
+    expect(valid("StartRoundInSegmentRequest", { module: "identifier" })).toBe(false);
+    expect(valid("StartRoundInSegmentRequest", { tripId, module: "identifier" })).toBe(false);
+
+    const facts = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.8, aircraftKey: "787", answerMs: 1500, attempts: 1 };
+    expect(valid("RoundResultWithFlightFactsRequest", facts)).toBe(true);
+    expect(valid("RoundResultWithFlightFactsRequest", { ...facts, aircraftKey: null })).toBe(true);
+    expect(valid("RoundResultWithFlightFactsRequest", { ...facts, aircraftKey: "mil-a4" })).toBe(true);
+    expect(valid("RoundResultWithFlightFactsRequest", { ...facts, aircraftKey: "" })).toBe(false);
+    expect(valid("RoundResultWithFlightFactsRequest", { ...facts, answerMs: -1 })).toBe(false);
+    const { attempts: _attempts, ...withoutAttempts } = facts;
+    expect(valid("RoundResultWithFlightFactsRequest", withoutAttempts)).toBe(false);
+    expect(valid("RoundResultWithFlightFactsRequest", { ...facts, extra: 1 })).toBe(false);
+  });
+
+  it("the manifest keeps Unity's ManifestWire and ModuleWire fields (ApiWireModels.cs)", () => {
+    const manifest = spec.components.schemas.ContentManifest;
+    for (const field of ["version", "generatedAtUtc", "modules"]) expect(manifest.required).toContain(field);
+    expect(Object.keys(spec.components.schemas.ManifestModule.properties).sort()).toEqual(
+      ["assetBundleUrl", "contentVersion", "enabled", "id"],
+    );
+    const sample = {
+      version: "m-3f2a9c",
+      generatedAtUtc: "2026-10-29T12:00:00Z",
+      modules: MODULE_IDS.map((id) => ({ id, enabled: true, contentVersion: null, assetBundleUrl: null })),
+      documents: [
+        { name: "field-awards", format: "field-awards.v1", version: 1, sha256: "a".repeat(64), byteSize: 9000, url: "/v1/content/documents/field-awards/1" },
+      ],
+    };
+    expect(valid("ContentManifest", sample)).toBe(true);
+    expect(valid("ContentManifest", { ...sample, modules: [{ id: "identifier", enabled: false, contentVersion: null, assetBundleUrl: null }] })).toBe(false);
+  });
+
+  it("the Field Award catalog keys the 28 Unity code ids", () => {
+    const ids: string[] = spec.components.schemas.FieldAwardId.enum;
+    expect(ids).toHaveLength(28);
+    expect(new Set(ids).size).toBe(28);
+    const award = {
+      id: "first-flight", sheetId: "first-solo", sheetRow: 2, title: "First Solo", criteria: "Complete your first Trip.",
+      thresholdCell: "1 Trip", target: 1, metric: "trips-completed", hidden: false, rulings: [],
+    };
+    const doc = {
+      format: "field-awards.v1", version: 1, awards: [award],
+      source: { file: "Field Awards #1.xlsx", sha256: "a41ae3b7a4d9a237c0aa4bb1919e77934484e61c511ccb641d053a7a0a76e593", importDate: "2026-10-28" },
+    };
+    expect(valid("FieldAwardCatalogDocument", doc)).toBe(true);
+    expect(valid("FieldAwardCatalogDocument", { ...doc, awards: [{ ...award, id: "first-solo" }] })).toBe(false);
+    expect(valid("FieldAwardCatalogDocument", { ...doc, awards: [{ ...award, miles: 100 }] })).toBe(false);
+  });
+
+  it("planned response samples validate", () => {
+    const progress = {
+      version: 3, statusPoints: 1200, miles: 300, hints: 6, certifiedRank: "trainee", activeRank: "trainee", pleasureCruise: false,
+      selectableRanks: ["trainee"], nextRank: { rank: "first-officer", statusPoints: 10000 }, perfectStreak: 0, firstClassPass: false,
+    };
+    const trip = {
+      tripId: randomUUID(), module: "aircraft-identifier-military", rank: "trainee", pleasureCruise: false, flights: 10, correct: 10,
+      outcome: "all_correct", hintUsed: false, goAround: true, nightTrip: false, bestStreak: 10, miles: 900, statusPoints: 1000,
+      localDate: "2026-10-29", completedAt: "2026-10-29T12:00:00Z", catalogVersion: 1,
+    };
+    const completion = {
+      trip,
+      fieldAwards: [{ id: "go-around", earnedAt: "2026-10-29T12:00:00Z" }],
+      clipperCards: [{ key: "eurofighter typhoon", module: "aircraft-identifier-military", firstCollectedAt: "2026-10-29T12:00:00Z" }],
+      hintGrants: [{ kind: "trip_grant", hints: 1, ref: trip.tripId }],
+      replayed: false,
+      progress,
+    };
+    expect(valid("FlightSegmentCompletion", completion)).toBe(true);
+    expect(valid("FlightSegmentCompletion", { ...completion, hintGrants: [{ kind: "starter", hints: 5, ref: "x" }] })).toBe(false);
+    expect(valid("ProgressEnvelope", { progress })).toBe(true);
   });
 });

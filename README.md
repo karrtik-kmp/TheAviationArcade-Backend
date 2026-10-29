@@ -85,6 +85,9 @@ timeout; see `src/platform/server-timeouts.ts`.
 ## API
 
 The contract is [docs/openapi.yaml](docs/openapi.yaml), kept in step with the code by a parity test.
+The table lists only what is built. The next contract (Trips, Field Awards, Clipper Cards, the Logbook and the
+content manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
+[docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md); those routes answer 404 today.
 All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Errors are
 `{ "error": { "code", "message", "requestId" } }`; every response carries `X-Request-Id`.
 
@@ -98,7 +101,7 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
 | POST | `/v1/rounds` | `{ module }`. Issues a single-use Round; abandons any other open Round |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
-| POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction }`. Scores and banks it |
+| POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction }`. Scores and banks it. An `Idempotency-Key` header is accepted and ignored (the Round id is the key) |
 | POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
 | GET | `/v1/admin/me` | Staff only. `{ principal, staff: true }`; 403 `forbidden` for anyone else |

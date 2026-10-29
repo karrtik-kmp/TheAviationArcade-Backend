@@ -1,10 +1,22 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (Trips, the Logbook,
+    the content manifest and its data documents) are the agreed next contract, recorded here so Unity can build
+    against it. They are NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
+    changes to built operations are described under `x-planned-change` and planned fields under
+    `x-planned-properties`; the built shapes beside them are what the server does now. Error codes only planned
+    operations use are listed in `Error` under `x-planned-enum`, not in `enum`. Design, open questions and the build
+    order: `docs/design/trips-awards-logbook.md`.
+
+    Vocabulary: a backend **Round** is one Unity **Flight**; a backend **Flight Segment** is one Unity **Trip**
+    (ten Flights). Type names use the backend words; the wire keeps the ruled names `/v1/trips`, `tripId` and
+    `trip` (contract round 1, 2026-10-29).
 
     - Every route except `/v1/health` and `/v1/health/ready` needs `Authorization: Bearer <Firebase ID token>`.
     - Bodies are JSON only, at most 16 KB. Unknown fields are rejected (400 `invalid_request`).
@@ -34,6 +46,10 @@ tags:
   - name: rounds
   - name: shop
   - name: admin
+  - name: trips
+    description: Planned. Flight Segments (Unity Trips) of ten Rounds (Unity Flights).
+  - name: content
+    description: Planned. The content manifest and the versioned data documents it points to.
 
 paths:
   /v1/health:
@@ -128,6 +144,10 @@ paths:
       tags: [player]
       operationId: getProgress
       summary: Current progress
+      x-planned-change: |
+        With Trips (D-3), `perfectStreak` becomes the streak of the open Flight Segment (0 when none is open); see
+        `Progress` `x-planned-properties`. The full Field Award board, Clipper Cards and counters are served by
+        `GET /v1/me/logbook`, not here (contract round 2).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       responses:
@@ -295,6 +315,45 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/me/logbook:
+    get:
+      x-planned: true
+      x-planned-note: Not built. Slice T5 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
+      tags: [player]
+      operationId: getLogbook
+      summary: Pilot Logbook (planned)
+      description: |
+        PLANNED, NOT BUILT. Everything the Unity Logbook, passport and Awards tab show, derived on the server from
+        stored Flight Segments (Unity Trips) and Rounds (Unity Flights); there are no client writes behind it
+        (contract round 2). Read-only and safe to call on every Logbook open.
+
+        - `recentTrips`: the last 20 completed Flight Segments, newest first (Unity "RECENT FLIGHTS", whose rows are
+          Trips, as `RecentFlightsLog` stores them).
+        - `daily`: the last played local day, its banked Rounds and the day streak. The app decides "today" with its
+          own clock: TODAY = `flightsOnLastPlayedDate` when `lastPlayedDate` is today, else 0; STREAK = `streakDays`
+          while `lastPlayedDate` is today or yesterday, else 0 (Unity `DailyFlightLog`).
+        - `lifetime`: career totals over completed Flight Segments (Unity `LifetimeTotals`).
+        - `counters`: the Field Award counters (Unity `AwardCounters`); they replace the app's local ones.
+        - `clipperCards`: every collected Card, commercial and Military.
+        - `fieldAwards`: all 28 Field Awards against the catalog version in force, earned or locked, with progress.
+          An award no player can reach with today's content is simply locked; nothing is hidden.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      responses:
+        "200":
+          description: The Logbook.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogbookEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/rounds:
     post:
       tags: [rounds]
@@ -303,6 +362,19 @@ paths:
       description: |
         Issues a single-use Round at the player's Active Rank and abandons any other open Round
         (its result then fails with 410 `round_closed`). A Round expires 30 minutes after issue.
+      x-planned-change:
+        note: |
+          With Trips (slice T2) every Round belongs to an open Flight Segment (contract round 1). The body becomes
+          `StartRoundInSegmentRequest` `{ tripId }`: module, rank and Pleasure Cruise come from the Flight Segment,
+          which snapshotted them at Active Rank when it opened. The Round gets the next flight number (1-10).
+          Issuing a Round while the segment's current Round is still open abandons that Round as today, and the new
+          Round takes the SAME flight number (an abandoned Round never counts toward the ten). New errors: 404
+          `trip_not_found` (unknown, another player's, or not a UUID), 409 `trip_full` (all ten Rounds already banked:
+          complete the segment), 410 `trip_expired` / `trip_closed` (the segment expired, or was completed or
+          abandoned). The 30 minute Round expiry and the 3 s floor stay per Round. `IssuedRound` gains `tripId` and
+          `flightNumber`.
+        requestBody: { $ref: "#/components/schemas/StartRoundInSegmentRequest" }
+        errorCodes: [trip_not_found, trip_full, trip_expired, trip_closed]
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       requestBody:
@@ -338,12 +410,31 @@ paths:
         award with `replayed: true` and pays nothing, so a retry after a dropped response is safe.
         A result sooner than 3 s after issue is 429 `round_too_fast` and leaves the Round open: retry
         after `Retry-After`. A `roundId` that is not a UUID is 404 `round_not_found`.
+
+        An `Idempotency-Key` header (the Unity outbox sends one) is accepted and ignored: the Round id already
+        makes this call idempotent, so a repeat with any key, or none, is the same replay.
+      x-planned-change:
+        note: |
+          With Trips (slice T2) the body becomes `RoundResultWithFlightFactsRequest`: today's four fields plus the
+          Flight facts `aircraftKey`, `answerMs` and `attempts` (ADR-0008 §2), all required and strictly validated.
+          The Perfect Streak the award is computed from is the Flight Segment's own (D-3): it starts at 0 when the
+          segment opens. A banked Round also moves the player's day streak (local day = server time of the result +
+          the segment's `utcOffsetMinutes`); every 7th consecutive day grants one hint (Unity `HintBank`), returned in
+          `RoundResultResponse.hintGrants`. Cards, Field Awards and the Trip hint grant are NOT decided here; they are
+          decided once, by `POST /v1/trips/{tripId}/complete`. Facts that fail the module rules (see
+          `RoundResultWithFlightFactsRequest`) are 400 `invalid_request`.
+        requestBody: { $ref: "#/components/schemas/RoundResultWithFlightFactsRequest" }
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
         - name: roundId
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Accepted and ignored (the Round id is the idempotency key). Any value, or none.
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -457,6 +548,268 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/trips:
+    post:
+      x-planned: true
+      x-planned-note: Not built. Slice T2 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
+      tags: [trips]
+      operationId: openFlightSegment
+      summary: Open a Flight Segment (Unity Trip) (planned)
+      description: |
+        PLANNED, NOT BUILT. Opens a server-issued Flight Segment of ten Rounds for one module at the player's Active
+        Rank (contract round 1: a Trip deals at Active Rank, so a Pleasure Cruise plays that rank). Rank and Pleasure
+        Cruise are snapshotted for the whole segment; changing Active Rank mid-segment does not change it.
+
+        One open Flight Segment per player (it replaces the one-open-Round rule as the unit the app works in).
+        Opening one abandons the player's open segment and its open Round, except that a segment whose ten Rounds are
+        all banked is completed first (its awards are decided then, exactly as `complete` would). The new segment's
+        Perfect Streak starts at 0 (D-3), so `progress.perfectStreak` is 0 afterwards.
+
+        `localDate` must be the calendar date of server time plus `utcOffsetMinutes` (within 15 minutes either side,
+        so a request that straddles midnight passes); otherwise 422 `local_date_mismatch`. The server records the
+        offset and judges every day-based rule itself from its own clock plus that offset (site-day ruling: a rewound
+        phone clock cannot earn a second grant). `contentVersion` is the app's bundled pack version; it is recorded,
+        and checked against releases only once releases exist.
+
+        Not idempotent: a retry after a dropped response opens another segment and abandons the first, which has no
+        Rounds yet, so nothing is lost. A segment expires 30 minutes after its last activity (open, Round issue or
+        Round result); see `expiresAt`.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpenFlightSegmentRequest" }
+      responses:
+        "201":
+          description: Flight Segment opened.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlightSegmentEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`localDate` does not match server time plus `utcOffsetMinutes`."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [local_date_mismatch]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/trips/{tripId}/complete:
+    post:
+      x-planned: true
+      x-planned-note: Not built. Slice T3 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
+      tags: [trips]
+      operationId: completeFlightSegment
+      summary: Complete a Flight Segment (planned)
+      description: |
+        PLANNED, NOT BUILT. Call after the 10th Round is banked. In one player-locked transaction the server derives
+        the outcome (all correct or not, hint use, Go Around against the previous completed segment, the Red-Eye
+        window), collects Clipper Cards from the correct Rounds, updates the Field Award counters, evaluates all 28
+        Field Awards against the catalog in force, and grants the Trip hint (+1 on every 4th completed segment, Unity
+        `HintBank`). Field Awards pay no Miles or Status Points. The Rounds were already paid when they were banked.
+
+        Idempotent: a repeat returns the stored outcome, the same `fieldAwards`, `clipperCards` and `hintGrants`,
+        with `replayed: true`, and changes nothing. `progress` is the current balance, also on a replay. A segment
+        with all ten Rounds banked can be completed at any time, even after `expiresAt` (an app outbox may retry
+        after a restart). No request body. A `tripId` that is not a UUID is 404 `trip_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - $ref: "#/components/parameters/TripId"
+      responses:
+        "200":
+          description: Completed, or already completed (`replayed`).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlightSegmentCompletion" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/TripNotFound" }
+        "409":
+          description: Fewer than ten Rounds of this segment are banked.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [trip_incomplete]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410": { $ref: "#/components/responses/TripGone" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/trips/{tripId}/abandon:
+    post:
+      x-planned: true
+      x-planned-note: Not built. Slice T2 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
+      tags: [trips]
+      operationId: abandonFlightSegment
+      summary: Abandon a Flight Segment (planned)
+      description: |
+        PLANNED, NOT BUILT. Closes the player's open segment without completing it (the player quit to the menu,
+        signed out, or the app is about to open another module). Its open Round is abandoned. Rounds already banked
+        keep their Miles and Status Points and still count for the day streak, but an abandoned segment collects no
+        Clipper Cards, moves no Field Award counter, earns no Field Award and no Trip hint, and is not a "previous
+        Trip" for Go Around. The Perfect Streak returns to 0.
+
+        Optional for the app: opening the next segment has the same effect. Idempotent: abandoning an abandoned or
+        expired segment is 200 with `replayed: true`. A segment with all ten Rounds banked cannot be abandoned (409
+        `trip_full`: complete it); a completed one is 410 `trip_closed`. No request body.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - $ref: "#/components/parameters/TripId"
+      responses:
+        "200":
+          description: Abandoned, or already closed without completing (`replayed`).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlightSegmentAbandoned" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/TripNotFound" }
+        "409":
+          description: All ten Rounds are banked; complete the segment instead.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [trip_full]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: "`trip_closed`: the segment was completed."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [trip_closed]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/content/manifest:
+    get:
+      x-planned: true
+      x-planned-note: Not built. Slice T4 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
+      tags: [content]
+      operationId: getContentManifest
+      summary: Content manifest (planned)
+      description: |
+        PLANNED, NOT BUILT. What content the server currently publishes, pulled by Unity's existing
+        `HttpContentManifestService` (contract round 1: admin updates reach the app by pull manifest; UGS Remote
+        Config stays the kill switch and a pointer only). Compatible with Unity's `ApiWireModels.ManifestWire`:
+        `version`, `generatedAtUtc` and `modules[] { id, enabled, contentVersion, assetBundleUrl }` keep their names
+        and types. Additive: `documents[]`, which today's client ignores.
+
+        - `version` changes whenever any listed document or module entry changes; the app caches it
+          (`LocalContentManifestCache.SaveVersion`) and refetches only the documents whose `version` moved.
+        - `modules` lists all eight modules with `enabled: true`. The backend never disables a module: Remote Config
+          is the kill switch. `contentVersion` and `assetBundleUrl` stay null until content releases exist (5.2+);
+          the app keeps playing its bundled packs.
+        - `documents` point at immutable, versioned JSON documents (`GET /v1/content/documents/{name}/{version}`):
+          the Field Award catalog, the Clipper Card catalog and the aircraft tags.
+
+        Caching: `ETag` is the quoted `version`; send it back as `If-None-Match` and an unchanged manifest is 304 with
+        no body. `Cache-Control: no-cache` (store, but revalidate), an exception to the `/v1` `no-store` rule.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The manifest.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoCache" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentManifest" }
+        "304":
+          description: Unchanged since the `If-None-Match` version. No body.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoCache" }
+            ETag: { $ref: "#/components/headers/ETag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/content/documents/{name}/{version}:
+    get:
+      x-planned: true
+      x-planned-note: Not built. Slice T4 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
+      tags: [content]
+      operationId: getContentDocument
+      summary: One versioned content document (planned)
+      description: |
+        PLANNED, NOT BUILT. An immutable published version of one data document. Take the URL from the manifest.
+        The bytes of a `(name, version)` never change, so the response may be cached for good: `Cache-Control:
+        private, max-age=31536000, immutable`, and `ETag` is the quoted `sha256` the manifest lists (check it).
+        Every version the manifest has ever listed stays fetchable. Unknown name or version is 404 `not_found`.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - $ref: "#/components/parameters/IfNoneMatch"
+        - name: name
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/ContentDocumentName" }
+        - name: version
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The document.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/Immutable" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/FieldAwardCatalogDocument" }
+                  - { $ref: "#/components/schemas/ClipperCardCatalogDocument" }
+                  - { $ref: "#/components/schemas/AircraftTagDocument" }
+        "304":
+          description: Matches `If-None-Match`. No body.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/Immutable" }
+            ETag: { $ref: "#/components/headers/ETag" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
         "426": { $ref: "#/components/responses/ClientUpdateRequired" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
@@ -760,6 +1113,22 @@ components:
       description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
 
+    TripId:
+      x-planned: true
+      name: tripId
+      in: path
+      required: true
+      description: Planned. A Flight Segment (Unity Trip) id. Not a UUID is 404 `trip_not_found`.
+      schema: { type: string, format: uuid }
+
+    IfNoneMatch:
+      x-planned: true
+      name: If-None-Match
+      in: header
+      required: false
+      description: Planned. The `ETag` of a copy the app already holds; an unchanged resource is 304.
+      schema: { type: string }
+
   headers:
     XRequestId:
       description: Request correlation id. Quote it in bug reports. Also echoed as `error.requestId` on errors.
@@ -773,6 +1142,18 @@ components:
     WWWAuthenticate:
       description: Always `Bearer`.
       schema: { type: string, const: Bearer }
+    NoCache:
+      x-planned: true
+      description: Planned (content manifest). Always `no-cache`; revalidate with `If-None-Match`.
+      schema: { type: string, const: no-cache }
+    Immutable:
+      x-planned: true
+      description: Planned (content documents). Always `private, max-age=31536000, immutable`.
+      schema: { type: string, const: "private, max-age=31536000, immutable" }
+    ETag:
+      x-planned: true
+      description: Planned. A strong entity tag (quoted), the manifest `version` or a document's `sha256`.
+      schema: { type: string, pattern: '^"[A-Za-z0-9._:+-]{1,80}"$' }
 
   responses:
     InvalidRequest:
@@ -862,6 +1243,28 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    TripNotFound:
+      x-planned: true
+      description: Planned. Not this player's Flight Segment (or unknown, or `tripId` is not a UUID).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [trip_not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TripGone:
+      x-planned: true
+      description: |
+        Planned. `trip_expired`: the segment expired (30 minutes without activity) before all ten Rounds were banked.
+        `trip_closed`: it was abandoned (or superseded by a newer segment).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [trip_expired, trip_closed]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     InternalError:
       description: Unexpected server fault. Any route can return it; not attached to individual routes.
       headers:
@@ -940,6 +1343,13 @@ components:
                 - storage_unavailable
                 - service_unavailable
                 - internal_error
+              x-planned-enum:
+                - trip_not_found
+                - trip_expired
+                - trip_closed
+                - trip_incomplete
+                - trip_full
+                - local_date_mismatch
             message:
               type: string
               description: For logs, not for display or logic.
@@ -1146,6 +1556,13 @@ components:
             - { type: "null" }
         perfectStreak: { type: integer, minimum: 0, description: Consecutive Perfect Completions. }
         firstClassPass: { type: boolean }
+      x-planned-properties:
+        note: |
+          Planned with Trips (slice T2). `perfectStreak` keeps its name and type but means the streak inside the open
+          Flight Segment, 0 when none is open (D-3: the streak counts per Trip; it resets when a segment opens,
+          completes or is abandoned). The same applies to `UgsMirrorProgress.perfectStreak`. No Field Award or Clipper
+          Card data is added here or to the UGS copy unless the user decides otherwise (design doc, open question U1/U2);
+          the Logbook carries them.
     ProgressEnvelope:
       type: object
       additionalProperties: false
@@ -1223,6 +1640,9 @@ components:
         rank: { $ref: "#/components/schemas/Rank" }
         pleasureCruise: { type: boolean }
         expiresAt: { type: string, format: date-time }
+      x-planned-properties:
+        tripId: { type: string, format: uuid, description: "Planned (T2). The Flight Segment this Round belongs to." }
+        flightNumber: { type: integer, minimum: 1, maximum: 10, description: "Planned (T2). Unity Flight number in the Trip." }
     RoundEnvelope:
       type: object
       additionalProperties: false
@@ -1276,6 +1696,20 @@ components:
           type: boolean
           description: True when this Round was already banked; nothing was paid again.
         progress: { $ref: "#/components/schemas/Progress" }
+      x-planned-properties:
+        hintGrants:
+          description: Planned (T2). Hints this result granted (a 7th consecutive local day). Empty on a replay of a Round that granted nothing; the same grant on a replay of one that did.
+          type: array
+          items: { $ref: "#/components/schemas/HintGrant" }
+        trip:
+          description: Planned (T2). Where the Flight Segment stands after this Round.
+          type: object
+          additionalProperties: false
+          required: [tripId, roundsBanked, perfectStreak]
+          properties:
+            tripId: { type: string, format: uuid }
+            roundsBanked: { type: integer, minimum: 1, maximum: 10 }
+            perfectStreak: { type: integer, minimum: 0, maximum: 10 }
     HintReceipt:
       type: object
       additionalProperties: false
@@ -1309,3 +1743,602 @@ components:
       properties:
         purchase: { $ref: "#/components/schemas/PurchaseReceipt" }
         progress: { $ref: "#/components/schemas/Progress" }
+
+    # ---------------------------------------------------------------------------------------------------------
+    # PLANNED schemas (x-planned: true). Designed 2026-10-29, not built. docs/design/trips-awards-logbook.md.
+    # ---------------------------------------------------------------------------------------------------------
+
+    LocalDate:
+      x-planned: true
+      type: string
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      description: A calendar date, `YYYY-MM-DD`.
+    ContentVersion:
+      x-planned: true
+      type: string
+      pattern: "^[A-Za-z0-9._:+-]{1,64}$"
+      description: The app's bundled content pack version (ADR-0008 §4, snapshot date plus a hash). Recorded only, until releases exist.
+    FlightSegmentStatus:
+      x-planned: true
+      type: string
+      enum: [open, completed, abandoned]
+      description: An expired segment reads `abandoned` (unless all ten Rounds were banked, then it can still be completed).
+    FlightSegmentOutcome:
+      x-planned: true
+      type: string
+      enum: [all_correct, not_all_correct]
+      description: Unity `TripOutcome`. `all_correct` = every Round finished (answered correctly; a hint or a second try still counts).
+
+    OpenFlightSegmentRequest:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [module, flightCount, localDate, utcOffsetMinutes, contentVersion]
+      description: Body of `POST /v1/trips` (ADR-0008 §2, `moduleId` there is `module` here, as on `POST /v1/rounds`).
+      properties:
+        module: { $ref: "#/components/schemas/ModuleId" }
+        flightCount:
+          type: integer
+          const: 10
+          description: Rounds (Unity Flights) in the segment. Always 10 (Unity `TripProfiles`, catalog `trip.flightsPerTrip`).
+        localDate: { $ref: "#/components/schemas/LocalDate" }
+        utcOffsetMinutes:
+          type: integer
+          minimum: -720
+          maximum: 840
+          description: The phone's current UTC offset in minutes (UTC+05:30 is 330, UTC-05:00 is -300).
+        contentVersion: { $ref: "#/components/schemas/ContentVersion" }
+
+    FlightSegment:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      description: A Flight Segment (Unity Trip) as it stands.
+      required:
+        [tripId, module, rank, pleasureCruise, status, flightCount, roundsBanked, currentRoundId, perfectStreak,
+         localDate, utcOffsetMinutes, contentVersion, openedAt, expiresAt, closedAt]
+      properties:
+        tripId: { type: string, format: uuid }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        rank: { $ref: "#/components/schemas/Rank" }
+        pleasureCruise: { type: boolean }
+        status: { $ref: "#/components/schemas/FlightSegmentStatus" }
+        flightCount: { type: integer, const: 10 }
+        roundsBanked: { type: integer, minimum: 0, maximum: 10 }
+        currentRoundId:
+          description: The open Round, if any.
+          oneOf:
+            - { type: string, format: uuid }
+            - { type: "null" }
+        perfectStreak: { type: integer, minimum: 0, maximum: 10, description: "The segment's Perfect Streak (D-3)." }
+        localDate: { $ref: "#/components/schemas/LocalDate" }
+        utcOffsetMinutes: { type: integer, minimum: -720, maximum: 840 }
+        contentVersion: { $ref: "#/components/schemas/ContentVersion" }
+        openedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: "30 minutes after the last open, Round issue or Round result." }
+        closedAt:
+          oneOf:
+            - { type: string, format: date-time }
+            - { type: "null" }
+    FlightSegmentEnvelope:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [trip, progress]
+      properties:
+        trip: { $ref: "#/components/schemas/FlightSegment" }
+        progress: { $ref: "#/components/schemas/Progress" }
+    FlightSegmentAbandoned:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [trip, replayed, progress]
+      properties:
+        trip: { $ref: "#/components/schemas/FlightSegment" }
+        replayed: { type: boolean, description: True when the segment was already closed without completing. }
+        progress: { $ref: "#/components/schemas/Progress" }
+
+    StartRoundInSegmentRequest:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [tripId]
+      description: Planned body of `POST /v1/rounds` (T2). Module, rank and Pleasure Cruise come from the segment.
+      properties:
+        tripId: { type: string, format: uuid }
+
+    RoundResultWithFlightFactsRequest:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts]
+      description: |
+        Planned body of `POST /v1/rounds/{roundId}/result` (T2): today's Round facts plus the Flight facts (ADR-0008 §2).
+        Module rules (400 `invalid_request` when broken):
+        - `identifier`: `aircraftKey` is the Unity aircraft family of the Flight's correct answer (the `family` of the
+          question in `identifier_questions.json`, e.g. `787`, `A320`), required, also on a timeout.
+        - `aircraft-identifier-military`: `aircraftKey` is the content item id of the question (`mil-a4`), required;
+          the server maps it to the client's answer text and from that to the Card key (see `ClipperCardDefinition`).
+          An id the content store does not hold is rejected. PROPOSED: the alternative is sending the answer text
+          (design doc, open question U3).
+        - every other module: `aircraftKey` is null.
+        - `attempts` >= `errorCount`, and >= 1 when `finished`.
+        - `answerMs` may not exceed the server's own issue-to-result time by more than 2,000 ms.
+      properties:
+        finished: { type: boolean, description: "Answered correctly (Unity FlightEnd.Solved). A second try or a hint still counts." }
+        errorCount: { type: integer, minimum: 0, maximum: 1000 }
+        usedHint: { type: boolean }
+        timeRemainingFraction: { type: number, minimum: 0, maximum: 1 }
+        aircraftKey:
+          description: The aircraft the Flight showed (see the module rules above).
+          oneOf:
+            - { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
+            - { type: "null" }
+        answerMs:
+          type: integer
+          minimum: 0
+          maximum: 1800000
+          description: Milliseconds from the deal to the settle on the device (the clock the player saw). Feeds Bogey Identified.
+        attempts:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Answers submitted in this Flight, the correct one included.
+
+    HintGrant:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [kind, hints, ref]
+      description: Hints the server granted (Unity `HintBank`). Each is one `hint_ledger` row, idempotent on (kind, ref).
+      properties:
+        kind:
+          type: string
+          enum: [trip_grant, day_streak_grant]
+          description: "`trip_grant`: every 4th completed Flight Segment (ref = tripId). `day_streak_grant`: every 7th consecutive local day with a banked Round (ref = that local date)."
+        hints: { type: integer, minimum: 1 }
+        ref: { type: string }
+
+    FlightSegmentSummary:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      description: A completed Flight Segment, as the debrief and the Logbook row show it.
+      required:
+        [tripId, module, rank, pleasureCruise, flights, correct, outcome, hintUsed, goAround, nightTrip, bestStreak, miles,
+         statusPoints, localDate, completedAt, catalogVersion]
+      properties:
+        tripId: { type: string, format: uuid }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        rank: { $ref: "#/components/schemas/Rank" }
+        pleasureCruise: { type: boolean }
+        flights: { type: integer, const: 10 }
+        correct: { type: integer, minimum: 0, maximum: 10, description: Rounds finished (answered correctly). }
+        outcome: { $ref: "#/components/schemas/FlightSegmentOutcome" }
+        hintUsed: { type: boolean, description: Any Round used a hint (paid or claimed). }
+        goAround: { type: boolean, description: "All correct, and the previous completed segment was not (Go Around)." }
+        nightTrip: { type: boolean, description: "Completed 22:00 up to 05:00 local (Red-Eye Special). Local = server time of the 10th banked Round + utcOffsetMinutes." }
+        bestStreak: { type: integer, minimum: 0, maximum: 10, description: Longest Perfect Streak inside the segment. }
+        miles: { type: integer, minimum: 0, description: Miles its Rounds earned. }
+        statusPoints: { type: integer, minimum: 0, description: Status Points its Rounds earned. }
+        localDate: { $ref: "#/components/schemas/LocalDate" }
+        completedAt: { type: string, format: date-time }
+        catalogVersion: { type: integer, minimum: 1, description: The Field Award catalog version it was judged against. }
+    FieldAwardEarned:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [id, earnedAt]
+      properties:
+        id: { $ref: "#/components/schemas/FieldAwardId" }
+        earnedAt: { type: string, format: date-time }
+    ClipperCardCollected:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [key, module, firstCollectedAt]
+      properties:
+        key: { type: string, description: "The Card key (see ClipperCardDefinition.key)." }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        firstCollectedAt: { type: string, format: date-time }
+    FlightSegmentCompletion:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [trip, fieldAwards, clipperCards, hintGrants, replayed, progress]
+      properties:
+        trip: { $ref: "#/components/schemas/FlightSegmentSummary" }
+        fieldAwards:
+          type: array
+          description: Field Awards newly earned by this segment (empty when none). The full board is in the Logbook.
+          items: { $ref: "#/components/schemas/FieldAwardEarned" }
+        clipperCards:
+          type: array
+          description: Cards collected for the first time by this segment.
+          items: { $ref: "#/components/schemas/ClipperCardCollected" }
+        hintGrants:
+          type: array
+          items: { $ref: "#/components/schemas/HintGrant" }
+        replayed: { type: boolean, description: True when the segment was already completed; nothing changed. }
+        progress: { $ref: "#/components/schemas/Progress" }
+
+    FieldAwardId:
+      x-planned: true
+      type: string
+      description: |
+        The 28 Field Award ids. These are the Unity code ids (`Achievements.cs` `AchievementCatalog.Starter`), so
+        progress earned on either side keeps its key (contract round 1). Ten differ from the sheet-snapshot ids
+        (`field-awards.json`): first-flight = first-solo, century = logbook-100, sharp-eyes = vfr-certified,
+        flawless-five = five-by-five, five-in-a-row = ace-in-the-cockpit, week-on-the-line = line-pilot,
+        regular = 30-days-on-the-ramp, first-card = first-clipper-card, collector = curator-of-the-skies,
+        textbook = textbook-landing. Renaming one is a breaking change.
+      enum:
+        - first-flight
+        - frequent-flyer
+        - century
+        - sharp-eyes
+        - flawless-five
+        - five-in-a-row
+        - week-on-the-line
+        - regular
+        - first-card
+        - collector
+        - textbook
+        - high-flyer
+        - coast-to-coast
+        - no-instrument-flight
+        - red-eye-special
+        - fleet-admiral
+        - centennial-streak
+        - go-around
+        - globe-trotter
+        - quad-engine-royalty
+        - the-great-rivalry
+        - heavy-metal
+        - regional
+        - bogey-identified
+        - top-gun-ace
+        - rotorhead
+        - vertical-horizon
+        - executive-platinum
+    FieldAwardMetric:
+      x-planned: true
+      type: string
+      description: |
+        What the server counts for an award (Unity `AchievementMetric`, kebab-case). A metric is code; staff can edit
+        an award's text, target and hidden flag, never its metric. Scopes follow Unity `AwardCounters` and are spelled
+        out in the design doc (for example `identifier-full-trips` and `best-perfect-flight-streak` see only the two
+        Identifier modules; the Military-only metrics see only Military Cards).
+      enum:
+        - trips-completed
+        - flights-completed
+        - identifier-full-trips
+        - best-perfect-flight-streak
+        - best-day-streak
+        - cards-collected
+        - perfect-cards
+        - miles-earned
+        - best-hint-free-trip-streak
+        - night-trips
+        - go-arounds
+        - quad-engine-cards
+        - rivalry-balance
+        - heavy-cards
+        - regional-cards
+        - quick-fighter-id
+        - fighter-aces
+        - rotary-identified
+        - vtol-identified
+    FieldAwardProgress:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [id, current, target, earned, earnedAt]
+      properties:
+        id: { $ref: "#/components/schemas/FieldAwardId" }
+        current: { type: integer, minimum: 0, description: "The metric's value, capped at target." }
+        target: { type: integer, minimum: 1 }
+        earned: { type: boolean, description: "An earned award stays earned, even if its target is raised later." }
+        earnedAt:
+          oneOf:
+            - { type: string, format: date-time }
+            - { type: "null" }
+    FieldAwardBoard:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [catalogVersion, earned, total, awards]
+      properties:
+        catalogVersion: { type: integer, minimum: 1 }
+        earned: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 1 }
+        awards:
+          type: array
+          description: Every award, in catalog (sheet) order.
+          items: { $ref: "#/components/schemas/FieldAwardProgress" }
+
+    ClipperCardRecord:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [key, module, firstCollectedAt, timesIdentified, everPerfect]
+      description: Unity `CardRecord`, server-side.
+      properties:
+        key: { type: string }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        firstCollectedAt: { type: string, format: date-time }
+        timesIdentified: { type: integer, minimum: 1 }
+        everPerfect: { type: boolean, description: "Identified at least once with no error and no hint (a one-way latch)." }
+    LogbookTripRow:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [tripId, module, localDate, flights, correct, miles, statusPoints, completedAt]
+      description: One RECENT FLIGHTS row (Unity `RoundRecord`, which is a Trip).
+      properties:
+        tripId: { type: string, format: uuid }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        localDate: { $ref: "#/components/schemas/LocalDate" }
+        flights: { type: integer, const: 10 }
+        correct: { type: integer, minimum: 0, maximum: 10 }
+        miles: { type: integer, minimum: 0 }
+        statusPoints: { type: integer, minimum: 0 }
+        completedAt: { type: string, format: date-time }
+    DailyLog:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [lastPlayedDate, flightsOnLastPlayedDate, streakDays, bestStreakDays]
+      description: Unity `DailyFlightLog` and the day streak behind Line Pilot and the 7-day hint. A day counts once a Round is banked on it.
+      properties:
+        lastPlayedDate:
+          oneOf:
+            - { $ref: "#/components/schemas/LocalDate" }
+            - { type: "null" }
+        flightsOnLastPlayedDate: { type: integer, minimum: 0 }
+        streakDays: { type: integer, minimum: 0, description: Consecutive local days ending on lastPlayedDate. }
+        bestStreakDays: { type: integer, minimum: 0 }
+    LifetimeTotals:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [trips, flights, correct, allCorrectTrips, bestTripStreak, miles]
+      description: Unity `LifetimeTotals` over completed Flight Segments (its `Rounds` are Trips).
+      properties:
+        trips: { type: integer, minimum: 0 }
+        flights: { type: integer, minimum: 0 }
+        correct: { type: integer, minimum: 0 }
+        allCorrectTrips: { type: integer, minimum: 0, description: "Unity PerfectRounds: segments with every Round correct." }
+        bestTripStreak: { type: integer, minimum: 0, maximum: 10, description: "Unity BestRoundStreak: the longest Perfect Streak inside one segment." }
+        miles: { type: integer, minimum: 0, description: Miles earned in completed segments. }
+    AwardCounters:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      description: Unity `AwardCounters` (the parts that are not derived from Cards). Replaces the app's local counters.
+      required:
+        [identifierFullTrips, perfectFlightStreak, bestPerfectFlightStreak, hintFreeTripStreak, bestHintFreeTripStreak,
+         nightTrips, goArounds, previousTripOutcome]
+      properties:
+        identifierFullTrips: { type: integer, minimum: 0 }
+        perfectFlightStreak: { type: integer, minimum: 0, description: "Perfect Identifier Rounds in a row ACROSS segments (Ace in the Cockpit). Not the economy Perfect Streak." }
+        bestPerfectFlightStreak: { type: integer, minimum: 0 }
+        hintFreeTripStreak: { type: integer, minimum: 0 }
+        bestHintFreeTripStreak: { type: integer, minimum: 0 }
+        nightTrips: { type: integer, minimum: 0 }
+        goArounds: { type: integer, minimum: 0 }
+        previousTripOutcome:
+          oneOf:
+            - { $ref: "#/components/schemas/FlightSegmentOutcome" }
+            - { type: "null" }
+    Logbook:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [version, recentTrips, daily, lifetime, counters, clipperCards, fieldAwards]
+      properties:
+        version: { type: integer, minimum: 1, description: "players.version when it was read (same counter as Progress.version)." }
+        recentTrips:
+          type: array
+          maxItems: 20
+          description: The last 20 completed segments, newest first.
+          items: { $ref: "#/components/schemas/LogbookTripRow" }
+        daily: { $ref: "#/components/schemas/DailyLog" }
+        lifetime: { $ref: "#/components/schemas/LifetimeTotals" }
+        counters: { $ref: "#/components/schemas/AwardCounters" }
+        clipperCards:
+          type: array
+          description: Every collected Card, oldest first.
+          items: { $ref: "#/components/schemas/ClipperCardRecord" }
+        fieldAwards: { $ref: "#/components/schemas/FieldAwardBoard" }
+    LogbookEnvelope:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [logbook]
+      properties:
+        logbook: { $ref: "#/components/schemas/Logbook" }
+
+    ContentDocumentName:
+      x-planned: true
+      type: string
+      enum: [field-awards, clipper-cards, aircraft-tags]
+    ManifestModule:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [id, enabled, contentVersion, assetBundleUrl]
+      description: Unity `ApiWireModels.ModuleWire`, unchanged names and types.
+      properties:
+        id: { $ref: "#/components/schemas/ModuleId" }
+        enabled: { type: boolean, const: true, description: Always true; Remote Config is the kill switch. }
+        contentVersion:
+          description: Null until content releases exist (5.2+).
+          oneOf:
+            - { $ref: "#/components/schemas/ContentVersion" }
+            - { type: "null" }
+        assetBundleUrl:
+          description: Null until content releases exist (CCD/Bunny).
+          oneOf:
+            - { type: string }
+            - { type: "null" }
+    ManifestDocument:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [name, format, version, sha256, byteSize, url]
+      properties:
+        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        format: { type: string, enum: [field-awards.v1, clipper-cards.v1, aircraft-tags.v1] }
+        version: { type: integer, minimum: 1, description: Goes up by one with every published change of this document. }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: Of the exact response bytes. }
+        byteSize: { type: integer, minimum: 1 }
+        url: { type: string, description: "Relative path: /v1/content/documents/{name}/{version}." }
+    ContentManifest:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [version, generatedAtUtc, modules, documents]
+      description: Unity `ApiWireModels.ManifestWire` plus `documents`.
+      properties:
+        version: { type: string, pattern: "^[A-Za-z0-9._:+-]{1,80}$", description: Opaque; changes whenever any entry changes. Also the ETag. }
+        generatedAtUtc: { type: string, format: date-time }
+        modules:
+          type: array
+          items: { $ref: "#/components/schemas/ManifestModule" }
+        documents:
+          type: array
+          items: { $ref: "#/components/schemas/ManifestDocument" }
+
+    FieldAwardRuling:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [field, text, source, status]
+      description: A client ruling or a reviewer note on the sheet row (the snapshot's `appliedEdits`).
+      properties:
+        field: { type: string }
+        text: { type: string }
+        source: { type: string, description: "e.g. client ruling 2026-10-28 (WhatsApp)" }
+        status: { type: string, enum: [confirmed, resolved, to-confirm] }
+    FieldAwardDefinition:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [id, sheetId, sheetRow, title, criteria, thresholdCell, target, metric, hidden, rulings]
+      properties:
+        id: { $ref: "#/components/schemas/FieldAwardId" }
+        sheetId: { type: string, description: "The id in the sheet snapshot (field-awards.json), for traceability." }
+        sheetRow: { type: integer, minimum: 2 }
+        title: { type: string, minLength: 1, description: "The sheet's Name, verbatim." }
+        criteria: { type: string, minLength: 1, description: "The sheet's Criteria, verbatim." }
+        thresholdCell: { type: string, description: "The sheet's threshold cell, verbatim (e.g. `50 unique airfract`)." }
+        target: { type: integer, minimum: 1, description: "The numeric target from the threshold cell and the client's rulings." }
+        metric: { $ref: "#/components/schemas/FieldAwardMetric" }
+        hidden: { type: boolean, description: 'A hidden award shows as a locked "?" until earned. None is hidden in Field Awards #1.' }
+        rulings:
+          type: array
+          items: { $ref: "#/components/schemas/FieldAwardRuling" }
+    FieldAwardCatalogDocument:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [format, version, source, awards]
+      description: The Field Award catalog (C12). Field Awards pay no Miles or Status Points.
+      properties:
+        format: { type: string, const: field-awards.v1 }
+        version: { type: integer, minimum: 1 }
+        source:
+          type: object
+          additionalProperties: false
+          required: [file, sha256, importDate]
+          properties:
+            file: { type: string, description: "Field Awards #1.xlsx" }
+            sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+            importDate: { $ref: "#/components/schemas/LocalDate" }
+        awards:
+          type: array
+          minItems: 1
+          description: In sheet order. Each FieldAwardId appears once.
+          items: { $ref: "#/components/schemas/FieldAwardDefinition" }
+
+    ClipperCardDefinition:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [key, module, name, keySource, itemIds]
+      properties:
+        key:
+          type: string
+          minLength: 1
+          description: |
+            The Card identity. Commercial (`identifier`): the Unity aircraft family (`787`). Military: the client's
+            answer text normalised: trimmed, case-folded, runs of whitespace collapsed to one space (contract round 2),
+            so repeated rows of one answer (Eurofighter Typhoon x3) share one Card and variants stay separate until the
+            client supplies a family mapping.
+        module: { $ref: "#/components/schemas/ModuleId" }
+        name: { type: string, minLength: 1, description: "Display name: the family name, or the answer text as the client supplied it (first in natural id order)." }
+        keySource: { type: string, enum: [unity_family, client_answer_text] }
+        itemIds:
+          type: array
+          description: Content item ids that collect this Card (Military `mil-a4`, `mil-a8`, `mil-a26` for the Typhoon).
+          items: { type: string }
+    ClipperCardCatalogDocument:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [format, version, cards]
+      properties:
+        format: { type: string, const: clipper-cards.v1 }
+        version: { type: integer, minimum: 1 }
+        cards:
+          type: array
+          items: { $ref: "#/components/schemas/ClipperCardDefinition" }
+
+    AircraftTag:
+      x-planned: true
+      type: string
+      enum: [quad-engine, regional-jet, fighter-attack, military-rotary, vtol, piston, heavy]
+      description: Unity `AircraftTag` flags, kebab-case.
+    TagSource:
+      x-planned: true
+      type: string
+      enum: [client_sheet, client_ruling, provisional]
+      description: "`provisional`: authored by us (Unity `AircraftTags.cs`), pending the client's attribute grid."
+    AircraftTagEntry:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [cardKey, manufacturer, manufacturerSource, tags]
+      properties:
+        cardKey: { type: string, minLength: 1 }
+        manufacturer:
+          description: '"Boeing", "Airbus", ... or null. Feeds The Great Rivalry.'
+          oneOf:
+            - { type: string, minLength: 1 }
+            - { type: "null" }
+        manufacturerSource:
+          oneOf:
+            - { $ref: "#/components/schemas/TagSource" }
+            - { type: "null" }
+        tags:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [tag, source]
+            properties:
+              tag: { $ref: "#/components/schemas/AircraftTag" }
+              source: { $ref: "#/components/schemas/TagSource" }
+    AircraftTagDocument:
+      x-planned: true
+      type: object
+      additionalProperties: false
+      required: [format, version, entries]
+      description: What the tag-based Field Awards count. Keyed by Card key; one entry per tagged Card.
+      properties:
+        format: { type: string, const: aircraft-tags.v1 }
+        version: { type: integer, minimum: 1 }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AircraftTagEntry" }

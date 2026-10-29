@@ -71,10 +71,11 @@ Google RTDN. Design in ARCHITECTURE.md.
 |---|---|---|---|
 | 5.0 | Admin content store foundation | Done (local, uncommitted) | Staff-only API (`STAFF_EMAILS` + verified email): import xlsx → `content_items`, list, export, `GET /v1/admin/me`. Military mapping from the client's sheet (31 rows → `mil-a1`…`mil-a31`, approved, source `client_sheet`). Idempotent by file sha256, all-or-nothing, unzip-bomb guard. Import semantics ruled 2026-10-28 (Q1-Q9 below): client sheets are authoritative with stable ids (matched by `file`), retire missing rows, field diffs and a `planHash` confirm before any overwrite/retire (409 `plan_changed`); admin exports keep versioned edits. `BlobStore` (Bunny S3 with SigV4 / memory / none), migrations 0004 (`content_imports`, `content_items`, `admin_audit`) and 0005 (`retired` status and count). Real Bunny never contacted |
 | 5.1 | UGS progress mirror | Done (local, uncommitted), UGS not contacted | Decision 2026-10-28 (see Design rules). `PUT /v1/me/ugs-link` (server-side link proof via UGS Player Auth admin, strict body, 400/403/404/409/503 mapping), migration 0006 (`ugs_links`, `ugs_mirror_outbox`, `ugs_mirror_deletions`), `enqueueMirror` called inside every progress-changing transaction (Round result, hint spend, hint pack, Active Rank, player create) with a test per write path, in-process worker (SKIP LOCKED lease, token bucket `UGS_MIRROR_MAX_PER_MIN`, 429 pause, per-row backoff), account-deletion cleanup via `ugs_mirror_deletions`. UGS reached only through an injected fetcher; tests stub it. UNVERIFIED (ASSUMPTION tests): token claim names `project_id`/`upid`/`envId`; OIDC `externalId` = Firebase uid. **Open, all need user sign-off in the UGS dashboard:** create the OIDC provider for Firebase, enable the Player Auth admin API, create a service account with Cloud Save Editor + `player_auth.users.get`, then set the `UGS_*` variables; run one real link end to end and decode a real token to settle the UNVERIFIED items. Follow-up (with releases): content via CCD/Remote Config with a Bunny backup |
+| 5.C | Trips / Field Awards / Clipper Cards / Logbook / content manifest contracts (C5, C12; contract rounds 1 and 2) | **Designed, not built** (2026-10-29, uncommitted) | Design: [design/trips-awards-logbook.md](design/trips-awards-logbook.md) (lifecycle, server vs client facts, all 28 Field Awards on the Unity code ids, data model 0009–0011, PlayerBalance steps, manifest/ETag, admin publish path, UGS copy proposal, open questions U1–U14 / J1–J11 / A1–A12, slices T1–T6). Contract: `x-planned` operations in `openapi.yaml` (`POST /v1/trips`, `POST /v1/trips/{tripId}/complete`, `.../abandon`, `GET /v1/me/logbook`, `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`), planned changes to the Round issue/result routes (`x-planned-change`), planned error codes (`x-planned-enum`). The parity test skips planned operations for "route exists" and asserts each answers 404 `not_found` today. Built change: the result route documents `Idempotency-Key` as accepted and ignored (contract round 2). No `src/` change, no migration. Next: user answers U1–U14, then T1 |
 | 5.2+ | Follow-ups (not started) | — | Releases and versioned packages with rollback; player content delivery and Rounds tied to a release; server-side answer checks (closes the client-reported-results gap); photo upload/serving; retire and edit-in-place endpoints; importers for the other seven modules; website admin integration; first `bunny:check` against the real zone (needs sign-off and the zone password) |
 
 Field Awards: since C12 (2026-10-28) the backend owns the catalog and progress; built after the Trips
-contract (see Decisions).
+contract (see Decisions). The contract is designed (5.C); 3.2's Trip/7-day hint grants and 3.5 are slices T2–T3 there.
 
 #### Deepening brief (`../docs/briefs/backend.md`)
 
@@ -179,6 +180,18 @@ verified email for ranked play).
   documents, pulled by Unity's existing HttpContentManifestService; Remote Config stays kill switch / pointer only;
   CCD/Bunny for large files with releases. (4) A Trip **deals at Active Rank** (Pleasure Cruise plays that rank's
   questions; Unity's mock, which deals at Certified, changes).
+- 2026-10-29 (user), contract round 2: (1) **Logbook** = `GET /v1/me/logbook` derived from stored Trips/Flights:
+  recent Flights (last 20), daily log, lifetime totals, Clipper Card records, Field Awards earned; no new client
+  writes. (2) **Server answer checks come later**, with the dealer slices B1–B5 and releases; Trips v1 records
+  client-reported Flight facts. (The website's BACKEND_SYNC_PLAN.md claims a 10-28 answer-check ruling that
+  PROJECT_STATE does not record; flagged to the docs session.) (3) **Trip hint grants mirror Unity HintBank**
+  (+1 per 4 Trips, +1 per 7-day streak) as new hint_ledger kinds with a CHECK migration; unruled details are
+  `ASSUMPTION:` tests. (4) **Clipper Cards for commercial and Military** aircraft. Because the client's Military sheet
+  has no families (use only client-supplied content), a Military Card is keyed by the client's answer text,
+  normalised (trim, case-fold, collapse spaces), so repeated rows (Typhoon ×3) share one Card and variants stay
+  separate until the client supplies a family mapping (client question). Commercial Cards keep Unity's families.
+  The Unity app's undocumented `Idempotency-Key` on the Round result route is documented as accepted and ignored
+  (the Round id already makes it idempotent).
 - 2026-10-29 (user, from the S3 review): the UGS copy names its owner. Snapshot `schemaVersion` 2 adds `uid` (the
   Firebase uid); the game uses a copy only when `uid` is the signed-in user, and compares `version` only between copies
   of one owner. Reason: after a link move or an erase + re-link, the UGS item can hold the previous owner's copy (with
@@ -190,6 +203,13 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-29 (5.C contracts, design only): from PowerShell in `H:\Work\TheAviationArcade\Backend`, `docker compose up -d` (Postgres running).
+  `npm run typecheck` clean; `npm test` 15 files, 306/306; `npm run test:e2e` 8 files, 266/266 (`openapi.e2e.test.ts` 9 → 15: planned operations not
+  registered and 404 `not_found`, planned-only codes = `x-planned-enum`, planned request bodies strict, manifest keeps Unity's `ManifestWire`/`ModuleWire`
+  fields, 28 Field Award ids, planned response samples; the result route accepts and ignores `Idempotency-Key`); `npm run build` clean. Mutation checks:
+  removing `x-planned` from `GET /v1/me/logbook` failed the route-parity test; removing `local_date_mismatch` from `x-planned-enum` failed the
+  planned-codes test (both restored). No `src/` change, no migration, nothing committed. Local only.
 
 - 2026-10-29 (S7, shared UGS budget and write interval; D-4, C3): from PowerShell in `H:\Work\TheAviationArcade\Backend` with Postgres up.
   Before editing `schema.ts`, `drizzle-kit generate` reported "No schema changes"; after, it generated `0008_ugs_budget_and_pace` with only the two
