@@ -1,5 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { PlayerBalance } from "../balance/player-balance.js";
+import { DatabaseService } from "../database/database.module.js";
+import { withLiveStreak } from "../trips/trip-store.js";
 import type { PlayerRow } from "../db/schema.js";
 import { MILES_HINT_PACK } from "../rules/hints.js";
 
@@ -16,7 +18,10 @@ export type BuyHintPackOutcome =
  */
 @Injectable()
 export class ShopService {
-  constructor(private readonly balance: PlayerBalance) {}
+  constructor(
+    private readonly balance: PlayerBalance,
+    private readonly database: DatabaseService,
+  ) {}
 
   /**
    * Buy the Co-Pilot hint pack (10 hints for 5,000 Miles). `key` is the client's Idempotency-Key and the
@@ -51,6 +56,6 @@ export class ShopService {
     );
     if (result.kind === "no_player") return { kind: "no_player" };
     if (result.kind === "insufficient") return { kind: "insufficient_miles" };
-    return { kind: "purchased", player: result.player, ...result.value };
+    return { kind: "purchased", player: await withLiveStreak(this.database.db, result.player, now), ...result.value };
   }
 }

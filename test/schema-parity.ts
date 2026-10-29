@@ -6,6 +6,8 @@ import {
   CONTENT_STATUSES,
   ROUND_COMPLETIONS,
   ROUND_STATUSES,
+  TRIP_OUTCOMES,
+  TRIP_STATUSES,
 } from "../src/db/enums.js";
 import * as schema from "../src/db/schema.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
@@ -28,6 +30,11 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "content_items.content_items_status_check": CONTENT_STATUSES,
   "content_items.content_items_source_check": CONTENT_SOURCES,
   "admin_audit.admin_audit_action_check": ADMIN_AUDIT_ACTIONS,
+  "trips.trips_module_check": MODULE_IDS,
+  "trips.trips_rank_check": RANKS,
+  "trips.trips_status_check": TRIP_STATUSES,
+  "trips.trips_outcome_check": TRIP_OUTCOMES,
+  "player_counters.player_counters_previous_outcome_check": TRIP_OUTCOMES,
 };
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

@@ -52,7 +52,7 @@ src/common/               ApiError + ErrorCode, exception filter, ZodValidationP
 src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal()
 src/rules/                pure, Unity-mirrored logic: scoring, ranks (isPleasureCruise), first-class, banking (bankRound) (+ products.ts catalog later)
 src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
-src/players/, src/rounds/ feature modules: controller (HTTP) + service (transactions, domain outcomes)
+src/players/, src/rounds/, src/trips/ feature modules: controller (HTTP) + service (transactions, domain outcomes); src/trips/trip-store.ts holds the segment helpers RoundsService shares
 src/storage/              BlobStore (Bunny / memory / none), key validation
 src/content/              staff xlsx import/export: module mappings, pure import planner, service, controller
 src/admin/                GET /v1/admin/me (staff check for the website)
@@ -65,8 +65,18 @@ Round, hint and shop writes (and the Active Rank change) all go through `PlayerB
 which owns the lock, the ledger postings, the relative balance update, the version bump and the mirror enqueue (its
 invariants are written on the class); callers keep their own SQL for their own tables inside the same transaction.
 `bankRound` (`src/rules/banking.ts`) is the pure composition RoundsService calls inside that transaction: award (scoreRound + First Class Pass +
-Pleasure Cruise), paid-or-claimed hint, new Perfect Streak and promotion in one result. No DB types. The Perfect Streak is still
-global; the per-Trip streak (D-3) will hook in at `bankRound` (what `state.perfectStreak` means and when `streak` resets).
+Pleasure Cruise), paid-or-claimed hint, new Perfect Streak and promotion in one result. No DB types. The Perfect Streak is
+per Flight Segment (D-3, built in T2): `bankRound` is unchanged, the caller passes `players.perfect_streak` as
+`state.perfectStreak`, and that stored value means "the open segment's streak" because every open, abandon and expiry resets
+it (only when it is not already 0, so a no-op never bumps the version).
+
+Flight Segments (Unity Trips, `trips`): one open per player (unique partial index), snapshotting module, Active Rank and
+Pleasure Cruise at open. Lock order is player (`PlayerBalance.update`) → trip → Round → `player_counters`. Expiry is lazy: a
+segment 30 minutes past its last activity with fewer than ten banked Rounds is expired for every route that touches it and is
+closed (at its expiry) by the next write that sees it; there is no sweeper. `trips`, `player_counters` and the day log are written
+only inside `PlayerBalance.update`'s transaction, by the files listed in `TRIP_WRITERS` in `test/balance-guard.test.ts` (a
+structural guard). A Round result also writes the day log (`player_counters`) and may post a `day_streak_grant` hint, in the same
+transaction as the Miles posting.
 
 `PlayerBalance` is a deep module with one Postgres adapter, not a seam. Player creation (`open`: INSERT ... ON CONFLICT
 DO NOTHING, the one write that cannot lock first), deletion (`erase`) and the UGS link records (`linkUgs`) live in it too.

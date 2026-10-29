@@ -21,6 +21,7 @@ import { UGS_ISSUER } from "../src/ugs/ugs-token.js";
 import { UGS_BUDGET, UGS_CLIENT, UGS_FETCH, UGS_KEYS, UGS_WORKER_OPTIONS } from "../src/ugs/ugs.tokens.js";
 import { emulatorToken } from "./tokens.js";
 import { budgetContract } from "./ugs-budget-contract.js";
+import { factsFor, issueRound } from "./trip-helpers.js";
 
 // D-4 (shared UGS budget in Postgres) and C3 (minimum interval between copy writes) against the real test database.
 // UGS is a stub injected as the fetcher: nothing here touches the network. Ticks use explicit clocks.
@@ -159,14 +160,15 @@ async function seedLinked(n: number): Promise<string[]> {
 }
 
 async function bankRound(player: Player) {
-  const issued = await request(server).post("/v1/rounds").set(player.auth).send({ module: "identifier" });
+  // T2: a Round belongs to an open Flight Segment (one per player, reused across calls like the app does).
+  const issued = await issueRound(server, player.auth, "identifier");
   expect(issued.status).toBe(201);
   const roundId = issued.body.round.roundId as string;
   await sql.query("UPDATE rounds SET issued_at = issued_at - ($1::int * interval '1 millisecond') WHERE id = $2", [MIN_ROUND_MS * 2, roundId]);
   const res = await request(server)
     .post(`/v1/rounds/${roundId}/result`)
     .set(player.auth)
-    .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 });
+    .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier") });
   expect(res.status).toBe(200);
 }
 

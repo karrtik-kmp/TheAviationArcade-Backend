@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   doublePrecision,
   index,
   integer,
@@ -15,7 +16,15 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import type { AdminAuditAction, ContentSource, ContentStatus, RoundCompletion, RoundStatus } from "./enums.js";
+import type {
+  AdminAuditAction,
+  ContentSource,
+  ContentStatus,
+  RoundCompletion,
+  RoundStatus,
+  TripOutcome,
+  TripStatus,
+} from "./enums.js";
 
 /**
  * Player progress. One row per server principal: firebase:<project>:<uid>.
@@ -24,6 +33,9 @@ import type { AdminAuditAction, ContentSource, ContentStatus, RoundCompletion, R
  */
 
 const RANK_LIST = sql`('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')`;
+
+const MODULE_LIST = sql`('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',
+  'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')`;
 
 export const players = pgTable(
   "players",
@@ -50,6 +62,71 @@ export const players = pgTable(
     check("players_perfect_streak_check", sql`${t.perfectStreak} >= 0`),
     check("players_active_rank_check", sql`${t.activeRank} IS NULL OR ${t.activeRank} IN ${RANK_LIST}`),
     check("players_version_check", sql`${t.version} >= 1`),
+  ],
+);
+
+/**
+ * A server-issued Flight Segment (Unity "Trip"): ten Rounds of one module. Module, Active Rank and Pleasure Cruise are
+ * snapshotted at open for the whole segment. One open segment per player. `idempotency_key` is the open request's
+ * Idempotency-Key (U14): the same key replays the segment it opened. The result columns (outcome ... catalog_version)
+ * are written by slice T3 at completion. Written only inside PlayerBalance.update (lock order: player, trip, Round).
+ */
+export const trips = pgTable(
+  "trips",
+  {
+    id: uuid("id").primaryKey(),
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    module: text("module").notNull(),
+    rank: text("rank").notNull(),
+    pleasureCruise: boolean("pleasure_cruise").notNull(),
+    status: text("status").$type<TripStatus>().notNull().default("open"),
+    flightCount: integer("flight_count").notNull().default(10),
+    roundsBanked: integer("rounds_banked").notNull().default(0),
+    localDate: date("local_date", { mode: "string" }).notNull(),
+    utcOffsetMinutes: integer("utc_offset_minutes").notNull(),
+    contentVersion: text("content_version").notNull(),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull(),
+    // 30 minutes after the last activity (open, Round issue, Round result). Expiry is lazy: there is no sweeper.
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    outcome: text("outcome").$type<TripOutcome>(),
+    correct: integer("correct"),
+    hintUsed: boolean("hint_used"),
+    bestStreak: integer("best_streak"),
+    miles: integer("miles"),
+    statusPoints: integer("status_points"),
+    goAround: boolean("go_around"),
+    nightTrip: boolean("night_trip"),
+    completionLocalDate: date("completion_local_date", { mode: "string" }),
+    catalogVersion: integer("catalog_version"),
+  },
+  (t) => [
+    uniqueIndex("trips_idempotency").on(t.playerId, t.idempotencyKey),
+    // At most one open segment per player, enforced by the database.
+    uniqueIndex("trips_one_open_per_player").on(t.playerId).where(sql`${t.status} = 'open'`),
+    index("trips_player_completed").on(t.playerId, t.closedAt).where(sql`${t.status} = 'completed'`),
+    check("trips_module_check", sql`${t.module} IN ${MODULE_LIST}`),
+    check("trips_rank_check", sql`${t.rank} IN ${RANK_LIST}`),
+    check("trips_status_check", sql`${t.status} IN ('open', 'completed', 'abandoned')`),
+    check("trips_idempotency_key_check", sql`${t.idempotencyKey} ~ '^[A-Za-z0-9_-]{1,128}$'`),
+    check("trips_flight_count_check", sql`${t.flightCount} = 10`),
+    check("trips_rounds_banked_check", sql`${t.roundsBanked} BETWEEN 0 AND 10`),
+    check("trips_utc_offset_check", sql`${t.utcOffsetMinutes} BETWEEN -720 AND 840`),
+    check("trips_content_version_check", sql`length(${t.contentVersion}) BETWEEN 1 AND 64`),
+    check("trips_expires_after_open_check", sql`${t.expiresAt} > ${t.openedAt}`),
+    check("trips_closed_at_check", sql`(${t.status} <> 'open') = (${t.closedAt} IS NOT NULL)`),
+    check("trips_outcome_check", sql`${t.outcome} IS NULL OR ${t.outcome} IN ('all_correct', 'not_all_correct')`),
+    check("trips_correct_check", sql`${t.correct} IS NULL OR ${t.correct} BETWEEN 0 AND 10`),
+    check("trips_best_streak_check", sql`${t.bestStreak} IS NULL OR ${t.bestStreak} BETWEEN 0 AND 10`),
+    check("trips_miles_check", sql`${t.miles} IS NULL OR ${t.miles} >= 0`),
+    check("trips_status_points_check", sql`${t.statusPoints} IS NULL OR ${t.statusPoints} >= 0`),
+    check(
+      "trips_completed_check",
+      sql`${t.status} <> 'completed' OR (${t.roundsBanked} = 10 AND ${t.outcome} IS NOT NULL)`,
+    ),
   ],
 );
 
@@ -89,9 +166,28 @@ export const rounds = pgTable(
     // reports the same promotion.
     promotedFrom: text("promoted_from"),
     promotedTo: text("promoted_to"),
+    // Flight Segment membership (T2). NULL only for pre-segment dev rows; every new Round has both.
+    tripId: uuid("trip_id").references(() => trips.id, { onDelete: "cascade" }),
+    flightNumber: integer("flight_number"),
+    // Flight facts reported with the result (T2): the wire `aircraftKey` (commercial family or Military item id), the
+    // Card key the server derived from it (null for modules without Cards), time-to-answer and answers submitted.
+    aircraftKey: text("aircraft_key"),
+    cardKey: text("card_key"),
+    answerMs: integer("answer_ms"),
+    attempts: integer("attempts"),
+    // The Round's local day (server time of the result + the segment's offset); set when banked.
+    localDate: date("local_date", { mode: "string" }),
+    // This Round's result began the 7th consecutive local day and granted the day_streak_grant hint (for replays).
+    dayStreakGrant: boolean("day_streak_grant").notNull().default(false),
   },
   (t) => [
     index("rounds_player").on(t.playerId, t.issuedAt),
+    index("rounds_trip").on(t.tripId),
+    uniqueIndex("rounds_trip_flight_banked").on(t.tripId, t.flightNumber).where(sql`${t.status} = 'completed'`),
+    check("rounds_flight_number_check", sql`${t.flightNumber} IS NULL OR ${t.flightNumber} BETWEEN 1 AND 10`),
+    check("rounds_trip_flight_check", sql`(${t.tripId} IS NULL) = (${t.flightNumber} IS NULL)`),
+    check("rounds_answer_ms_check", sql`${t.answerMs} IS NULL OR ${t.answerMs} BETWEEN 0 AND 1800000`),
+    check("rounds_attempts_check", sql`${t.attempts} IS NULL OR ${t.attempts} >= 0`),
     // At most one in-flight Round per player, enforced by the database, not just by issueRound.
     uniqueIndex("rounds_one_open_per_player").on(t.playerId).where(sql`${t.status} = 'open'`),
     check(
@@ -168,12 +264,12 @@ export const hintLedger = pgTable(
     uniqueIndex("hint_ledger_idempotency").on(t.playerId, t.kind, t.ref),
     index("hint_ledger_player_time").on(t.playerId, t.createdAt),
     check("hint_ledger_delta_check", sql`${t.delta} <> 0`),
-    check("hint_ledger_kind_check", sql`${t.kind} IN ('starter', 'hint_pack', 'round_spend')`),
+    check(
+      "hint_ledger_kind_check",
+      sql`${t.kind} IN ('starter', 'hint_pack', 'round_spend', 'trip_grant', 'day_streak_grant')`,
+    ),
   ],
 );
-
-const MODULE_LIST = sql`('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',
-  'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')`;
 
 /**
  * One staff xlsx import (Phase 5.0). The original file lives in blob storage under blob_key; this row is the
@@ -222,6 +318,9 @@ export const contentItems = pgTable(
     data: jsonb("data").notNull(),
     version: integer("version").notNull().default(1),
     importId: text("import_id").references(() => contentImports.id),
+    // Military only: the Clipper Card key (`mil:` + normalised answer), computed once and FROZEN here (design 3.5): set by
+    // the importer on create, or by the first Round that uses an older row. Staff text edits never move it.
+    cardKey: text("card_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     updatedBy: text("updated_by").notNull(),
@@ -264,6 +363,54 @@ export const ugsLinks = pgTable(
     linkedAt: timestamp("linked_at", { withTimezone: true }).notNull(),
   },
   (t) => [uniqueIndex("ugs_links_ugs_player_id").on(t.ugsPlayerId)],
+);
+
+/**
+ * One row per player: the day log (T2) and the Field Award counters (T3), a cache of what stored segments and Rounds
+ * already say. T2 writes only the day fields (last_played_date ... best_day_streak), inside the Round result
+ * transaction; the rest stay 0 until T3. Written only inside PlayerBalance.update.
+ */
+export const playerCounters = pgTable(
+  "player_counters",
+  {
+    playerId: text("player_id")
+      .primaryKey()
+      .references(() => players.id, { onDelete: "cascade" }),
+    tripsCompleted: integer("trips_completed").notNull().default(0),
+    flightsCompleted: integer("flights_completed").notNull().default(0),
+    correctFlights: integer("correct_flights").notNull().default(0),
+    allCorrectTrips: integer("all_correct_trips").notNull().default(0),
+    milesEarned: bigint("miles_earned", { mode: "number" }).notNull().default(0),
+    bestTripStreak: integer("best_trip_streak").notNull().default(0),
+    identifierFullTrips: integer("identifier_full_trips").notNull().default(0),
+    perfectFlightStreak: integer("perfect_flight_streak").notNull().default(0),
+    bestPerfectFlightStreak: integer("best_perfect_flight_streak").notNull().default(0),
+    hintFreeTripStreak: integer("hint_free_trip_streak").notNull().default(0),
+    bestHintFreeTripStreak: integer("best_hint_free_trip_streak").notNull().default(0),
+    nightTrips: integer("night_trips").notNull().default(0),
+    goArounds: integer("go_arounds").notNull().default(0),
+    previousTripOutcome: text("previous_trip_outcome").$type<TripOutcome>(),
+    lastPlayedDate: date("last_played_date", { mode: "string" }),
+    flightsOnLastPlayedDate: integer("flights_on_last_played_date").notNull().default(0),
+    dayStreak: integer("day_streak").notNull().default(0),
+    bestDayStreak: integer("best_day_streak").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    check(
+      "player_counters_nonnegative_check",
+      sql`${t.tripsCompleted} >= 0 AND ${t.flightsCompleted} >= 0 AND ${t.correctFlights} >= 0
+        AND ${t.allCorrectTrips} >= 0 AND ${t.milesEarned} >= 0 AND ${t.bestTripStreak} >= 0
+        AND ${t.identifierFullTrips} >= 0 AND ${t.perfectFlightStreak} >= 0 AND ${t.bestPerfectFlightStreak} >= 0
+        AND ${t.hintFreeTripStreak} >= 0 AND ${t.bestHintFreeTripStreak} >= 0 AND ${t.nightTrips} >= 0
+        AND ${t.goArounds} >= 0 AND ${t.flightsOnLastPlayedDate} >= 0 AND ${t.dayStreak} >= 0
+        AND ${t.bestDayStreak} >= 0`,
+    ),
+    check(
+      "player_counters_previous_outcome_check",
+      sql`${t.previousTripOutcome} IS NULL OR ${t.previousTripOutcome} IN ('all_correct', 'not_all_correct')`,
+    ),
+  ],
 );
 
 /** Source of `ugs_mirror_outbox.generation`: never restarts, so a row deleted and re-inserted gets a new value. */
@@ -360,5 +507,7 @@ export const ugsBudget = pgTable(
 
 export type PlayerRow = typeof players.$inferSelect;
 export type RoundRow = typeof rounds.$inferSelect;
+export type TripRow = typeof trips.$inferSelect;
+export type PlayerCountersRow = typeof playerCounters.$inferSelect;
 export type ContentItemRow = typeof contentItems.$inferSelect;
 export type ContentImportRow = typeof contentImports.$inferSelect;

@@ -34,6 +34,8 @@ const MILES = rawTable("miles_ledger", "milesLedger");
 const HINTS = rawTable("hint_ledger", "hintLedger");
 const LINKS = rawTable("ugs_links", "ugsLinks");
 const PACE = rawTable("ugs_mirror_pace", "ugsMirrorPace");
+const TRIPS = rawTable("trips", "trips");
+const COUNTERS = rawTable("player_counters", "playerCounters");
 const QUEUE = `(?:${rawTable("ugs_mirror_outbox", "ugsMirrorOutbox")}|${rawTable("ugs_mirror_deletions", "ugsMirrorDeletions")})`;
 const PROTECTED = id("players|milesLedger|hintLedger|ugsLinks|ugsMirrorOutbox|ugsMirrorDeletions|ugsMirrorPace");
 const NOT_BACKTICK = "[^;`]";
@@ -70,6 +72,16 @@ export const RULES: { name: string; pattern: RegExp }[] = [
     name: "writes ugs_mirror_pace",
     pattern: R(String.raw`\.(?:insert|update|delete)\(\s*${id("ugsMirrorPace")}\s*\)|\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+${PACE}`, "i"),
   },
+  {
+    // Flight Segments and the day/Award counters are part of a player's progress: written only inside
+    // PlayerBalance.update's transaction, by the files in TRIP_WRITERS (the structure cannot prove the transaction, the
+    // allowlist keeps the writers few and reviewed).
+    name: "writes trips or player_counters",
+    pattern: R(
+      String.raw`\.(?:insert|update|delete)\(\s*${id("trips|playerCounters")}\s*\)|\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+(?:${TRIPS}|${COUNTERS})`,
+      "i",
+    ),
+  },
   // Any string literal naming the private module: static import, dynamic import(), require(); .js/.ts/no extension.
   { name: "imports the private mirror-outbox module", pattern: /["'][^"'\n]*\bmirror-outbox(?:\.[cm]?[jt]s)?["']/ },
   {
@@ -98,7 +110,15 @@ export const PACE_WRITERS: Record<string, string> = {
   "src/ugs/mirror-queue.ts": "ProgressWriteQueue records last_mirrored_at after a successful Cloud Save write, only for the current link",
 };
 
+/** Files outside src/balance that may write trips or player_counters, and why. */
+export const TRIP_WRITERS: Record<string, string> = {
+  "src/trips/trips.service.ts": "opens and abandons Flight Segments inside PlayerBalance.update",
+  "src/trips/trip-store.ts": "shared segment helpers (close, expire) called from inside PlayerBalance.update",
+  "src/rounds/rounds.service.ts": "issues and banks Rounds: segment counters and the day log, inside PlayerBalance.update",
+};
+
 const PACE_RULE = "writes ugs_mirror_pace";
+const TRIP_RULE = "writes trips or player_counters";
 const IMPORT_RULE = "imports a ledger or mirror-queue table";
 
 /** Names of the rules the given source violates. */
@@ -124,6 +144,7 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
       for (const name of violations(readFileSync(file, "utf8"))) {
         if (allowed && name === IMPORT_RULE) continue;
         if (rel.split(sep).join("/") in PACE_WRITERS && name === PACE_RULE) continue;
+        if (rel.split(sep).join("/") in TRIP_WRITERS && name === TRIP_RULE) continue;
         found.push(`${rel}: ${name}`);
       }
     }
@@ -139,6 +160,12 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
   it("the pace writer allowlist has no stale entries", () => {
     for (const rel of Object.keys(PACE_WRITERS)) {
       expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(PACE_RULE);
+    }
+  });
+
+  it("the trips writer allowlist has no stale entries", () => {
+    for (const rel of Object.keys(TRIP_WRITERS)) {
+      expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(TRIP_RULE);
     }
   });
 
@@ -165,6 +192,32 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
 });
 
 describe("balance guard checker catches seeded violations", () => {
+  it("writes to trips and player_counters: drizzle and raw SQL, any quoting", () => {
+    for (const seeded of [
+      "await tx.insert(trips).values({});",
+      "await tx.update(schema.trips).set({}).where(x);",
+      "await tx\n  .delete(\n    playerCounters\n  );",
+      "await tx.insert(playerCounters).values({});",
+      "await tx.execute(sql`UPDATE trips SET status = 'abandoned'`);",
+      "await tx.execute(sql`insert into ${trips} (id) values (1)`);",
+      'await tx.execute(sql`DELETE FROM "player_counters"`);',
+      "await tx.execute(sql`UPDATE public.player_counters SET day_streak = 0`);",
+    ]) {
+      expect(violations(seeded), seeded).toContain("writes trips or player_counters");
+    }
+  });
+
+  it("reading trips and player_counters is fine", () => {
+    for (const seeded of [
+      "await tx.select().from(trips).where(eq(trips.id, id)).for(\"update\");",
+      "await tx.select().from(playerCounters);",
+      "await tx.execute(sql`SELECT * FROM trips WHERE id = ${id}`);",
+      "await tx.update(rounds).set({ tripId: null }).where(eq(rounds.id, id));",
+    ]) {
+      expect(violations(seeded), seeded).not.toContain("writes trips or player_counters");
+    }
+  });
+
   const LOCK = "locks players FOR UPDATE";
   const LOCK_RAW = "locks players FOR UPDATE (raw SQL)";
   const INSERT = "inserts into the mirror queue or a ledger";

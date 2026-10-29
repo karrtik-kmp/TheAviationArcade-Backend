@@ -6,6 +6,7 @@ import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import { adminAudit, contentImports, contentItems } from "../db/schema.js";
 import type { ContentImportRow } from "../db/schema.js";
+import { militaryCardKey } from "../rules/clipper-cards.js";
 import { isRank } from "../rules/ranks.js";
 import { BLOB_STORE, StorageRequestError, StorageUnavailableError } from "../storage/blob-store.js";
 import type { BlobStore } from "../storage/blob-store.js";
@@ -227,6 +228,8 @@ export class ContentService {
             data: r.data,
             version: 1,
             importId,
+            // Military: the Clipper Card key is frozen at first import (design 3.5); staff edits never change it.
+            cardKey: module === "aircraft-identifier-military" ? militaryCardKey(String(r.data["answer"] ?? "")) || null : null,
             createdAt: now,
             updatedAt: now,
             updatedBy: principal,

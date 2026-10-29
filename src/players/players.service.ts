@@ -7,6 +7,7 @@ import type { PlayerRow } from "../db/schema.js";
 import { STARTER_HINTS } from "../rules/hints.js";
 import { certifiedRankFor, rankIndex } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
+import { withLiveStreak } from "../trips/trip-store.js";
 
 export type SetActiveRankOutcome =
   | { kind: "set"; player: PlayerRow }
@@ -23,6 +24,14 @@ export class PlayersService {
   async getPlayer(principal: string): Promise<PlayerRow | null> {
     const [player] = await this.database.db.select().from(players).where(eq(players.id, principal));
     return player ?? null;
+  }
+
+  /**
+   * The Perfect Streak to show (U13): the stored streak belongs to the open Flight Segment, so it reads 0 when no segment
+   * is open or the open one has expired (expiry is lazy and the stored value is only reset by the next write).
+   */
+  live(player: PlayerRow, now: Date): Promise<PlayerRow> {
+    return withLiveStreak(this.database.db, player, now);
   }
 
   /** Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. */

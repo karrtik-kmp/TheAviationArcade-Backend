@@ -1,13 +1,21 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
 
-    **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (Trips, the Logbook,
-    the content manifest and its data documents) are the agreed next contract, recorded here so Unity can build
+    **Flight Segments (slice T2, built 2026-10-29) are a BREAKING CHANGE to the Round routes.** `POST /v1/trips` opens a
+    Flight Segment (Unity Trip) and `POST /v1/trips/{tripId}/abandon` closes it; `POST /v1/rounds` now takes
+    `{ tripId }` instead of `{ module }` (module and rank come from the segment), and `POST /v1/rounds/{roundId}/result`
+    requires the Flight facts `aircraftKey`, `answerMs` and `attempts`. An app built against 0.3.0 gets 400
+    `invalid_request` from both Round routes until it adopts this. Unity changes: open a segment per Trip with a fresh
+    `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts. Completion
+    (`POST /v1/trips/{tripId}/complete`) is slice T3.
+
+    **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (Trip completion, the
+    Logbook, the content manifest and its data documents) are the agreed next contract, recorded here so Unity can build
     against it. They are NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
     `x-planned-properties`; the built shapes beside them are what the server does now. Error codes only planned
@@ -47,7 +55,7 @@ tags:
   - name: shop
   - name: admin
   - name: trips
-    description: Planned. Flight Segments (Unity Trips) of ten Rounds (Unity Flights).
+    description: Flight Segments (Unity Trips) of ten Rounds (Unity Flights). Open and abandon are built; complete is planned (T3).
   - name: content
     description: Planned. The content manifest and the versioned data documents it points to.
 
@@ -144,10 +152,10 @@ paths:
       tags: [player]
       operationId: getProgress
       summary: Current progress
-      x-planned-change: |
-        With Trips (D-3), `perfectStreak` becomes the streak of the open Flight Segment (0 when none is open); see
-        `Progress` `x-planned-properties`. The full Field Award board, Clipper Cards and counters are served by
-        `GET /v1/me/logbook`, not here (contract round 2).
+      description: |
+        `perfectStreak` is the Perfect Streak of the open Flight Segment, 0 when none is open or the open one has
+        expired (D-3, built in T2). The full Field Award board, Clipper Cards and counters will be served by
+        `GET /v1/me/logbook` (planned), not here (contract round 2).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       responses:
@@ -360,28 +368,24 @@ paths:
       operationId: startRound
       summary: Issue a Round
       description: |
-        Issues a single-use Round at the player's Active Rank and abandons any other open Round
-        (its result then fails with 410 `round_closed`). A Round expires 30 minutes after issue.
-      x-planned-change:
-        note: |
-          With Trips (slice T2) every Round belongs to an open Flight Segment (contract round 1). The body becomes
-          `StartRoundInSegmentRequest` `{ tripId }`: module, rank and Pleasure Cruise come from the Flight Segment,
-          which snapshotted them at Active Rank when it opened. The Round gets the next flight number (1-10).
-          Issuing a Round while the segment's current Round is still open abandons that Round as today, and the new
-          Round takes the SAME flight number (an abandoned Round never counts toward the ten). New errors: 404
-          `trip_not_found` (unknown, another player's, or not a UUID), 409 `trip_full` (all ten Rounds already banked:
-          complete the segment), 410 `trip_expired` / `trip_closed` (the segment expired, or was completed or
-          abandoned). The 30 minute Round expiry and the 3 s floor stay per Round. `IssuedRound` gains `tripId` and
-          `flightNumber`.
-        requestBody: { $ref: "#/components/schemas/StartRoundInSegmentRequest" }
-        errorCodes: [trip_not_found, trip_full, trip_expired, trip_closed]
+        BREAKING in 0.4.0 (slice T2): the body is `{ tripId }`, not `{ module }`. Issues the next single-use Round of an
+        open Flight Segment (open one with `POST /v1/trips`). Module, rank and Pleasure Cruise come from the segment,
+        which snapshotted them at Active Rank when it opened. The Round gets the next flight number (banked + 1, 1-10).
+        Issuing a Round while the segment's current Round is still open abandons that Round (its result then fails with
+        410 `round_closed`; a spent hint is not refunded) and the new Round takes the SAME flight number: an abandoned
+        Round never counts toward the ten. Any other open Round of the player is abandoned too. A Round expires 30
+        minutes after issue; issuing also restarts the segment's own 30 minute clock.
+
+        Errors: 404 `trip_not_found` (unknown, another player's, or `tripId` is not a UUID), 409 `trip_full` (all ten
+        Rounds are banked: complete the segment), 410 `trip_expired` (30 minutes without activity; the segment is then
+        closed and the Perfect Streak is 0) or `trip_closed` (completed or abandoned).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/StartRoundRequest" }
+            schema: { $ref: "#/components/schemas/StartRoundInSegmentRequest" }
       responses:
         "201":
           description: Round issued.
@@ -393,7 +397,25 @@ paths:
               schema: { $ref: "#/components/schemas/RoundEnvelope" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "404":
+          description: "`player_not_found`: call `PUT /v1/me` first. `trip_not_found`: not this player's Flight Segment (or unknown, or not a UUID)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [player_not_found, trip_not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: All ten Rounds of the segment are banked; complete it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [trip_full]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410": { $ref: "#/components/responses/TripGone" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "426": { $ref: "#/components/responses/ClientUpdateRequired" }
@@ -413,17 +435,20 @@ paths:
 
         An `Idempotency-Key` header (the Unity outbox sends one) is accepted and ignored: the Round id already
         makes this call idempotent, so a repeat with any key, or none, is the same replay.
-      x-planned-change:
-        note: |
-          With Trips (slice T2) the body becomes `RoundResultWithFlightFactsRequest`: today's four fields plus the
-          Flight facts `aircraftKey`, `answerMs` and `attempts` (ADR-0008 §2), all required and strictly validated.
-          The Perfect Streak the award is computed from is the Flight Segment's own (D-3): it starts at 0 when the
-          segment opens. A banked Round also moves the player's day streak (local day = server time of the result +
-          the segment's `utcOffsetMinutes`); every 7th consecutive day grants one hint (Unity `HintBank`), returned in
-          `RoundResultResponse.hintGrants`. Cards, Field Awards and the Trip hint grant are NOT decided here; they are
-          decided once, by `POST /v1/trips/{tripId}/complete`. Facts that fail the module rules (see
-          `RoundResultWithFlightFactsRequest`) are 400 `invalid_request`.
-        requestBody: { $ref: "#/components/schemas/RoundResultWithFlightFactsRequest" }
+
+        BREAKING in 0.4.0 (slice T2): the body is `RoundResultWithFlightFactsRequest`: the four Round facts plus the Flight
+        facts `aircraftKey`, `answerMs` and `attempts` (ADR-0008 §2), all required and strictly validated. Facts that
+        fail the module rules (see the schema; for `identifier` an `aircraftKey` outside the seeded commercial Card
+        catalog) are 400 `invalid_request` and bank nothing. The Perfect Streak the award is computed from is the Flight
+        Segment's own (D-3): it starts at 0 when the segment opens and is reset when it closes. A banked Round also moves
+        the player's day streak (local day = server time of the result + the segment's `utcOffsetMinutes`); every 7th
+        consecutive day grants one hint (Unity `HintBank`), returned in `hintGrants` and ledgered as `day_streak_grant`.
+        `trip` says where the segment stands after this Round (on a replay: where it stands now). Cards, Field Awards
+        and the Trip hint grant are NOT decided here; they are decided once, by `POST /v1/trips/{tripId}/complete` (T3).
+        A Round whose own 30 minutes passed stays `round_expired` on every retry, even after its segment was marked
+        expired or a newer segment replaced it. `trip_expired` on this route is defensive: it answers a Round that is
+        still inside its own window although its segment ran out (the two clocks share a start, so this is not a normal
+        outcome), and a retry for a Round abandoned together with an expired segment.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
         - name: roundId
@@ -439,7 +464,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/RoundResultRequest" }
+            schema: { $ref: "#/components/schemas/RoundResultWithFlightFactsRequest" }
       responses:
         "200":
           description: Banked, or replayed.
@@ -462,11 +487,12 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "410":
           description: |
-            `round_expired`: the 30 minute window passed. `round_closed`: a newer Round superseded it.
+            `round_expired`: the 30 minute window passed. `round_closed`: a newer Round superseded it, or its segment was
+            abandoned. `trip_expired`: defensive only, the Round's segment ran out of time while the Round itself did not.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
-          x-error-codes: [round_expired, round_closed]
+          x-error-codes: [round_expired, round_closed, trip_expired]
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -493,6 +519,7 @@ paths:
       operationId: spendRoundHint
       summary: Spend this Round's hint
       description: |
+        The Round's Flight Segment must be open and unexpired (otherwise 410 `round_closed` / `round_expired`).
         Spends one Co-Pilot hint on the player's own open, unexpired Round. A Round allows one hint, so this
         is idempotent: when the Round already has its hint the answer is 200 with `replayed: true` and nothing
         is debited (also after the Round was banked or superseded). A paid hint cannot be hidden: the result
@@ -554,20 +581,22 @@ paths:
 
   /v1/trips:
     post:
-      x-planned: true
-      x-planned-note: Not built. Slice T2 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
       tags: [trips]
       operationId: openFlightSegment
-      summary: Open a Flight Segment (Unity Trip) (planned)
+      summary: Open a Flight Segment (Unity Trip)
       description: |
-        PLANNED, NOT BUILT. Opens a server-issued Flight Segment of ten Rounds for one module at the player's Active
+        Opens a server-issued Flight Segment of ten Rounds for one module at the player's Active
         Rank (contract round 1: a Trip deals at Active Rank, so a Pleasure Cruise plays that rank). Rank and Pleasure
         Cruise are snapshotted for the whole segment; changing Active Rank mid-segment does not change it.
 
         One open Flight Segment per player (it replaces the one-open-Round rule as the unit the app works in).
-        Opening one abandons the player's open segment and its open Round, except that a segment whose ten Rounds are
-        all banked is completed first (its awards are decided then, exactly as `complete` would). The new segment's
-        Perfect Streak starts at 0 (D-3), so `progress.perfectStreak` is 0 afterwards.
+        Opening one abandons the player's open segment and its open Round and starts the new segment's Perfect Streak at
+        0 (D-3), so `progress.perfectStreak` is 0 afterwards.
+
+        **Interim behaviour until slice T3.** The design completes a segment whose ten Rounds are all banked when a newer
+        one is opened. `complete` does not exist yet, and abandoning a full segment would throw away its Cards, counters
+        and awards, so for now opening while the open segment is full answers 409 `trip_full` (body carries the full
+        segment's `tripId`) and changes nothing. T3 replaces this with "complete it first, then open".
 
         `localDate` must be the calendar date of server time plus `utcOffsetMinutes` (within 15 minutes either side,
         so a request that straddles midnight passes); otherwise 422 `local_date_mismatch`. The server records the
@@ -578,7 +607,7 @@ paths:
         Requires an `Idempotency-Key` header (1-128 of `A-Z a-z 0-9 _ -`, U14, 2026-10-29): repeating a key this
         player already used answers 200 with the segment that key opened (and its current state) instead of opening
         another, so a retry after a dropped response never abandons the segment it just opened. Mint a new key per
-        new segment. A segment expires 30 minutes after its last activity (open, Round issue or Round result); see
+        new segment. A key that already opened a segment for a different `module` is 422 `idempotency_key_reused`. A segment expires 30 minutes after its last activity (open, Round issue or Round result); see
         `expiresAt`.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
@@ -593,7 +622,7 @@ paths:
             schema: { $ref: "#/components/schemas/OpenFlightSegmentRequest" }
       responses:
         "200":
-          description: Replay of an `Idempotency-Key` already used by this player; the segment it opened.
+          description: Replay of an `Idempotency-Key` already used by this player; the segment it opened, as it stands now.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -611,14 +640,23 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/PlayerNotFound" }
-        "413": { $ref: "#/components/responses/BodyRejected" }
-        "415": { $ref: "#/components/responses/BodyRejected" }
-        "422":
-          description: "`localDate` does not match server time plus `utcOffsetMinutes`."
+        "409":
+          description: "Interim (T2): the player's open segment has all ten Rounds banked; complete it first (T3). Extra field `tripId`."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
-          x-error-codes: [local_date_mismatch]
+          x-error-codes: [trip_full]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`local_date_mismatch`: `localDate` does not match server time plus `utcOffsetMinutes`. `idempotency_key_reused`: the key already opened a segment for a different `module`."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [local_date_mismatch, idempotency_key_reused]
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -677,13 +715,11 @@ paths:
 
   /v1/trips/{tripId}/abandon:
     post:
-      x-planned: true
-      x-planned-note: Not built. Slice T2 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
       tags: [trips]
       operationId: abandonFlightSegment
-      summary: Abandon a Flight Segment (planned)
+      summary: Abandon a Flight Segment
       description: |
-        PLANNED, NOT BUILT. Closes the player's open segment without completing it (the player quit to the menu,
+        Closes the player's open segment without completing it (the player quit to the menu,
         signed out, or the app is about to open another module). Its open Round is abandoned. Rounds already banked
         keep their Miles and Status Points and still count for the day streak, but an abandoned segment collects no
         Clipper Cards, moves no Field Award counter, earns no Field Award and no Trip hint, and is not a "previous
@@ -1128,11 +1164,10 @@ components:
       schema: { $ref: "#/components/schemas/ModuleId" }
 
     TripId:
-      x-planned: true
       name: tripId
       in: path
       required: true
-      description: Planned. A Flight Segment (Unity Trip) id. Not a UUID is 404 `trip_not_found`.
+      description: A Flight Segment (Unity Trip) id. Not a UUID is 404 `trip_not_found`.
       schema: { type: string, format: uuid }
 
     IfNoneMatch:
@@ -1258,8 +1293,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     TripNotFound:
-      x-planned: true
-      description: Planned. Not this player's Flight Segment (or unknown, or `tripId` is not a UUID).
+      description: Not this player's Flight Segment (or unknown, or `tripId` is not a UUID).
       headers:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1268,10 +1302,9 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     TripGone:
-      x-planned: true
       description: |
-        Planned. `trip_expired`: the segment expired (30 minutes without activity) before all ten Rounds were banked.
-        `trip_closed`: it was abandoned (or superseded by a newer segment).
+        `trip_expired`: the segment expired (30 minutes without activity) before all ten Rounds were banked.
+        `trip_closed`: it was abandoned (or superseded by a newer segment), or completed.
       headers:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1357,13 +1390,14 @@ components:
                 - storage_unavailable
                 - service_unavailable
                 - internal_error
-              x-planned-enum:
                 - trip_not_found
                 - trip_expired
                 - trip_closed
-                - trip_incomplete
                 - trip_full
                 - local_date_mismatch
+                - idempotency_key_reused
+              x-planned-enum:
+                - trip_incomplete
             message:
               type: string
               description: For logs, not for display or logic.
@@ -1568,15 +1602,16 @@ components:
           oneOf:
             - { $ref: "#/components/schemas/NextRank" }
             - { type: "null" }
-        perfectStreak: { type: integer, minimum: 0, description: Consecutive Perfect Completions. }
+        perfectStreak:
+          type: integer
+          minimum: 0
+          description: |
+            Consecutive Perfect Completions inside the open Flight Segment, 0 when none is open (D-3, built in T2: the
+            streak counts per Trip; it resets when a segment opens, completes, is abandoned or expires). The same applies
+            to `UgsMirrorProgress.perfectStreak`. A segment that expired is closed lazily, so the stored value can lag until
+            the next write; `GET /v1/me/progress` already reads 0 then. No Field Award or Clipper Card data is added here or
+            to the UGS copy (design doc, U1/U2); the Logbook carries them.
         firstClassPass: { type: boolean }
-      x-planned-properties:
-        note: |
-          Planned with Trips (slice T2). `perfectStreak` keeps its name and type but means the streak inside the open
-          Flight Segment, 0 when none is open (D-3: the streak counts per Trip; it resets when a segment opens,
-          completes or is abandoned). The same applies to `UgsMirrorProgress.perfectStreak`. No Field Award or Clipper
-          Card data is added here or to the UGS copy unless the user decides otherwise (design doc, open question U1/U2);
-          the Logbook carries them.
     ProgressEnvelope:
       type: object
       additionalProperties: false
@@ -1638,44 +1673,24 @@ components:
       required: [rank]
       properties:
         rank: { $ref: "#/components/schemas/Rank" }
-    StartRoundRequest:
-      type: object
-      additionalProperties: false
-      required: [module]
-      properties:
-        module: { $ref: "#/components/schemas/ModuleId" }
     IssuedRound:
       type: object
       additionalProperties: false
-      required: [roundId, module, rank, pleasureCruise, expiresAt]
+      required: [roundId, module, rank, pleasureCruise, expiresAt, tripId, flightNumber]
       properties:
         roundId: { type: string, format: uuid }
-        module: { $ref: "#/components/schemas/ModuleId" }
-        rank: { $ref: "#/components/schemas/Rank" }
+        module: { $ref: "#/components/schemas/ModuleId", description: "The segment's module." }
+        rank: { $ref: "#/components/schemas/Rank", description: "The segment's rank (Active Rank when it opened)." }
         pleasureCruise: { type: boolean }
-        expiresAt: { type: string, format: date-time }
-      x-planned-properties:
-        tripId: { type: string, format: uuid, description: "Planned (T2). The Flight Segment this Round belongs to." }
-        flightNumber: { type: integer, minimum: 1, maximum: 10, description: "Planned (T2). Unity Flight number in the Trip." }
+        expiresAt: { type: string, format: date-time, description: "30 minutes after issue." }
+        tripId: { type: string, format: uuid, description: The Flight Segment this Round belongs to. }
+        flightNumber: { type: integer, minimum: 1, maximum: 10, description: "Unity Flight number in the Trip (rounds banked + 1)." }
     RoundEnvelope:
       type: object
       additionalProperties: false
       required: [round]
       properties:
         round: { $ref: "#/components/schemas/IssuedRound" }
-    RoundResultRequest:
-      type: object
-      additionalProperties: false
-      required: [finished, errorCount, usedHint, timeRemainingFraction]
-      properties:
-        finished: { type: boolean }
-        errorCount: { type: integer, minimum: 0, maximum: 1000 }
-        usedHint: { type: boolean }
-        timeRemainingFraction:
-          type: number
-          minimum: 0
-          maximum: 1
-          description: Fraction of the timer left at finish.
     Award:
       type: object
       additionalProperties: false
@@ -1698,7 +1713,7 @@ components:
     RoundResultResponse:
       type: object
       additionalProperties: false
-      required: [award, promotion, replayed, progress]
+      required: [award, promotion, replayed, hintGrants, trip, progress]
       properties:
         award: { $ref: "#/components/schemas/Award" }
         promotion:
@@ -1709,21 +1724,22 @@ components:
         replayed:
           type: boolean
           description: True when this Round was already banked; nothing was paid again.
-        progress: { $ref: "#/components/schemas/Progress" }
-      x-planned-properties:
         hintGrants:
-          description: Planned (T2). Hints this result granted (a 7th consecutive local day). Empty on a replay of a Round that granted nothing; the same grant on a replay of one that did.
+          description: Hints this result granted (a 7th consecutive local day, `day_streak_grant`). Empty on a replay of a Round that granted nothing; the same grant on a replay of one that did.
           type: array
           items: { $ref: "#/components/schemas/HintGrant" }
         trip:
-          description: Planned (T2). Where the Flight Segment stands after this Round.
-          type: object
-          additionalProperties: false
-          required: [tripId, roundsBanked, perfectStreak]
-          properties:
-            tripId: { type: string, format: uuid }
-            roundsBanked: { type: integer, minimum: 1, maximum: 10 }
-            perfectStreak: { type: integer, minimum: 0, maximum: 10 }
+          description: Where the Flight Segment stands after this Round (on a replay, where it stands now). Null only for a Round banked before Flight Segments existed (local dev data).
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [tripId, roundsBanked, perfectStreak]
+              properties:
+                tripId: { type: string, format: uuid }
+                roundsBanked: { type: integer, minimum: 1, maximum: 10 }
+                perfectStreak: { type: integer, minimum: 0, maximum: 10 }
+            - { type: "null" }
+        progress: { $ref: "#/components/schemas/Progress" }
     HintReceipt:
       type: object
       additionalProperties: false
@@ -1759,21 +1775,19 @@ components:
         progress: { $ref: "#/components/schemas/Progress" }
 
     # ---------------------------------------------------------------------------------------------------------
-    # PLANNED schemas (x-planned: true). Designed 2026-10-29, not built. docs/design/trips-awards-logbook.md.
+    # Flight Segment schemas: built in slice T2. Below them, PLANNED schemas (x-planned: true), designed 2026-10-29,
+    # not built. docs/design/trips-awards-logbook.md.
     # ---------------------------------------------------------------------------------------------------------
 
     LocalDate:
-      x-planned: true
       type: string
       pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
       description: A calendar date, `YYYY-MM-DD`.
     ContentVersion:
-      x-planned: true
       type: string
       pattern: "^[A-Za-z0-9._:+-]{1,64}$"
       description: The app's bundled content pack version (ADR-0008 §4, snapshot date plus a hash). Recorded only, until releases exist.
     FlightSegmentStatus:
-      x-planned: true
       type: string
       enum: [open, completed, abandoned]
       description: An expired segment reads `abandoned` (unless all ten Rounds were banked, then it can still be completed).
@@ -1784,7 +1798,6 @@ components:
       description: Unity `TripOutcome`. `all_correct` = every Round finished (answered correctly; a hint or a second try still counts).
 
     OpenFlightSegmentRequest:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [module, flightCount, localDate, utcOffsetMinutes, contentVersion]
@@ -1804,7 +1817,6 @@ components:
         contentVersion: { $ref: "#/components/schemas/ContentVersion" }
 
     FlightSegment:
-      x-planned: true
       type: object
       additionalProperties: false
       description: A Flight Segment (Unity Trip) as it stands.
@@ -1835,7 +1847,6 @@ components:
             - { type: string, format: date-time }
             - { type: "null" }
     FlightSegmentEnvelope:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [trip, progress]
@@ -1843,7 +1854,6 @@ components:
         trip: { $ref: "#/components/schemas/FlightSegment" }
         progress: { $ref: "#/components/schemas/Progress" }
     FlightSegmentAbandoned:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [trip, replayed, progress]
@@ -1853,28 +1863,28 @@ components:
         progress: { $ref: "#/components/schemas/Progress" }
 
     StartRoundInSegmentRequest:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [tripId]
-      description: Planned body of `POST /v1/rounds` (T2). Module, rank and Pleasure Cruise come from the segment.
+      description: Body of `POST /v1/rounds` (0.4.0, replaces `{ module }`). Module, rank and Pleasure Cruise come from the segment.
       properties:
         tripId: { type: string, format: uuid }
 
     RoundResultWithFlightFactsRequest:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts]
       description: |
-        Planned body of `POST /v1/rounds/{roundId}/result` (T2): today's Round facts plus the Flight facts (ADR-0008 §2).
-        Module rules (400 `invalid_request` when broken):
+        Body of `POST /v1/rounds/{roundId}/result` (0.4.0): the Round facts plus the Flight facts (ADR-0008 §2).
+        Module rules (400 `invalid_request` when broken, nothing banked):
         - `identifier`: `aircraftKey` is the Unity aircraft family of the Flight's correct answer (the `family` of the
-          question in `identifier_questions.json`, e.g. `787`, `A320`), required, also on a timeout.
-        - `aircraft-identifier-military`: `aircraftKey` is the content item id of the question (`mil-a4`), required;
-          the server maps it to the client's answer text and from that to the Card key (see `ClipperCardDefinition`).
-          An id the content store does not hold is rejected. PROPOSED: the alternative is sending the answer text
-          (design doc, open question U3).
+          question in `identifier_questions.json`, e.g. `787`, `A320`), required, also on a timeout. It must be an exact
+          key of the seeded commercial Card catalog (U9: 707 717 727 737 747 757 767 777 787 A220 A300 A310 A318 A319 A320
+          A321 A330 A340 A350 A380 E175 CRJ DC-8); a typo, a case variant (`a320`) or a Military key is 400 and banks
+          nothing, so it can never create a second Card.
+        - `aircraft-identifier-military`: `aircraftKey` is the content item id of the question (`mil-a4`), required (U3);
+          the server maps it to the Card key frozen on the stored item (the client's answer text, design 3.5). An id the
+          content store does not hold is rejected; a retired item is accepted (A6).
         - every other module: `aircraftKey` is null.
         - `attempts` >= `errorCount`, and >= 1 when `finished`.
         - `answerMs` may not exceed the server's own issue-to-result time by more than 2,000 ms.
@@ -1900,7 +1910,6 @@ components:
           description: Answers submitted in this Flight, the correct one included.
 
     HintGrant:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [kind, hints, ref]
@@ -1909,7 +1918,7 @@ components:
         kind:
           type: string
           enum: [trip_grant, day_streak_grant]
-          description: "`trip_grant`: every 4th completed Flight Segment (ref = tripId). `day_streak_grant`: every 7th consecutive local day with a banked Round (ref = that local date)."
+          description: "`trip_grant`: every 4th completed Flight Segment (ref = tripId; slice T3, not emitted yet). `day_streak_grant`: every 7th consecutive local day with a banked Round (ref = that local date; built in T2)."
         hints: { type: integer, minimum: 1 }
         ref: { type: string }
 

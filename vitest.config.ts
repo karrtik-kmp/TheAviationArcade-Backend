@@ -20,6 +20,7 @@ export default defineConfig({
       "test/balance-guard.test.ts",
       "test/schema-parity.test.ts",
       "test/trips.test.ts",
+      "test/trip-segments.test.ts",
       "test/field-awards.test.ts",
     ],
   },

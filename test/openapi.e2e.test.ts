@@ -10,12 +10,14 @@ import { parse } from "yaml";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { ERROR_CODES } from "../src/common/errors.js";
+import { SEED_COMMERCIAL_CARD_KEYS } from "../src/rules/aircraft-tags.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
 import { XLSX_MIME } from "../src/content/xlsx.js";
 import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
 import { clientSheet } from "./fixtures.js";
 import { emulatorToken } from "./tokens.js";
+import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
 // docs/openapi.yaml is the client contract. These tests fail when it and the code drift.
 
@@ -196,28 +198,43 @@ describe("openapi contract: real responses validate against the spec", () => {
     const progress = await request(server).get("/v1/me/progress").set(auth);
     check("ProgressEnvelope", progress.body);
 
-    const issued = await request(server).post("/v1/rounds").set(auth).send({ module: "identifier" });
+    // T2: a Round belongs to a Flight Segment. Open one (201, then the same Idempotency-Key replays it with 200).
+    const key = newKey();
+    const opened = await request(server).post("/v1/trips").set(auth).set("Idempotency-Key", key).send(openBody("identifier"));
+    expect(opened.status).toBe(201);
+    check("FlightSegmentEnvelope", opened.body);
+    const tripId = opened.body.trip.tripId as string;
+    const reopened = await request(server).post("/v1/trips").set(auth).set("Idempotency-Key", key).send(openBody("identifier"));
+    expect(reopened.status).toBe(200);
+    check("FlightSegmentEnvelope", reopened.body);
+    expect(reopened.body.trip.tripId).toBe(tripId);
+
+    const issued = await request(server).post("/v1/rounds").set(auth).send({ tripId });
     expect(issued.status).toBe(201);
     check("RoundEnvelope", issued.body);
+    expect(issued.body.round).toMatchObject({ tripId, flightNumber: 1, module: "identifier" });
     const roundId = issued.body.round.roundId as string;
 
     await sql.query(
       "UPDATE rounds SET issued_at = issued_at - interval '10 seconds' WHERE id = $1",
       [roundId],
     );
-    const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 };
+    const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier") };
     // The Unity outbox sends an Idempotency-Key here; it is documented as accepted and ignored.
     const banked = await request(server)
       .post(`/v1/rounds/${roundId}/result`).set(auth).set("Idempotency-Key", "outbox-r1").send(result);
     expect(banked.status).toBe(200);
     check("RoundResultResponse", banked.body);
     expect(banked.body.replayed).toBe(false);
+    expect(banked.body.trip).toEqual({ tripId, roundsBanked: 1, perfectStreak: 1 });
+    expect(banked.body.hintGrants).toEqual([]);
     const replay = await request(server)
       .post(`/v1/rounds/${roundId}/result`).set(auth).set("Idempotency-Key", "a-different-key").send(result);
     check("RoundResultResponse", replay.body);
     expect(replay.body.replayed).toBe(true);
 
-    const next = await request(server).post("/v1/rounds").set(auth).send({ module: "identifier" });
+    const next = await request(server).post("/v1/rounds").set(auth).send({ tripId });
+    expect(next.body.round.flightNumber).toBe(2);
     const hintPath = `/v1/rounds/${next.body.round.roundId}/hint`;
     const spent = await request(server).post(hintPath).set(auth);
     expect(spent.status).toBe(200);
@@ -250,7 +267,7 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", keyless.body);
 
     await sql.query("UPDATE players SET hints = 0 WHERE id = $1", [`firebase:demo-airplane-games:${uid}`]);
-    const second = await request(server).post("/v1/rounds").set(auth).send({ module: "identifier" });
+    const second = await request(server).post("/v1/rounds").set(auth).send({ tripId });
     const dry = await request(server).post(`/v1/rounds/${second.body.round.roundId}/hint`).set(auth);
     expect(dry.status).toBe(409);
     check("Error", dry.body);
@@ -261,6 +278,28 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", rankUp.body);
     expect(rankUp.body.error.code).toBe("rank_not_certified");
     expect(rankUp.headers["x-request-id"]).toBe(rankUp.body.error.requestId);
+
+    // Segment errors validate against Error; abandon answers FlightSegmentAbandoned (and again as a replay).
+    const missing = await request(server).post(`/v1/trips/${randomUUID()}/abandon`).set(auth);
+    expect(missing.status).toBe(404);
+    check("Error", missing.body);
+    expect(missing.body.error.code).toBe("trip_not_found");
+    const badDate = await request(server).post("/v1/trips").set(auth).set("Idempotency-Key", newKey())
+      .send(openBody("identifier", { localDate: "2001-01-01" }));
+    expect(badDate.status).toBe(422);
+    check("Error", badDate.body);
+    expect(badDate.body.error.code).toBe("local_date_mismatch");
+    const abandoned = await request(server).post(`/v1/trips/${tripId}/abandon`).set(auth);
+    expect(abandoned.status).toBe(200);
+    check("FlightSegmentAbandoned", abandoned.body);
+    expect(abandoned.body).toMatchObject({ replayed: false, trip: { status: "abandoned", perfectStreak: 0 } });
+    const abandonedAgain = await request(server).post(`/v1/trips/${tripId}/abandon`).set(auth);
+    check("FlightSegmentAbandoned", abandonedAgain.body);
+    expect(abandonedAgain.body.replayed).toBe(true);
+    const gone = await request(server).post("/v1/rounds").set(auth).send({ tripId });
+    expect(gone.status).toBe(410);
+    check("Error", gone.body);
+    expect(gone.body.error.code).toBe("trip_closed");
 
     const unauth = await request(server).get("/v1/me/progress");
     expect(unauth.status).toBe(401);
@@ -324,18 +363,31 @@ describe("openapi contract: real responses validate against the spec", () => {
   });
 
   it("request schemas accept and reject the same bodies as the server", async () => {
-    const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.5 };
+    const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.5, ...factsFor("atc-match") };
+    const open = openBody("atc-match");
+    const facts = "RoundResultWithFlightFactsRequest";
     const cases: { schema: string; body: unknown; ok: boolean }[] = [
-      { schema: "RoundResultRequest", body: result, ok: true },
-      { schema: "RoundResultRequest", body: { ...result, errorCount: 1000 }, ok: true },
-      { schema: "RoundResultRequest", body: { ...result, errorCount: 1001 }, ok: false },
-      { schema: "RoundResultRequest", body: { ...result, errorCount: 1.5 }, ok: false },
-      { schema: "RoundResultRequest", body: { ...result, timeRemainingFraction: 1.01 }, ok: false },
-      { schema: "RoundResultRequest", body: { ...result, extra: 1 }, ok: false },
+      { schema: facts, body: result, ok: true },
+      { schema: facts, body: { ...result, errorCount: 1000, attempts: 1000 }, ok: true },
+      { schema: facts, body: { ...result, errorCount: 1001 }, ok: false },
+      { schema: facts, body: { ...result, errorCount: 1.5 }, ok: false },
+      { schema: facts, body: { ...result, timeRemainingFraction: 1.01 }, ok: false },
+      { schema: facts, body: { ...result, extra: 1 }, ok: false },
+      { schema: facts, body: { ...result, answerMs: 1_800_001 }, ok: false },
+      { schema: facts, body: { ...result, aircraftKey: "" }, ok: false },
+      { schema: facts, body: { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.5 }, ok: false },
       { schema: "SetActiveRankRequest", body: { rank: "trainee" }, ok: true },
       { schema: "SetActiveRankRequest", body: { rank: "admiral" }, ok: false },
-      { schema: "StartRoundRequest", body: { module: "bogus" }, ok: false },
-      { schema: "StartRoundRequest", body: { module: "atc-match", extra: true }, ok: false },
+      { schema: "StartRoundInSegmentRequest", body: { tripId: randomUUID() }, ok: true },
+      { schema: "StartRoundInSegmentRequest", body: { module: "atc-match" }, ok: false },
+      { schema: "StartRoundInSegmentRequest", body: { tripId: randomUUID(), module: "atc-match" }, ok: false },
+      { schema: "OpenFlightSegmentRequest", body: open, ok: true },
+      { schema: "OpenFlightSegmentRequest", body: { ...open, module: "bogus" }, ok: false },
+      { schema: "OpenFlightSegmentRequest", body: { ...open, flightCount: 9 }, ok: false },
+      { schema: "OpenFlightSegmentRequest", body: { ...open, utcOffsetMinutes: 841 }, ok: false },
+      { schema: "OpenFlightSegmentRequest", body: { ...open, utcOffsetMinutes: -721 }, ok: false },
+      { schema: "OpenFlightSegmentRequest", body: { ...open, localDate: "29/10/2026" }, ok: false },
+      { schema: "OpenFlightSegmentRequest", body: { ...open, rank: "captain" }, ok: false },
     ];
     const player = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
     await request(server).put("/v1/me").set(player);
@@ -343,13 +395,15 @@ describe("openapi contract: real responses validate against the spec", () => {
       const validate = ajv.compile({ $ref: `spec#/components/schemas/${schema}` });
       expect(validate(body), `${schema} ${JSON.stringify(body)}`).toBe(ok);
       const path =
-        schema === "RoundResultRequest"
+        schema === facts
           ? `/v1/rounds/${randomUUID()}/result`
           : schema === "SetActiveRankRequest"
             ? "/v1/me/active-rank"
-            : "/v1/rounds";
+            : schema === "OpenFlightSegmentRequest"
+              ? "/v1/trips"
+              : "/v1/rounds";
       const method = schema === "SetActiveRankRequest" ? "put" : "post";
-      const res = await request(server)[method](path).set(player).send(body as object);
+      const res = await request(server)[method](path).set(player).set("Idempotency-Key", newKey()).send(body as object);
       // Server-side: invalid bodies are 400; valid ones get past validation (any non-400 status).
       expect(res.status === 400, `server ${schema} ${JSON.stringify(body)} -> ${res.status}`).toBe(!ok);
     }
@@ -390,6 +444,12 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
     const { attempts: _attempts, ...withoutAttempts } = facts;
     expect(valid("RoundResultWithFlightFactsRequest", withoutAttempts)).toBe(false);
     expect(valid("RoundResultWithFlightFactsRequest", { ...facts, extra: 1 })).toBe(false);
+  });
+
+  it("the documented commercial key list equals the seeded Card catalog exactly", () => {
+    const text: string = spec.components.schemas.RoundResultWithFlightFactsRequest.description;
+    const listed = /\(U9: ([^)]*)\)/.exec(text.replace(/\s+/g, " "))?.[1]?.split(" ") ?? [];
+    expect([...listed].sort()).toEqual([...SEED_COMMERCIAL_CARD_KEYS].sort());
   });
 
   it("the manifest keeps Unity's ManifestWire and ModuleWire fields (ApiWireModels.cs)", () => {

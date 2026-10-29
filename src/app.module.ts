@@ -17,6 +17,7 @@ import { PlayersModule } from "./players/players.module.js";
 import { RoundsModule } from "./rounds/rounds.module.js";
 import { ShopModule } from "./shop/shop.module.js";
 import { StorageModule } from "./storage/storage.module.js";
+import { TripsModule } from "./trips/trips.module.js";
 import { UgsModule } from "./ugs/ugs.module.js";
 
 @Module({
@@ -31,6 +32,7 @@ import { UgsModule } from "./ugs/ugs.module.js";
     }),
     PlayersModule,
     RoundsModule,
+    TripsModule,
     ShopModule,
     AdminModule,
     ContentModule,

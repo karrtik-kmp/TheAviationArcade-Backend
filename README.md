@@ -85,9 +85,21 @@ timeout; see `src/platform/server-timeouts.ts`.
 ## API
 
 The contract is [docs/openapi.yaml](docs/openapi.yaml), kept in step with the code by a parity test.
-The table lists only what is built. The next contract (Trips, Field Awards, Clipper Cards, the Logbook and the
-content manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
+The table lists only what is built. Flight Segments (Unity Trips: open, abandon, Rounds inside a segment) are built
+(slice T2). The rest of the next contract (Trip completion, Field Awards, Clipper Cards, the Logbook and the content
+manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
 [docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md); those routes answer 404 today.
+
+> **Breaking change for the Unity app (API 0.4.0, slice T2, 2026-10-29).** The Round routes changed shape:
+> `POST /v1/rounds` takes `{ tripId }` instead of `{ module }`, and `POST /v1/rounds/:id/result` requires the Flight
+> facts `aircraftKey`, `answerMs` and `attempts`. Both answer 400 `invalid_request` to the old bodies. To play a Trip
+> the app now: (1) `POST /v1/trips` with a fresh `Idempotency-Key` and `{ module, flightCount: 10, localDate,
+> utcOffsetMinutes, contentVersion }` (module and rank are fixed for the whole segment, rank is the player's Active
+> Rank); (2) `POST /v1/rounds { tripId }` per Flight; (3) `POST /v1/rounds/:id/result` with the old four fields plus
+> `aircraftKey` (Identifier: the aircraft family, e.g. `787`, which must be a seeded Card family; Military: the
+> question id `mil-aN`; every other module: `null`), `answerMs` and `attempts`. Until slice T3 a segment with ten
+> banked Rounds can be neither completed nor replaced: `POST /v1/trips` answers 409 `trip_full`. Vocabulary: a backend
+> Round is a Unity Flight, a Flight Segment is a Unity Trip.
 All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Errors are
 `{ "error": { "code", "message", "requestId" } }`; every response carries `X-Request-Id`.
 
@@ -99,9 +111,11 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | GET | `/v1/me/progress` | Progress, including `version` (it goes up by one with every change visible in the progress or the UGS copy). 404 `player_not_found` until `PUT /v1/me` |
 | PUT | `/v1/me/active-rank` | `{ rank }`. Dial Active Rank down (Pleasure Cruise) or back to Certified. A changed value bumps `version`; the value already in force changes nothing. 403 above Certified |
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
-| POST | `/v1/rounds` | `{ module }`. Issues a single-use Round; abandons any other open Round |
+| POST | `/v1/trips` | `{ module, flightCount: 10, localDate, utcOffsetMinutes, contentVersion }` and a required `Idempotency-Key`. Opens a Flight Segment at Active Rank (abandons the player's open one; its Perfect Streak starts at 0). 201 opened, 200 replay of a key already used, 422 `local_date_mismatch` (beyond 15 minutes of server time plus the offset), 409 `trip_full` (interim, see above) |
+| POST | `/v1/trips/:id/abandon` | No body. Closes the segment and its open Round; 200, `replayed: true` when it was already closed or expired. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_closed` |
+| POST | `/v1/rounds` | `{ tripId }`. Issues the segment's next single-use Round (flight number banked + 1; a re-issue keeps the number); abandons any other open Round. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_expired` / `trip_closed` |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
-| POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction }`. Scores and banks it. An `Idempotency-Key` header is accepted and ignored (the Round id is the key) |
+| POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts }`. Scores and banks it from the segment's own Perfect Streak; moves the day streak (+1 hint on every 7th consecutive local day, `hintGrants`). Flight facts that break a module rule are 400 and bank nothing. An `Idempotency-Key` header is accepted and ignored (the Round id is the key) |
 | POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
 | GET | `/v1/admin/me` | Staff only. `{ principal, staff: true }`; 403 `forbidden` for anyone else |
@@ -110,7 +124,7 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | GET | `/v1/admin/content/:module/export` | Staff only. `.xlsx` in the client's columns plus `Id`, `Version`, `Status` (retired rows included) |
 
 Result status codes: 200 banked (or `replayed: true` for a Round already banked — safe to retry),
-404 not this player's Round, 410 expired or abandoned, 429 submitted too soon after issue (retry after
+404 not this player's Round, 410 expired or abandoned (`round_expired`, `round_closed`, or `trip_expired` when the segment ran out first), 400 bad Flight facts, 429 submitted too soon after issue (retry after
 `Retry-After`), 503 `auth_unavailable` when Google's signing keys cannot be fetched, 503
 `service_unavailable` when the database is unreachable or times out (both with `Retry-After`).
 Unknown routes are 404 `not_found`. Bodies are JSON only, at most 16 KB: malformed or extra-field
@@ -120,7 +134,7 @@ bodies are 400 `invalid_request`, oversized 413, wrong charset/encoding 415 (sam
 Any route can also return 429 `rate_limited` (with `Retry-After`; distinct from `round_too_fast`), and,
 when `MIN_CLIENT_BUILD` is set, 426 `client_update_required` (checked before authentication; health
 routes and `DELETE /v1/me` exempt, so an outdated app can still delete its account). `POST /v1/rounds`
-returns 201.
+and `POST /v1/trips` return 201 (the trip route answers 200 for an `Idempotency-Key` it already used).
 
 Ranks and module IDs on the wire are kebab-case: `trainee`, `first-officer`, `captain`, `check-airman`,
 `chief-pilot`; modules are the Unity `ModuleRegistry` BackendIds (`atc-match`, `identifier`,
@@ -212,8 +226,8 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   Perfect Streak, First Class Pass and Pleasure Cruise are decided server-side, and request bodies are
   strict, so extra fields are rejected.
 - **Bank once, never lose a write.** A Round closes and the player is credited in one Postgres
-  transaction that first locks the player row (`SELECT … FOR UPDATE`), then the Round. Lock order is
-  always player → Round. Every progress change goes through `PlayerBalance.update` (`src/balance/`), which locks the player first and bumps `players.version`.
+  transaction that first locks the player row (`SELECT … FOR UPDATE`), then its Flight Segment, then the Round. Lock order is
+  always player → segment → Round. Every progress change goes through `PlayerBalance.update` (`src/balance/`), which locks the player first and bumps `players.version`.
 - **Account deletion** erases only this backend's data. The app deletes the Firebase account itself (the
   backend holds no Firebase admin credentials); until it does, a still-valid token plus `PUT /v1/me`
   creates a fresh player at zero. The delete takes the player lock first, so an in-flight Round result
@@ -245,7 +259,7 @@ Asserted in code and tests until ruled:
    consolidated table yet.
 7. Deleting the account and signing up again re-grants the 5 starter hints (full erasure keeps no
    record of the grant). Acceptable, or keep a minimal tombstone?
-8. Trip-completion and 7-day-streak hint grants (Unity `HintBank`) need a server Trip concept; not built.
+8. The 7-day-streak hint grant (Unity `HintBank`) is built (T2, `day_streak_grant`); the Trip-completion grant (+1 per 4 completed Trips) comes with slice T3.
 9. Settled 2026-10-29 after review: identical bytes replay only while they are the module's latest import (a safe
    retry); re-applying an older file's bytes is planned normally, so it conflicts or needs a fresh confirm instead
    of silently doing nothing.

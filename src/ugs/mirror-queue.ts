@@ -4,6 +4,7 @@ import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { rootCause } from "../database/database-errors.js";
 import type { DatabaseService } from "../database/database.module.js";
 import { players, ugsLinks, ugsMirrorDeletions, ugsMirrorOutbox } from "../db/schema.js";
+import { withLiveStreak } from "../trips/trip-store.js";
 import { LEASE_MS, mirrorSnapshot } from "./mirror-policy.js";
 import type { UgsClient, WriteResult } from "./ugs-client.js";
 
@@ -134,7 +135,7 @@ export class ProgressWriteQueue implements MirrorQueue {
       await this.database.db.delete(ugsMirrorOutbox).where(mine);
       return "done";
     }
-    const result = await this.client.writeProgress(row.ugsPlayerId, mirrorSnapshot(row.player, now), signal);
+    const result = await this.client.writeProgress(row.ugsPlayerId, mirrorSnapshot(await withLiveStreak(this.database.db, row.player, now), now), signal);
     if (result.kind !== "ok") return result;
     // Recorded BEFORE the row is removed: a Round that commits in between hits the outbox conflict, and one that
     // commits after the delete inserts a row that already sees this write time.

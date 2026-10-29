@@ -10,6 +10,7 @@ import { configureApp } from "../src/app.setup.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { emulatorToken } from "./tokens.js";
+import { ensureMilitaryItem, factsFor, newKey, openBody } from "./trip-helpers.js";
 
 const PRINCIPAL_PREFIX = "firebase:demo-airplane-games:";
 
@@ -51,8 +52,8 @@ async function send(
 function newPlayer() {
   const uid = `uid-${randomUUID()}`;
   const token = emulatorToken(uid);
-  const call = (method: string, path: string, body?: unknown) =>
-    send(method, path, { Authorization: `Bearer ${token}` }, body);
+  const call = (method: string, path: string, body?: unknown, extra: Record<string, string> = {}) =>
+    send(method, path, { Authorization: `Bearer ${token}`, ...extra }, body);
   return { uid, principal: `${PRINCIPAL_PREFIX}${uid}`, call };
 }
 
@@ -62,7 +63,8 @@ async function json(response: Reply): Promise<any> {
 
 type Call = ReturnType<typeof newPlayer>["call"];
 
-const PERFECT_FAST = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 };
+// T2: a result also carries the Flight facts (aircraftKey, answerMs, attempts). atc-match takes aircraftKey null.
+const PERFECT_FAST = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("atc-match") };
 
 /** Make the player's open Round look like it was issued long enough ago to pass MIN_ROUND_MS. */
 async function backdate(principal: string) {
@@ -72,17 +74,39 @@ async function backdate(principal: string) {
   );
 }
 
+// Since T2 a Round belongs to an open Flight Segment. The helpers keep one segment per player (per module), like the app:
+// several Rounds of one test share it, so the Perfect Streak accumulates, and a different module opens a new segment.
+const segmentOf = new WeakMap<Call, { id: string; module: string }>();
+
+async function openSegment(call: Call, module = "atc-match", overrides: Record<string, unknown> = {}) {
+  const res = await call("POST", "/v1/trips", openBody(module, overrides), { "Idempotency-Key": newKey() });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  const id = res.body.trip.tripId as string;
+  segmentOf.set(call, { id, module });
+  return id;
+}
+
 async function startRound(call: Call, module = "atc-match") {
-  return (await json(await call("POST", "/v1/rounds", { module }))).round.roundId as string;
+  let segment = segmentOf.get(call);
+  if (!segment || segment.module !== module) segment = { id: await openSegment(call, module), module };
+  let issued = await call("POST", "/v1/rounds", { tripId: segment.id });
+  if (issued.status === 409 && issued.body.error.code === "trip_full") {
+    // Arrangement: a full segment is completed by slice T3's route. Until then the test closes it by hand.
+    await sql.query("UPDATE trips SET status = 'abandoned', closed_at = now() WHERE id = $1", [segment.id]);
+    segment = { id: await openSegment(call, module), module };
+    issued = await call("POST", "/v1/rounds", { tripId: segment.id });
+  }
+  expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+  return issued.body.round.roundId as string;
 }
 
 async function playRound(
   { call, principal }: { call: Call; principal: string },
-  result: typeof PERFECT_FAST = PERFECT_FAST,
+  result: { finished: boolean; errorCount: number; usedHint: boolean; timeRemainingFraction: number; attempts?: number } = PERFECT_FAST,
 ) {
   const roundId = await startRound(call);
   await backdate(principal);
-  return call("POST", `/v1/rounds/${roundId}/result`, result);
+  return call("POST", `/v1/rounds/${roundId}/result`, { ...factsFor("atc-match"), ...result });
 }
 
 /**
@@ -250,7 +274,7 @@ describe("account deletion", () => {
     const result = await player.call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST);
     expect(result.status).toBe(404);
     expect(result.body.error.code).toBe("round_not_found");
-    const issue = await player.call("POST", "/v1/rounds", { module: "atc-match" });
+    const issue = await player.call("POST", "/v1/rounds", { tripId: randomUUID() });
     expect(issue.status).toBe(404);
     expect(issue.body.error.code).toBe("player_not_found");
   });
@@ -275,7 +299,8 @@ describe("rounds", () => {
     const second = await json(await playRound(player));
     expect(second.award).toMatchObject({ streakMiles: 5, miles: 75, statusPoints: 70 });
     const broken = await json(
-      await playRound(player, { finished: true, errorCount: 2, usedHint: false, timeRemainingFraction: 0.1 }),
+      // attempts: 3 = the two misses plus the right answer (A4: attempts >= errorCount).
+      await playRound(player, { finished: true, errorCount: 2, usedHint: false, timeRemainingFraction: 0.1, attempts: 3 }),
     );
     expect(broken.progress.perfectStreak).toBe(0);
     await expectLedgerBalanced(player.principal);
@@ -410,26 +435,31 @@ describe("rounds", () => {
   it("returns the expiry as an ISO string", async () => {
     const { call } = newPlayer();
     await call("PUT", "/v1/me");
-    const started = await json(await call("POST", "/v1/rounds", { module: "atc-match" }));
+    const started = await json(await call("POST", "/v1/rounds", { tripId: await openSegment(call) }));
     expect(new Date(started.round.expiresAt).toISOString()).toBe(started.round.expiresAt);
   });
 
   it("issues and banks a Round for every Unity ModuleRegistry BackendId", async () => {
     const player = newPlayer();
     await player.call("PUT", "/v1/me");
+    await ensureMilitaryItem(sql);
     for (const module of MODULE_IDS) {
       const roundId = await startRound(player.call, module);
       await backdate(player.principal);
-      expect((await player.call("POST", `/v1/rounds/${roundId}/result`, PERFECT_FAST)).status).toBe(200);
+      const facts = { ...PERFECT_FAST, ...factsFor(module) };
+      expect((await player.call("POST", `/v1/rounds/${roundId}/result`, facts)).status, module).toBe(200);
     }
   });
 
   it("rejects unknown modules and client-supplied economy fields", async () => {
     const { call } = newPlayer();
     await call("PUT", "/v1/me");
-    expect((await call("POST", "/v1/rounds", { module: "space-invaders" })).status).toBe(400);
+    // T2: the module is chosen when the Flight Segment opens (POST /v1/trips); a Round only names its segment.
+    const open = (module: string) => call("POST", "/v1/trips", openBody(module), { "Idempotency-Key": newKey() });
+    expect((await open("space-invaders")).status).toBe(400);
     // The pre-split Military id; Unity sends aircraft-identifier-military.
-    expect((await call("POST", "/v1/rounds", { module: "military-identifier" })).status).toBe(400);
+    expect((await open("military-identifier")).status).toBe(400);
+    expect((await call("POST", "/v1/rounds", { module: "atc-match" })).status).toBe(400);
     const roundId = await startRound(call);
     const response = await call("POST", `/v1/rounds/${roundId}/result`, {
       ...PERFECT_FAST,
@@ -650,10 +680,10 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 13 guarded routes (incl. 4 admin) plus two health routes.
-    expect(routes.length).toBe(15);
+    // Guard against the enumeration silently finding nothing: 15 guarded routes (incl. 4 admin, 2 trips) plus two health routes.
+    expect(routes.length).toBe(17);
     for (const { method, path } of routes) {
-      const concrete = path.replace(":roundId", randomUUID()).replace(":module", "aircraft-identifier-military");
+      const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military");
       const response = await send(method, concrete, {});
       const expected = path.startsWith("/v1/health") ? 200 : 401;
       expect(response.status, `${method} ${path}`).toBe(expected);
@@ -733,9 +763,10 @@ describe("player row lock and concurrency", () => {
   it("issuing a round waits for the player row lock, then succeeds", async () => {
     const { principal, call } = newPlayer();
     await call("PUT", "/v1/me");
+    const tripId = await openSegment(call);
     const lock = await lockPlayer(principal);
     let settled = false;
-    const pending = call("POST", "/v1/rounds", { module: "atc-match" }).finally(() => (settled = true));
+    const pending = call("POST", "/v1/rounds", { tripId }).finally(() => (settled = true));
     await sleep(SETTLE_MS);
     expect(settled).toBe(false);
     await lock.release();
@@ -802,7 +833,8 @@ describe("player row lock and concurrency", () => {
     const first = await startRound(call);
     await backdate(principal);
     const results = Array.from({ length: 4 }, () => call("POST", `/v1/rounds/${first}/result`, PERFECT_FAST));
-    const issues = Array.from({ length: 4 }, () => call("POST", "/v1/rounds", { module: "atc-match" }));
+    const tripId = segmentOf.get(call)?.id;
+    const issues = Array.from({ length: 4 }, () => call("POST", "/v1/rounds", { tripId }));
     const [resultReplies, issueReplies] = await Promise.all([Promise.all(results), Promise.all(issues)]);
     // Banked (200) if the result won the lock, closed (410) if an issue superseded the Round first.
     for (const response of resultReplies) expect([200, 410]).toContain(response.status);

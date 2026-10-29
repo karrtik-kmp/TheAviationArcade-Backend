@@ -5,10 +5,10 @@ import { Principal } from "../auth/firebase-auth.guard.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { progressView } from "../players/progress-view.js";
-import { MODULE_IDS } from "../rules/modules.js";
 import { RoundsService } from "./rounds.service.js";
 
-const startRoundBody = z.strictObject({ module: z.enum(MODULE_IDS) });
+// The segment id is validated as a UUID in the handler: anything else cannot name a Flight Segment (404 trip_not_found).
+const startRoundBody = z.strictObject({ tripId: z.string().min(1).max(64) });
 type StartRoundBody = z.infer<typeof startRoundBody>;
 
 const roundResultBody = z.strictObject({
@@ -16,6 +16,13 @@ const roundResultBody = z.strictObject({
   errorCount: z.int().min(0).max(1000),
   usedHint: z.boolean(),
   timeRemainingFraction: z.number().min(0).max(1),
+  // Flight facts (ADR-0008 section 2). The module rules (which modules take a key, the commercial gate) run in the service.
+  aircraftKey: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)
+    .nullable(),
+  answerMs: z.int().min(0).max(1_800_000),
+  attempts: z.int().min(0).max(1000),
 });
 type RoundResultBody = z.infer<typeof roundResultBody>;
 
@@ -36,14 +43,30 @@ class RoundIdPipe implements PipeTransform<string, string> {
 export class RoundsController {
   constructor(private readonly rounds: RoundsService) {}
 
+  /** Issue the next Round of an open Flight Segment. Module, rank and Pleasure Cruise come from the segment. */
   @Post()
   async start(
     @Principal() principal: string,
-    @Body(new ZodValidationPipe(startRoundBody, "Expected { module }.")) body: StartRoundBody,
+    @Body(new ZodValidationPipe(startRoundBody, "Expected { tripId }.")) body: StartRoundBody,
   ) {
-    const round = await this.rounds.issueRound(principal, body.module, new Date());
-    if (!round) throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
-    return { round };
+    if (!z.uuid().safeParse(body.tripId).success) {
+      throw new ApiError(404, "trip_not_found", "No such Flight Segment for this player.");
+    }
+    const outcome = await this.rounds.issueRound(principal, body.tripId, new Date());
+    switch (outcome.kind) {
+      case "no_player":
+        throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
+      case "trip_not_found":
+        throw new ApiError(404, "trip_not_found", "No such Flight Segment for this player.");
+      case "trip_full":
+        throw new ApiError(409, "trip_full", "All ten Rounds of this Flight Segment are banked; complete it.");
+      case "trip_expired":
+        throw new ApiError(410, "trip_expired", "This Flight Segment expired (30 minutes without activity).");
+      case "trip_closed":
+        throw new ApiError(410, "trip_closed", "This Flight Segment was completed or abandoned.");
+      case "issued":
+        return { round: outcome.round };
+    }
   }
 
   @Post(":roundId/result")
@@ -54,7 +77,7 @@ export class RoundsController {
     @Body(
       new ZodValidationPipe(
         roundResultBody,
-        "Expected { finished, errorCount, usedHint, timeRemainingFraction }.",
+        "Expected { finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts }.",
       ),
     )
     body: RoundResultBody,
@@ -68,6 +91,10 @@ export class RoundsController {
         throw new ApiError(410, "round_expired", "This Round expired before its result arrived.");
       case "closed":
         throw new ApiError(410, "round_closed", "This Round was superseded by a newer one.");
+      case "trip_expired":
+        throw new ApiError(410, "trip_expired", "This Round's Flight Segment expired (30 minutes without activity).");
+      case "invalid_facts":
+        throw new ApiError(400, "invalid_request", `Flight facts rejected: ${outcome.reason}`);
       case "too_fast":
         throw new ApiError(
           429,
@@ -76,8 +103,8 @@ export class RoundsController {
           { "Retry-After": "3" },
         );
       case "completed": {
-        const { award, player, promotion, replayed } = outcome.result;
-        return { award, promotion, replayed, progress: progressView(player, now) };
+        const { award, player, promotion, replayed, hintGrants, trip } = outcome.result;
+        return { award, promotion, replayed, hintGrants, trip, progress: progressView(player, now) };
       }
     }
   }

@@ -64,6 +64,13 @@
       "when": 1793261188569,
       "tag": "0008_ugs_budget_and_pace",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793267687207,
+      "tag": "0009_trips_and_segments",
+      "breakpoints": true
     }
   ]
 }

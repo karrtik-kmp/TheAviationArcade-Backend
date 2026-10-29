@@ -325,3 +325,30 @@ export function withTrip(counters: PlayerCounters, trip: CompletedTrip): PlayerC
 export function deriveTripCounters(trips: readonly CompletedTrip[], start: PlayerCounters = EMPTY_COUNTERS): PlayerCounters {
   return trips.reduce((c, t) => withTrip(c, t), start);
 }
+
+// ---- The segment's local date check (U12) ---------------------------------------------------------------
+
+/** `POST /v1/trips` accepts a `localDate` within this many minutes of server time plus the reported offset (U12). */
+export const LOCAL_DATE_TOLERANCE_MINUTES = 15;
+
+/** True for a real calendar date written `YYYY-MM-DD` (rejects `2026-02-31`, `2026-13-01`). */
+export function isCalendarDate(value: string): boolean {
+  try {
+    dayNumber(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * U12: the app's `localDate` must be the calendar date of `now` plus its `utcOffsetMinutes`, give or take 15 minutes,
+ * so a request that straddles local midnight passes. The phone clock is never trusted for any day-based rule; this only
+ * catches a clock (or a client bug) that is days off.
+ */
+export function localDateMatches(localDate: LocalDate, now: Date, utcOffsetMinutes: number): boolean {
+  const tolerance = LOCAL_DATE_TOLERANCE_MINUTES * 60_000;
+  const earliest = localDateTimeOf(new Date(now.getTime() - tolerance), utcOffsetMinutes).date;
+  const latest = localDateTimeOf(new Date(now.getTime() + tolerance), utcOffsetMinutes).date;
+  return localDate === earliest || localDate === latest;
+}

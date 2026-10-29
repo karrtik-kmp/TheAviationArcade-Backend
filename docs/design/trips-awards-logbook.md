@@ -1,6 +1,6 @@
 # Trips, Field Awards, Clipper Cards, Logbook and the content manifest
 
-**Status:** designed 2026-10-29; slice T1 (pure rules) built 2026-10-29, T2-T6 not built. Contract: the `x-planned` operations and schemas in
+**Status:** designed 2026-10-29; slice T1 (pure rules) and T2 (segments and Rounds) built 2026-10-29, T3-T6 not built. Contract: the `x-planned` operations and schemas in
 [`../openapi.yaml`](../openapi.yaml) (the parity test asserts they answer 404 today). Owner: this session (backend repo).
 
 Binding inputs: `docs/TASKS.md` Decisions 2026-10-29 "contract round 1" and "contract round 2", D-1, D-3, D-5, C5, C12.
@@ -475,7 +475,7 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 | # | Slice | Size | Contents | Gate |
 |---|---|---|---|---|
 | T1 | Pure rules | S | `src/rules/trips.ts` (day-streak step, `withTrip` counters, outcome, Go Around, night window, hint cadence), `src/rules/field-awards.ts` (28 ids, metric evaluation, Card key normalisation); test names aligned with Unity EditMode tests (`FieldAwardsTests`, `AchievementBoardTests`, `HintBankTests`, `DailyFlightLogTests`, `LifetimeFlightStatsTests`, `LogbookCollectionTests`); ASSUMPTION tests | `npm test`. **Built 2026-10-29** (see "T1 as built" below) |
-| T2 | Segments and Rounds | M | migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
+| T2 | Segments and Rounds | M | **Built 2026-10-29** (see "T2 as built" below). migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
 | T3 | Complete | M | migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
 | T4 | Content documents and manifest | M | migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
 | T5 | Logbook | S | `GET /v1/me/logbook` | e2e against a seeded history; schema parity |
@@ -483,6 +483,44 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 
 Then the dealer slices B1–B5 (brief), then server answer checks with releases (§10). Each slice: focused commit,
 independent review for T2–T4 and T6, verification recorded in `docs/TASKS.md`.
+
+### T2 as built (2026-10-29)
+
+Migration `0009_trips_and_segments` (generated; 0000-0008 untouched): tables `trips` (all columns of the section 4 sketch, the
+completion columns stay NULL until T3, plus `idempotency_key` with UNIQUE (player_id, idempotency_key) and the one-open partial
+index) and `player_counters` (T2 writes only the day fields); `rounds` gains `trip_id`, `flight_number`, `aircraft_key`, `card_key`,
+`answer_ms`, `attempts`, `local_date` and `day_streak_grant` (a marker so a replay reports the same hint grant); `content_items` gains
+`card_key` (the frozen Military Card key); `hint_ledger_kind_check` gains `trip_grant` and `day_streak_grant`.
+
+Deviations from the plan above, all deliberate:
+1. **A full open segment blocks `POST /v1/trips`** with 409 `trip_full` (body carries `tripId`). Section 2 rule 4 ("opening a
+   new segment while a full one is open completes it first") needs `complete`, which is T3, and abandoning a full segment
+   would throw away its Cards, counters and awards. Interim only; T3 replaces it with complete-then-open. A full segment can be
+   neither abandoned (409 `trip_full`) nor reissued (409 `trip_full`) until then, and a full segment never expires, so a dev
+   player who banks ten Rounds waits for T3 (tests close such a segment by hand with SQL).
+2. **Result on a segment that expired first** is 410 `trip_expired`. This is DEFENSIVE: the Round's and the segment's clocks start
+   together, so in normal play both run out at once and the Round's own answer, `round_expired`, wins and stays stable on retries
+   (also after the segment was marked or a newer segment replaced it, which abandons the Round). A hint is refused (410) when the
+   Round's segment is closed or expired. Marking an expired segment (and releasing the streak) happens on
+   the 410 itself, in the same transaction; an expired segment is closed *at its expiry* (`closed_at = expires_at`), which is how
+   later calls tell `trip_expired` from `trip_closed`. The expiry mark leaves the segment's already-expired open Round alone so it
+   keeps answering `round_expired`.
+3. **`GET /v1/me/progress` reads the streak as 0** when the stored streak belongs to no live segment (none open, or the open one
+   expired and not yet marked): U13 asks for "0 when none is open", and expiry is lazy.
+4. **The Military Card key is frozen at first import or, for rows imported before 0009, at first use**: `content_items.card_key`
+   is written by the importer on create (`militaryCardKey(answer)`) and by the first Round that names an item without one. Staff
+   edits and the importer's update path never touch it. The Round stores the key it used in `rounds.card_key`; T3 reads that.
+5. **Day streak bookkeeping lives in `player_counters` from T2** (created lazily on a player's first banked Round); T3 adds the
+   Award counters to the same row. The Round's local day is stored in `rounds.local_date`.
+6. **Idempotency-Key replay answers before any other check**, so a retry after a dropped response is answered even when its
+   `localDate` aged out of the tolerance or a newer segment has since replaced it (the replay reports the segment as it stands:
+   abandoned if it was replaced).
+7. **Idempotency-Key reuse:** a key that already opened a segment for a different module is 422 `idempotency_key_reused`
+   (compared with `trips.module`; the other body fields are not compared).
+8. **Progress views** (every route and the UGS mirror snapshot) read the Perfect Streak through `withLiveStreak`, so they agree with
+   GET /v1/me/progress.
+9. `aircraftKey` for `aircraft-identifier-military` is the content item id (U3, resolved). Commercial keys are gated against
+   `SEED_COMMERCIAL_CARD_KEYS` (`checkFlightFacts`, pure, `src/rules/flight-facts.ts`).
 
 ### T1 as built (2026-10-29)
 

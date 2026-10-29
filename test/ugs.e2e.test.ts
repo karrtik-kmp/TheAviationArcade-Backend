@@ -20,6 +20,7 @@ import { REQUEST_TIMEOUT_MS } from "../src/ugs/ugs-client.js";
 import { UGS_ISSUER } from "../src/ugs/ugs-token.js";
 import { UGS_CLIENT, UGS_FETCH, UGS_KEYS, UGS_PROOF_BUDGET, UGS_WORKER_OPTIONS } from "../src/ugs/ugs.tokens.js";
 import { emulatorToken } from "./tokens.js";
+import { factsFor, issueRound } from "./trip-helpers.js";
 
 // The UGS progress mirror against the real test database. UGS itself is a stub injected as the fetcher and the
 // key set: this file never touches the network.
@@ -156,14 +157,15 @@ async function newPlayer(options: { link?: boolean } = {}) {
 type Player = Awaited<ReturnType<typeof newPlayer>>;
 
 async function bankRound(player: Player) {
-  const issued = await request(server).post("/v1/rounds").set(player.auth).send({ module: "identifier" });
+  // T2: a Round belongs to an open Flight Segment (one per player, reused across calls like the app does).
+  const issued = await issueRound(server, player.auth, "identifier");
   expect(issued.status).toBe(201);
   const roundId = issued.body.round.roundId as string;
   await sql.query("UPDATE rounds SET issued_at = issued_at - ($1::int * interval '1 millisecond') WHERE id = $2", [MIN_ROUND_MS * 2, roundId]);
   const res = await request(server)
     .post(`/v1/rounds/${roundId}/result`)
     .set(player.auth)
-    .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 });
+    .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier") });
   expect(res.status).toBe(200);
   return { roundId, response: res };
 }
@@ -398,7 +400,7 @@ describe("outbox: every progress write enqueues in its own transaction, for link
     const replay = await request(server)
       .post(`/v1/rounds/${roundId}/result`)
       .set(linked.auth)
-      .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 });
+      .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier") });
     expect(replay.body.replayed).toBe(true);
     expect((await outbox(linked.principal)).generation).toBe(genBefore);
   });
@@ -419,11 +421,11 @@ describe("outbox: every progress write enqueues in its own transaction, for link
   it("a refused write (round_too_fast) enqueues nothing", async () => {
     const player = await newPlayer({ link: true });
     await sql.query("DELETE FROM ugs_mirror_outbox");
-    const issued = await request(server).post("/v1/rounds").set(player.auth).send({ module: "identifier" });
+    const issued = await issueRound(server, player.auth, "identifier");
     const res = await request(server)
       .post(`/v1/rounds/${issued.body.round.roundId}/result`)
       .set(player.auth)
-      .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9 });
+      .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier") });
     expect(res.status).toBe(429); // round_too_fast: refused without writing anything
     expect(await outbox(player.principal)).toBeUndefined();
   });
@@ -431,7 +433,7 @@ describe("outbox: every progress write enqueues in its own transaction, for link
   it("hint spend enqueues (version + 1); a replayed spend leaves generation and version unchanged", async () => {
     const player = await newPlayer({ link: true });
     await sql.query("DELETE FROM ugs_mirror_outbox");
-    const issued = await request(server).post("/v1/rounds").set(player.auth).send({ module: "identifier" });
+    const issued = await issueRound(server, player.auth, "identifier");
     const path = `/v1/rounds/${issued.body.round.roundId}/hint`;
     expect((await request(server).post(path).set(player.auth)).status).toBe(200);
     const row = await outbox(player.principal);
@@ -493,6 +495,9 @@ describe("mirror worker (stubbed UGS)", () => {
   it("writes the Protected progress item with the documented value, then deletes the row", async () => {
     const player = await newPlayer({ link: true });
     await bankRound(player);
+    // The worker runs on a synthetic clock far ahead of real time; keep the Round's segment live on that clock, because the
+    // mirror (like every Progress view) reads the Perfect Streak as 0 once the segment has expired.
+    await sql.query("UPDATE trips SET expires_at = now() + interval '10 years' WHERE player_id = $1", [player.principal]);
     calls.length = 0;
     const summary = await worker.tick(nextNow());
     expect(summary).toMatchObject({ written: 1, retried: 0, rateLimited: false });
