@@ -1105,6 +1105,7 @@ components:
       type: object
       additionalProperties: false
       required:
+        - version
         - statusPoints
         - miles
         - hints
@@ -1116,6 +1117,13 @@ components:
         - perfectStreak
         - firstClassPass
       properties:
+        version:
+          type: integer
+          minimum: 1
+          description: |
+            The server's player version. It goes up by one with every change visible in this object or in the UGS
+            copy (a Round result, a hint spend, a hint pack, a changed Active Rank), so a higher `version` is
+            always newer. Compare it with `UgsMirrorProgress.version` to order a server answer against the UGS copy.
         statusPoints: { type: integer, minimum: 0, description: Lifetime Status Points. }
         miles: { type: integer, minimum: 0 }
         hints: { type: integer, minimum: 0, description: Co-Pilot hints left. }
@@ -1169,8 +1177,9 @@ components:
         NOT an API response: the JSON value of the Cloud Save **Protected** item with key `progress`, written by the
         server for each linked player (the player can read their own, only the server can write). Same field names
         and values as `Progress` where they overlap. It is a fallback: prefer the server when it is reachable, and
-        expect the copy to lag by seconds to minutes. Never write it. Order updates by `updatedAt` (an Active Rank
-        change updates `updatedAt` but does not bump `version`).
+        expect the copy to lag by seconds to minutes. Never write it. Order two copies, or a copy and a server answer,
+        by `version`: it goes up by one with every visible change, Active Rank changes included, and `Progress.version`
+        is the same counter.
       required: [schemaVersion, version, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
       properties:
         schemaVersion: { type: integer, const: 1 }

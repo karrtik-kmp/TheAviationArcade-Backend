@@ -37,7 +37,7 @@ export const players = pgTable(
     activeRank: text("active_rank"),
     // Set only by a future verified store purchase. Never client-writable.
     firstClassUntil: timestamp("first_class_until", { withTimezone: true }),
-    // Bumped on every balance change.
+    // Bumped on every change visible in progress or the UGS copy (PlayerBalance owns the bump).
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),

@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { eq } from "drizzle-orm";
+import { PlayerBalance } from "../balance/player-balance.js";
 import { DatabaseService } from "../database/database.module.js";
 import { hintLedger, players, ugsLinks, ugsMirrorDeletions } from "../db/schema.js";
 import type { PlayerRow } from "../db/schema.js";
@@ -16,7 +17,10 @@ export type SetActiveRankOutcome =
 
 @Injectable()
 export class PlayersService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly balance: PlayerBalance,
+  ) {}
 
   async getPlayer(principal: string): Promise<PlayerRow | null> {
     const [player] = await this.database.db.select().from(players).where(eq(players.id, principal));
@@ -51,29 +55,22 @@ export class PlayersService {
 
   /**
    * Dial Active Rank. Choosing Certified clears the stored value so Active follows future promotions again.
-   * Runs under the player row lock like every other progress write, so the existence check, the ceiling check and
-   * the UGS mirror enqueue see one consistent row; a player deleted while this waited for the lock is `no_player`.
-   * The version is deliberately NOT bumped yet: Round scoring uses the rank snapshotted at issue, and this is not a
-   * balance change (D-1, 2026-10-29, moves the bump into PlayerBalance in S2/S3). The mirror still carries Active
-   * Rank, so it is enqueued (its generation, not the version, records the change).
+   * Runs through PlayerBalance.update (player row lock first), so the existence check, the ceiling check and the
+   * UGS mirror enqueue see one consistent row; a player deleted while this waited for the lock is `no_player`.
+   * A changed stored value bumps `version` (D-1, 2026-10-29: every change visible in the UGS copy does); setting
+   * the value it already has changes nothing and queues nothing.
    */
   async setActiveRank(principal: string, rank: Rank, now: Date): Promise<SetActiveRankOutcome> {
-    return this.database.withTransaction(async (tx) => {
-      const [locked] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
-      if (!locked) return { kind: "no_player" };
-      const certified = certifiedRankFor(locked.statusPoints);
-      if (rankIndex(rank) > rankIndex(certified)) return { kind: "above_certified", certified };
-      const stored = rank === certified ? null : rank;
-      const [updated] = await tx
-        .update(players)
-        .set({ activeRank: stored, updatedAt: now })
-        .where(eq(players.id, principal))
-        .returning();
-      // The row is locked, so it cannot vanish between the SELECT and the UPDATE.
-      if (!updated) throw new Error("Locked player row was not updated.");
-      if (locked.activeRank !== stored) await enqueueMirror(tx, updated.id, updated.version, now);
-      return { kind: "set", player: updated };
+    const result = await this.balance.update<{ aboveCertified: Rank | null }>(principal, now, async ({ player }) => {
+      const certified = certifiedRankFor(player.statusPoints);
+      if (rankIndex(rank) > rankIndex(certified)) return { value: { aboveCertified: certified } };
+      return { value: { aboveCertified: null }, profile: { activeRank: rank === certified ? null : rank } };
     });
+    if (result.kind === "no_player") return { kind: "no_player" };
+    // A rank change posts nothing, so it can never be refused for funds.
+    if (result.kind === "insufficient") throw new Error("Active Rank change was refused for funds.");
+    if (result.value.aboveCertified) return { kind: "above_certified", certified: result.value.aboveCertified };
+    return { kind: "set", player: result.player };
   }
 
   /**

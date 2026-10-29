@@ -45,6 +45,13 @@ export function poolOptions(
   };
 }
 
+/**
+ * A deliberate rollback of a healthy transaction (for example a refused spend). Drizzle has already run ROLLBACK
+ * successfully when this reaches withTransaction (a failed ROLLBACK surfaces its own error instead), so the
+ * connection goes back to the pool rather than being destroyed.
+ */
+export class ExpectedRollback extends Error {}
+
 /** The application's database access: plain reads via `db`, balance-changing writes via withTransaction. */
 @Injectable()
 export class DatabaseService {
@@ -57,8 +64,8 @@ export class DatabaseService {
   /**
    * Run `fn` in one transaction on a client checked out here, not by drizzle. Drizzle runs BEGIN outside
    * its own try/finally, so a failed BEGIN on a pool-owned checkout would leak the client. Here the
-   * client is always released, and on failure it is released WITH the error, which makes pg destroy it
-   * rather than return a possibly broken connection to the pool.
+   * client is always released, and on an unexpected failure it is released WITH the error, which makes pg
+   * destroy it rather than return a possibly broken connection to the pool. An ExpectedRollback keeps it.
    */
   async withTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -66,7 +73,7 @@ export class DatabaseService {
     try {
       return await drizzle({ client, schema }).transaction(fn);
     } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error));
+      if (!(error instanceof ExpectedRollback)) failure = error instanceof Error ? error : new Error(String(error));
       throw error;
     } finally {
       client.release(failure);

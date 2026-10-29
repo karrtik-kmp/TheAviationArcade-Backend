@@ -1,10 +1,7 @@
 import { Injectable } from "@nestjs/common";
-import { and, eq, sql } from "drizzle-orm";
-import { DatabaseService } from "../database/database.module.js";
-import { hintLedger, milesLedger, players } from "../db/schema.js";
+import { PlayerBalance } from "../balance/player-balance.js";
 import type { PlayerRow } from "../db/schema.js";
 import { MILES_HINT_PACK } from "../rules/hints.js";
-import { enqueueMirror } from "../ugs/outbox.js";
 
 export type HintPackReceipt = { hints: number; priceMiles: number };
 
@@ -14,12 +11,12 @@ export type BuyHintPackOutcome =
   | { kind: "insufficient_miles" };
 
 /**
- * Spending Miles. One transaction that first takes the player's row lock (as the Round writes do), so a
- * purchase can never build on a stale balance. Nothing is retried or overwritten.
+ * Spending Miles. One transaction through PlayerBalance.update, which first takes the player's row lock (as the
+ * Round writes do), so a purchase can never build on a stale balance. Nothing is retried or overwritten.
  */
 @Injectable()
 export class ShopService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly balance: PlayerBalance) {}
 
   /**
    * Buy the Co-Pilot hint pack (10 hints for 5,000 Miles). `key` is the client's Idempotency-Key and the
@@ -27,62 +24,33 @@ export class ShopService {
    * dropped response is safe. A different key is a new purchase.
    */
   async buyHintPack(principal: string, key: string, now: Date): Promise<BuyHintPackOutcome> {
-    return this.database.withTransaction(async (tx): Promise<BuyHintPackOutcome> => {
-      const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
-      if (!player) return { kind: "no_player" };
-
-      const [billed] = await tx
-        .select({ delta: milesLedger.delta })
-        .from(milesLedger)
-        .where(
-          and(eq(milesLedger.playerId, principal), eq(milesLedger.kind, "hint_pack"), eq(milesLedger.ref, key)),
-        );
-      if (billed) {
-        const [granted] = await tx
-          .select({ delta: hintLedger.delta })
-          .from(hintLedger)
-          .where(
-            and(eq(hintLedger.playerId, principal), eq(hintLedger.kind, "hint_pack"), eq(hintLedger.ref, key)),
-          );
-        const receipt = { hints: granted?.delta ?? MILES_HINT_PACK.hints, priceMiles: -billed.delta };
-        return { kind: "purchased", player, receipt, replayed: true };
-      }
-
-      if (player.miles < MILES_HINT_PACK.priceMiles) return { kind: "insufficient_miles" };
-
-      await tx.insert(milesLedger).values({
-        playerId: principal,
-        delta: -MILES_HINT_PACK.priceMiles,
-        kind: "hint_pack",
-        ref: key,
-        createdAt: now,
-      });
-      await tx.insert(hintLedger).values({
-        playerId: principal,
-        delta: MILES_HINT_PACK.hints,
-        kind: "hint_pack",
-        ref: key,
-        createdAt: now,
-      });
-      const [updated] = await tx
-        .update(players)
-        .set({
-          // Relative, like the Round credit: defence in depth if the row lock were ever lost.
-          miles: sql`${players.miles} - ${MILES_HINT_PACK.priceMiles}`,
-          hints: sql`${players.hints} + ${MILES_HINT_PACK.hints}`,
-          version: sql`${players.version} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(players.id, principal))
-        .returning();
-      if (!updated) throw new Error("Player row missing after hint pack purchase.");
-      await enqueueMirror(tx, principal, updated.version, now);
-      return {
-        kind: "purchased",
-        player: updated,
-        receipt: { hints: MILES_HINT_PACK.hints, priceMiles: MILES_HINT_PACK.priceMiles },
-        replayed: false,
-      };
-    });
+    const result = await this.balance.update<{ receipt: HintPackReceipt; replayed: boolean }>(
+      principal,
+      now,
+      async (locked) => {
+        const billed = await locked.posted("miles", "hint_pack", key);
+        if (billed !== null) {
+          const granted = await locked.posted("hints", "hint_pack", key);
+          return {
+            value: { receipt: { hints: granted ?? MILES_HINT_PACK.hints, priceMiles: -billed }, replayed: true },
+          };
+        }
+        return {
+          value: {
+            receipt: { hints: MILES_HINT_PACK.hints, priceMiles: MILES_HINT_PACK.priceMiles },
+            replayed: false,
+          },
+          change: {
+            postings: [
+              { account: "miles", delta: -MILES_HINT_PACK.priceMiles, kind: "hint_pack", ref: key },
+              { account: "hints", delta: MILES_HINT_PACK.hints, kind: "hint_pack", ref: key },
+            ],
+          },
+        };
+      },
+    );
+    if (result.kind === "no_player") return { kind: "no_player" };
+    if (result.kind === "insufficient") return { kind: "insufficient_miles" };
+    return { kind: "purchased", player: result.player, ...result.value };
   }
 }

@@ -498,6 +498,16 @@ describe("active rank and pleasure cruise", () => {
     expect(replay.promotion).toEqual({ from: "trainee", to: "first-officer" });
   });
 
+  it("progress carries version; an Active Rank change bumps it, the same value again does not (D-1)", async () => {
+    const { principal, call } = await promotedPlayer(60_000);
+    expect((await json(await call("GET", "/v1/me/progress"))).progress.version).toBe(1);
+    const dialled = await json(await call("PUT", "/v1/me/active-rank", { rank: "trainee" }));
+    expect(dialled.progress.version).toBe(2);
+    const same = await json(await call("PUT", "/v1/me/active-rank", { rank: "trainee" }));
+    expect(same.progress.version).toBe(2);
+    expect(await versionOf(principal)).toBe(2);
+  });
+
   it("dialling the active rank does not disturb an in-flight round", async () => {
     const { principal, call } = await promotedPlayer(60_000);
     const roundId = await startRound(call);
@@ -770,6 +780,20 @@ describe("player row lock and concurrency", () => {
     expect(responses.map((r) => r.status).sort()).toEqual([200, 200, 200, 200, 200, 201]);
     const count = (await sql.query("SELECT COUNT(*)::int AS n FROM players WHERE id = $1", [principal])).rows[0];
     expect(count.n).toBe(1);
+  });
+
+  it("a completed Round bumps the version once even when it pays nothing (an unfinished Round)", async () => {
+    const { principal, call } = newPlayer();
+    await call("PUT", "/v1/me");
+    const roundId = await startRound(call);
+    await backdate(principal);
+    const before = await versionOf(principal);
+    const response = await call("POST", `/v1/rounds/${roundId}/result`, { ...PERFECT_FAST, finished: false });
+    expect(response.status).toBe(200);
+    const body = await json(response);
+    expect(body.award).toMatchObject({ statusPoints: 0, miles: 0 });
+    expect(await versionOf(principal)).toBe(before + 1);
+    expect(body.progress.version).toBe(before + 1);
   });
 
   it("a storm of interleaved issue and result calls keeps the ledger and one-open-round invariants", async () => {

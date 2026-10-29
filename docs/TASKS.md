@@ -76,6 +76,14 @@ Google RTDN. Design in ARCHITECTURE.md.
 Field Awards: since C12 (2026-10-28) the backend owns the catalog and progress; built after the Trips
 contract (see Decisions).
 
+#### Deepening brief (`../docs/briefs/backend.md`)
+
+| # | Job | State | Notes |
+|---|---|---|---|
+| S1 | Active Rank 404 race fix | Done (committed b1ca340) | |
+| S2 | `PlayerBalance` core | Done (local, uncommitted, not independently reviewed) | `src/balance/` (`player-balance.ts`, `balance.module.ts`, `ledger-kinds.ts`). `RoundsService` (issue, complete, hint), `ShopService` and `PlayersService.setActiveRank` go through `PlayerBalance.update`; none of them import `players`, the ledgers or `enqueueMirror` for those writes any more. D-1 applied: an Active Rank change bumps `version` and enqueues (same value = no-op); `version` added to `Progress` (openapi, `progressView`). A completed Round keeps its unconditional bump, even when it pays nothing. No new ledger kind, no schema change, no migration. Still direct: `ensurePlayer`, `deletePlayer`, `UgsLinkService` (S3) |
+| S3+ | Lifecycle/UGS link onto `PlayerBalance` (re-link bump), `bankRound`, parity test, MirrorQueue, shared budget | Not started | |
+
 ### Phase 6 — Hosting and launch
 
 Choose host + managed Postgres (needs sign-off). DB clock for Round timing across instances, shared
@@ -164,6 +172,20 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-29 (S2 independent review + fixes): Opus review found one regression — a refused spend (the
+  `InsufficientBalance` sentinel) made `withTransaction` destroy a healthy pooled connection, so a client tapping a
+  spend with no funds churned the pool. Fixed with `ExpectedRollback` (connection kept after a successful ROLLBACK),
+  proved by a pool test that fails without the fix (0 vs 1 connection). Also: funds checked before any ledger insert
+  (a refusal can't be masked by a UNIQUE violation), exhaustive outcome mapping in setActiveRank, a test that profile +
+  balance in one step bump the version once. My run: typecheck clean, `npm test` 211/211, `npm run test:e2e` 218/218,
+  `npm run build` OK. Local only.
+- 2026-10-29 (S2 `PlayerBalance`, implementer's run, before the review): from PowerShell at
+  `H:\Work\TheAviationArcade\Backend`: `npm run typecheck` clean, `npm test` 211/211 (12 files), `npm run test:e2e`
+  216/216 (6 files; was 202, +12 `test/player-balance.e2e.test.ts` at the `PlayerBalance` interface, +2 in
+  `api.test.ts`: progress `version` and Active Rank bump, an unfinished Round bumps the version once), `npm run build`
+  OK. `ugs.e2e` 'Active Rank change' test rewritten from "version kept" to "bumps and enqueues". openapi parity test
+  green with `Progress.version`. No schema.ts change beyond a comment, so no `db:generate`, no migration. Local only.
 
 - 2026-10-29 (5.1 independent review + fixes): Opus review (read-only) found no missing enqueue and a sound
   single-instance design; fixed: Player Auth budget exhaustion by one player (shortcut for the recorded link, 5/h per

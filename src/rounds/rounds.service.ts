@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Injectable } from "@nestjs/common";
-import { and, eq, sql } from "drizzle-orm";
-import { DatabaseService } from "../database/database.module.js";
-import { hintLedger, milesLedger, players, rounds } from "../db/schema.js";
+import { and, eq } from "drizzle-orm";
+import { PlayerBalance } from "../balance/player-balance.js";
+import { rounds } from "../db/schema.js";
 import type { PlayerRow, RoundRow } from "../db/schema.js";
 import { hasFirstClassPass } from "../players/progress-view.js";
 import type { ModuleId } from "../rules/modules.js";
@@ -11,7 +11,6 @@ import { activeRankFor, certifiedRankFor, rankIndex } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import { nextPerfectStreak, scoreRound } from "../rules/scoring.js";
 import type { Completion, RoundAward } from "../rules/scoring.js";
-import { enqueueMirror } from "../ugs/outbox.js";
 
 export const ROUND_TTL_SECONDS = 30 * 60;
 
@@ -71,13 +70,14 @@ function storedAward(round: RoundRow): CompletedRound["award"] {
 }
 
 /**
- * Round lifecycle. Both writes run in one transaction that first takes the player's row lock
- * (SELECT ... FOR UPDATE), so all writes for one player are serialised and a result can never build
- * on a stale streak or balance. Nothing is ever retried or overwritten.
+ * Round lifecycle. Every write goes through PlayerBalance.update, which first takes the player's row lock
+ * (SELECT ... FOR UPDATE), so all writes for one player are serialised and a result can never build on a stale
+ * streak or balance. The Round row is locked inside, after the player: lock order is always player, then Round.
+ * Nothing is ever retried or overwritten.
  */
 @Injectable()
 export class RoundsService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly balance: PlayerBalance) {}
 
   /**
    * Issue a Round. The player's other open Rounds are abandoned in the same transaction, so only one
@@ -85,10 +85,7 @@ export class RoundsService {
    * untouched, so their replays keep working. Returns null if the player does not exist.
    */
   async issueRound(principal: string, module: ModuleId, now: Date): Promise<IssuedRound | null> {
-    return this.database.withTransaction(async (tx) => {
-      const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
-      if (!player) return null;
-
+    const result = await this.balance.update<IssuedRound>(principal, now, async ({ player, tx }) => {
       const rank = activeRankFor(player.statusPoints, player.activeRank);
       const pleasureCruise = rankIndex(rank) < rankIndex(certifiedRankFor(player.statusPoints));
       const roundId = randomUUID();
@@ -107,14 +104,17 @@ export class RoundsService {
         issuedAt: now,
         expiresAt,
       });
-      return { roundId, module, rank, pleasureCruise, expiresAt: expiresAt.toISOString() };
+      // Lock only: issuing a Round changes nothing the player sees.
+      return { value: { roundId, module, rank, pleasureCruise, expiresAt: expiresAt.toISOString() } };
     });
+    return result.kind === "ok" ? result.value : null;
   }
 
   /**
    * Score and bank a Round. A Round belonging to another player is reported as not found. Resubmitting
    * a completed Round returns the stored award without paying again, so a client retry after a dropped
-   * response is safe.
+   * response is safe. A completed Round is a progress event: it bumps the version and queues the UGS copy
+   * even when it pays nothing.
    */
   async completeRound(
     principal: string,
@@ -122,35 +122,36 @@ export class RoundsService {
     input: RoundResultInput,
     now: Date,
   ): Promise<CompleteRoundOutcome> {
-    return this.database.withTransaction(async (tx): Promise<CompleteRoundOutcome> => {
-      // Lock order is always player, then round (issueRound does the same), so no deadlocks.
-      const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
-      if (!player) return { kind: "not_found" };
+    type Inner =
+      | Exclude<CompleteRoundOutcome, { kind: "completed" }>
+      | { kind: "completed"; result: Omit<CompletedRound, "player"> };
+    const result = await this.balance.update<Inner>(principal, now, async ({ player, tx }) => {
       const [round] = await tx
         .select()
         .from(rounds)
         .where(and(eq(rounds.id, roundId), eq(rounds.playerId, principal)))
         .for("update");
-      if (!round) return { kind: "not_found" };
+      if (!round) return { value: { kind: "not_found" } };
 
       if (round.status === "completed") {
         return {
-          kind: "completed",
-          result: {
-            award: storedAward(round),
-            player,
-            promotion:
-              round.promotedFrom && round.promotedTo
-                ? { from: round.promotedFrom as Rank, to: round.promotedTo as Rank }
-                : null,
-            replayed: true,
+          value: {
+            kind: "completed",
+            result: {
+              award: storedAward(round),
+              promotion:
+                round.promotedFrom && round.promotedTo
+                  ? { from: round.promotedFrom as Rank, to: round.promotedTo as Rank }
+                  : null,
+              replayed: true,
+            },
           },
         };
       }
-      if (round.status === "abandoned") return { kind: "closed" };
-      if (now.getTime() > round.expiresAt.getTime()) return { kind: "expired" };
+      if (round.status === "abandoned") return { value: { kind: "closed" } };
+      if (now.getTime() > round.expiresAt.getTime()) return { value: { kind: "expired" } };
       // Refused without closing the Round, so the client can retry after a moment.
-      if (now.getTime() < round.issuedAt.getTime() + MIN_ROUND_MS) return { kind: "too_fast" };
+      if (now.getTime() < round.issuedAt.getTime() + MIN_ROUND_MS) return { value: { kind: "too_fast" } };
 
       const firstClassPass = hasFirstClassPass(player, now);
       // A hint the player paid for cannot be hidden by the client; claiming one that was never paid for
@@ -190,78 +191,60 @@ export class RoundsService {
         })
         .where(eq(rounds.id, roundId));
 
-      const [updated] = await tx
-        .update(players)
-        .set({
-          // Relative increments as defence in depth: even if the row lock were ever lost, a credit
-          // adds to the current balance instead of overwriting it with a stale read.
-          statusPoints: sql`${players.statusPoints} + ${award.statusPoints}`,
-          miles: sql`${players.miles} + ${award.miles}`,
-          perfectStreak: streak,
-          version: sql`${players.version} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(players.id, principal))
-        .returning();
-      if (!updated) throw new Error("Player row missing after credit.");
-      // Same transaction as the balance: a linked player's UGS mirror can never miss this change.
-      await enqueueMirror(tx, principal, updated.version, now);
-      // Same transaction as the balance, one entry per Round (the unique key makes a double pay impossible).
-      if (award.miles > 0) {
-        await tx
-          .insert(milesLedger)
-          .values({ playerId: principal, delta: award.miles, kind: "round_award", ref: roundId, createdAt: now });
-      }
-
       return {
-        kind: "completed",
-        result: {
-          award: { ...award, firstClassPass, pleasureCruise: round.pleasureCruise },
-          player: updated,
-          promotion,
-          replayed: false,
+        value: {
+          kind: "completed",
+          result: {
+            award: { ...award, firstClassPass, pleasureCruise: round.pleasureCruise },
+            promotion,
+            replayed: false,
+          },
+        },
+        // One ledger entry per Round (the unique key makes a double pay impossible); a zero award writes none.
+        change: {
+          postings: [{ account: "miles", delta: award.miles, kind: "round_award", ref: roundId }],
+          statusPoints: award.statusPoints,
+          perfectStreak: streak,
         },
       };
     });
+    // A Round result for a deleted player is a missing Round (asserted contract: 404 round_not_found).
+    if (result.kind !== "ok") return { kind: "not_found" };
+    const value = result.value;
+    if (value.kind === "completed") return { kind: "completed", result: { ...value.result, player: result.player } };
+    return value;
   }
 
   /**
    * Spend the Round's one hint (HINTS_PER_ROUND). Idempotent: a Round that already has its hint answers
    * with replayed = true and debits nothing, whatever state the Round has moved on to. Otherwise only the
-   * player's own open, unexpired Round qualifies. Same lock order as completeRound: player, then round.
+   * player's own open, unexpired Round qualifies. A debit the balance cannot cover rolls back the Round's
+   * hintUsed mark with it.
    */
   async spendHint(principal: string, roundId: string, now: Date): Promise<SpendHintOutcome> {
-    return this.database.withTransaction(async (tx): Promise<SpendHintOutcome> => {
-      const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
-      if (!player) return { kind: "not_found" };
+    type Inner = Exclude<SpendHintOutcome, { kind: "spent" }> | { kind: "spent"; replayed: boolean };
+    const result = await this.balance.update<Inner>(principal, now, async ({ tx }) => {
       const [round] = await tx
         .select()
         .from(rounds)
         .where(and(eq(rounds.id, roundId), eq(rounds.playerId, principal)))
         .for("update");
-      if (!round) return { kind: "not_found" };
+      if (!round) return { value: { kind: "not_found" } };
 
-      if (round.hintUsed) return { kind: "spent", player, replayed: true };
-      if (round.status !== "open") return { kind: "closed" };
-      if (now.getTime() > round.expiresAt.getTime()) return { kind: "expired" };
-      if (player.hints < HINTS_PER_ROUND) return { kind: "no_hints" };
+      if (round.hintUsed) return { value: { kind: "spent", replayed: true } };
+      if (round.status !== "open") return { value: { kind: "closed" } };
+      if (now.getTime() > round.expiresAt.getTime()) return { value: { kind: "expired" } };
 
       await tx.update(rounds).set({ hintUsed: true }).where(eq(rounds.id, roundId));
-      await tx
-        .insert(hintLedger)
-        .values({ playerId: principal, delta: -HINTS_PER_ROUND, kind: "round_spend", ref: roundId, createdAt: now });
-      const [updated] = await tx
-        .update(players)
-        .set({
-          hints: sql`${players.hints} - ${HINTS_PER_ROUND}`,
-          version: sql`${players.version} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(players.id, principal))
-        .returning();
-      if (!updated) throw new Error("Player row missing after hint spend.");
-      await enqueueMirror(tx, principal, updated.version, now);
-      return { kind: "spent", player: updated, replayed: false };
+      return {
+        value: { kind: "spent", replayed: false },
+        change: { postings: [{ account: "hints", delta: -HINTS_PER_ROUND, kind: "round_spend", ref: roundId }] },
+      };
     });
+    if (result.kind === "no_player") return { kind: "not_found" };
+    if (result.kind === "insufficient") return { kind: "no_hints" };
+    const value = result.value;
+    if (value.kind === "spent") return { kind: "spent", player: result.player, replayed: value.replayed };
+    return value;
   }
 }

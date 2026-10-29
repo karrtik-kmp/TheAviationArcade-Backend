@@ -92,8 +92,8 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | GET | `/v1/health` | Liveness, public. No database, not rate limited |
 | GET | `/v1/health/ready` | Readiness, public, not rate limited: `SELECT 1` within 2 s (cached ~1 s), else (or while shutting down) 503 `service_unavailable` |
 | PUT | `/v1/me` | Sign-in handshake. Creates the player on first call (201), else 200. Returns progress |
-| GET | `/v1/me/progress` | Progress. 404 `player_not_found` until `PUT /v1/me` |
-| PUT | `/v1/me/active-rank` | `{ rank }`. Dial Active Rank down (Pleasure Cruise) or back to Certified. 403 above Certified |
+| GET | `/v1/me/progress` | Progress, including `version` (it goes up by one with every change visible in the progress or the UGS copy). 404 `player_not_found` until `PUT /v1/me` |
+| PUT | `/v1/me/active-rank` | `{ rank }`. Dial Active Rank down (Pleasure Cruise) or back to Certified. A changed value bumps `version`; the value already in force changes nothing. 403 above Certified |
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
 | POST | `/v1/rounds` | `{ module }`. Issues a single-use Round; abandons any other open Round |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
@@ -179,8 +179,9 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   15 min with one error log; 5xx/network failures back off per row (5 s doubling to 15 min); another 4xx is retried
   and a write is dropped after 3 rejections (the next progress change queues it again), while a deletion keeps
   retrying daily. Every tick with due rows logs backlog and lag (never values). `/v1/health/ready` ignores UGS.
-- **Ordering.** Until `version` bumps on every visible change (decided 2026-10-29, D-1, not built yet), the game orders
-  copies by `updatedAt`: an Active Rank change updates `updatedAt` but not `version`.
+- **Ordering.** The game orders UGS copies (and a copy against a server answer) by `version`: it goes up by one with every
+  change visible in the copy, an Active Rank change included, and `GET /v1/me/progress` returns the same counter (D-1,
+  2026-10-29). `updatedAt` is informational. A UGS re-link does not bump it yet (slice S3).
 - **Lag.** Writes are paced to stay inside UGS's admin rate limit (60 req/s and 1,000 per 30 min per project and IP, about
   33/min sustained), so under load the copy can trail the server by minutes. **The game must prefer the server whenever it
   is reachable** and use the UGS copy only as a fallback; the mirror is read-only for the game.
@@ -202,7 +203,7 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   strict, so extra fields are rejected.
 - **Bank once, never lose a write.** A Round closes and the player is credited in one Postgres
   transaction that first locks the player row (`SELECT … FOR UPDATE`), then the Round. Lock order is
-  always player → Round. Every balance change bumps `players.version`.
+  always player → Round. Every progress change goes through `PlayerBalance.update` (`src/balance/`), which locks the player first and bumps `players.version`.
 - **Account deletion** erases only this backend's data. The app deletes the Firebase account itself (the
   backend holds no Firebase admin credentials); until it does, a still-valid token plus `PUT /v1/me`
   creates a fresh player at zero. The delete takes the player lock first, so an in-flight Round result

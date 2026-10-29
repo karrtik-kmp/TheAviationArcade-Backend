@@ -60,7 +60,12 @@ src/ugs/                  UGS progress mirror: link route, token check, outbox h
 ```
 
 Concurrency rule: every balance change runs in `DatabaseService.withTransaction` (explicit client,
-destroyed on failure), first locks the player row (`SELECT … FOR UPDATE`), and bumps `players.version`.
+destroyed on an unexpected failure; a deliberate rollback such as a refused spend keeps it), first locks the player row (`SELECT … FOR UPDATE`), and bumps `players.version`.
+Round, hint and shop writes (and the Active Rank change) all go through `PlayerBalance.update` in `src/balance/`,
+which owns the lock, the ledger postings, the relative balance update, the version bump and the mirror enqueue (its
+invariants are written on the class); callers keep their own SQL for their own tables inside the same transaction.
+`PlayerBalance` is a deep module with one Postgres adapter, not a seam. Player creation and deletion
+(`PlayersService.ensurePlayer`/`deletePlayer`) and the UGS link still lock directly until slice S3 moves them in.
 No write overwrites another. The database also enforces one open Round per player (unique partial index).
 
 Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health). Production config refuses
@@ -208,10 +213,11 @@ player already on record is answered from `ugs_links` without a Player Auth call
 principal and a process-wide sliding window of 12/min (burst 10) under the 500 per 30 min Player Auth admin limit.
 
 **Outbox and worker.** `ugs_mirror_outbox` holds at most one row per linked player (`version` = highest seen, `generation` =
-count of enqueues, `due_at`, `attempts`, short `last_error`). One helper (`enqueueMirror`) is called inside the same
-transaction, after the player row is locked, from every write that changes what the mirror shows: Round result, hint spend,
-hint pack, Active Rank change (`PUT /v1/me` creation calls it too, a no-op because a new player has no link). Active Rank
-does not bump `players.version` (until D-1), so the row carries a `generation` drawn from a sequence (never repeats, even
+count of enqueues, `due_at`, `attempts`, short `last_error`). `PlayerBalance.update` calls the helper
+(`enqueueMirror`) inside the same transaction, after the player row is locked and updated, for every write that changes
+what the mirror shows: Round result, hint spend, hint pack, Active Rank change (`PUT /v1/me` creation still calls it
+directly, a no-op because a new player has no link). Every such change bumps `players.version` (D-1, 2026-10-29), so
+`version` is the total order of copies and `GET /v1/me/progress` returns it; the row also carries a `generation` drawn from a sequence (never repeats, even
 after the row is deleted and re-inserted) and each claim stamps a `claim_id`; the worker deletes or releases a row only if
 both still match its claim, otherwise it is due again at once (migration 0007). The in-process worker (`src/ugs/`, only when
 configured) claims due rows in a single `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)` that moves `due_at` to a lease

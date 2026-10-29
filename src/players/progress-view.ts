@@ -3,6 +3,8 @@ import { activeRankFor, certifiedRankFor, nextRankFor, rankIndex, RANKS } from "
 import type { Rank } from "../rules/ranks.js";
 
 export type ProgressView = {
+  /** players.version: bumped by every change visible here or in the UGS copy, so it totally orders them (D-1). */
+  version: number;
   statusPoints: number;
   miles: number;
   /** Co-Pilot hints left. */
@@ -25,6 +27,7 @@ export function progressView(player: PlayerRow, now: Date): ProgressView {
   const certifiedRank = certifiedRankFor(player.statusPoints);
   const activeRank = activeRankFor(player.statusPoints, player.activeRank);
   return {
+    version: player.version,
     statusPoints: player.statusPoints,
     miles: player.miles,
     hints: player.hints,

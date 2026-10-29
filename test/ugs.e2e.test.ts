@@ -447,17 +447,18 @@ describe("outbox: every progress write enqueues in its own transaction, for link
     expect((await outbox(linked.principal)).generation).toBe(row.generation);
   });
 
-  it("Active Rank change enqueues even though players.version is not bumped (generation records it)", async () => {
+  it("Active Rank change bumps players.version and enqueues (D-1)", async () => {
     const player = await newPlayer({ link: true });
     await sql.query("UPDATE players SET status_points = 10000 WHERE id = $1", [player.principal]); // First Officer
     await sql.query("DELETE FROM ugs_mirror_outbox");
     const res = await request(server).put("/v1/me/active-rank").set(player.auth).send({ rank: "trainee" });
     expect(res.status).toBe(200);
-    expect(await versionOf(player.principal)).toBe(1);
-    expect(await outbox(player.principal)).toMatchObject({ version: 1 });
+    expect(await versionOf(player.principal)).toBe(2);
+    expect(await outbox(player.principal)).toMatchObject({ version: 2 });
     // A refused change (above Certified) writes nothing.
     await sql.query("DELETE FROM ugs_mirror_outbox");
     expect((await request(server).put("/v1/me/active-rank").set(player.auth).send({ rank: "captain" })).status).toBe(403);
+    expect(await outbox(player.principal)).toBeUndefined();
     // Choosing the rank already in force (Trainee, now dialled) changes nothing and enqueues nothing.
     expect((await request(server).put("/v1/me/active-rank").set(player.auth).send({ rank: "trainee" })).status).toBe(200);
     expect(await outbox(player.principal)).toBeUndefined();

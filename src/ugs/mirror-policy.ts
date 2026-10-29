@@ -5,9 +5,9 @@ import { REQUEST_TIMEOUT_MS } from "./ugs-client.js";
 
 /**
  * The value of the Protected Cloud Save item `progress`. Field names and values match GET /v1/me/progress
- * where they overlap. There is no writeLock: Postgres is the only writer. For now the game orders two copies by
- * `updatedAt` (the server time of the last visible change), NOT by `version`: Active Rank changes do not bump
- * `version` today. `version` becomes a total order once it bumps on every visible change (planned, D-1).
+ * where they overlap. There is no writeLock: Postgres is the only writer. The game orders two copies (or a copy and
+ * a server answer) by `version`: it goes up by one with every change visible here, Active Rank changes included (D-1).
+ * `updatedAt` is informational.
  */
 export type MirrorSnapshot = {
   schemaVersion: 1;
@@ -20,7 +20,7 @@ export type MirrorSnapshot = {
   activeRank: Rank;
   /** ISO 8601 or null. The time-dependent `firstClassPass` flag is not mirrored; derive it from this. */
   firstClassUntil: string | null;
-  /** ISO 8601, the server time of the player's last change. The ordering key for now (see above). */
+  /** ISO 8601, the server time of the player's last change. Informational; order by `version`. */
   updatedAt: string;
 };
 
