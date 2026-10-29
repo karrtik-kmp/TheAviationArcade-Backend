@@ -44,7 +44,9 @@ info:
       request would be accepted); there is no extra lockout, so requests succeed again as soon as room frees up.
     - Client version gate: when the server sets a minimum build, a missing, malformed or too-low
       `X-Client-Version` is 426 `client_update_required` (checked before the token). Health routes and `DELETE /v1/me` (account deletion
-      must work for outdated clients) are exempt.
+      must work for outdated clients) are exempt. The website's server calls with `X-Client: web` (exactly `web`, any case)
+      instead of a build number and is exempt. That is a compatibility label, not a credential: the token is still verified, and the app
+      must never send it.
     - Retry guidance: 503 and 429 carry `Retry-After` (seconds). Never retry any other 4xx unchanged.
     - Admin routes (`/v1/admin/*`, tag `admin`) are for staff only and are called by the website admin, not the
       app: the verified token email must be on the server allowlist (403 `forbidden` otherwise), and they are

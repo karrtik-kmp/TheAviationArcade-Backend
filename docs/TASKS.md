@@ -172,6 +172,11 @@ verified email for ranked play).
 - 2026-10-29 (user), after the T3 review:
   - (1) **Logbook freshness uses its own `logbookVersion`**, which T5 builds. It rises whenever Trips, Cards or Field Awards change and is served as the Logbook ETag. `players.version` keeps its U2 meaning, so a completion that pays no hint and resets no streak does not bump it.
   - (2) **Lazy completion of full segments is accepted.** A full segment is completed at the next `POST /v1/trips` or `complete`, with no background job and no completion on expiry.
+- 2026-10-29 (user), on the website's question relayed by the docs session: **web callers send `X-Client: web`.**
+  - The client version gate skips a request whose `X-Client` is exactly `web` (trimmed, any case).
+  - The app keeps sending `X-Client-Version`, and a missing build number still counts as outdated (426).
+  - It is a compatibility label, not a credential: the Firebase token is verified as usual.
+  - The website's server-side calls (W6 `GET /v1/me/progress`) must send it.
 - 2026-10-29 (user) D-1: an Active Rank change and a UGS re-link bump `players.version`, and `GET /v1/me/progress`
   exposes `version` (needed for C3). D-4: cross-instance UGS budget is a shared Postgres row (S7); link-proof
   calls get their own row. D-5: the module catalog originates in Unity `ModuleRegistry`; the backend mirrors it.

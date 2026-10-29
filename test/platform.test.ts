@@ -9,8 +9,14 @@ import { ClientVersionGuard, SkipClientVersion } from "../src/platform/client-ve
 import { throttlerOptions } from "../src/platform/rate-limit.js";
 import { SERVER_TIMEOUTS } from "../src/platform/server-timeouts.js";
 
-function contextWith(header: string | undefined, handler: () => void = () => undefined): ExecutionContext {
-  const req = { header: (name: string) => (name === "x-client-version" ? header : undefined) };
+function contextWith(
+  header: string | undefined,
+  handler: () => void = () => undefined,
+  client?: string,
+): ExecutionContext {
+  const req = {
+    header: (name: string) => (name === "x-client-version" ? header : name === "x-client" ? client : undefined),
+  };
   return {
     switchToHttp: () => ({ getRequest: () => req }),
     getHandler: () => handler,
@@ -47,6 +53,19 @@ describe("ClientVersionGuard", () => {
     for (const header of [undefined, "", "9", "0", "-10", "10.5", "1e3", "0x10", "abc", "10, 11", "0010", "1234567890"]) {
       const error = rejection(() => gate(10).canActivate(contextWith(header)));
       expect(error, String(header)).toMatchObject({ status: 426, code: "client_update_required" });
+    }
+  });
+
+  it("skips the website's server (X-Client: web), which has no app build", () => {
+    expect(gate(10).canActivate(contextWith(undefined, undefined, "web"))).toBe(true);
+    expect(gate(10).canActivate(contextWith(undefined, undefined, " Web "))).toBe(true);
+    expect(gate(10).canActivate(contextWith("9", undefined, "web"))).toBe(true);
+  });
+
+  it("still gates any other X-Client value", () => {
+    for (const client of ["", "app", "webapp", "web, app", "unity"]) {
+      const error = rejection(() => gate(10).canActivate(contextWith(undefined, undefined, client)));
+      expect(error, client).toMatchObject({ status: 426, code: "client_update_required" });
     }
   });
 

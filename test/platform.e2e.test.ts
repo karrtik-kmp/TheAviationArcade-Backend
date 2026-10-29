@@ -177,6 +177,16 @@ describe("client version gate", () => {
     expect(current.status).toBe(401);
   });
 
+  it("skips the website's server (X-Client: web) but still verifies its token", async () => {
+    const server = await buildApp({ MIN_CLIENT_BUILD: "20" });
+    const player = bearer();
+    expect((await request(server).put("/v1/me").set(player).set("X-Client", "web")).status).not.toBe(426);
+    const res = await request(server).get("/v1/me/progress").set(player).set("X-Client", "web");
+    expect(res.status).toBe(200);
+    expect((await request(server).get("/v1/me/progress").set("X-Client", "web")).status).toBe(401);
+    expect((await request(server).get("/v1/me/progress").set(player).set("X-Client", "app")).status).toBe(426);
+  });
+
   it("does not apply to account deletion, so an outdated client can still delete its data", async () => {
     const server = await buildApp({ MIN_CLIENT_BUILD: "20" });
     const res = await request(server).delete("/v1/me").set(bearer());
