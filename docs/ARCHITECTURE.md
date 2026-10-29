@@ -230,7 +230,10 @@ too, a no-op because a new player has no link). Every such change bumps `players
 `version` is the total order of copies and `GET /v1/me/progress` returns it; the row also carries a `generation` drawn from a sequence (never repeats, even
 after the row is deleted and re-inserted) and each claim stamps a `claim_id`; the worker deletes or releases a row only if
 both still match its claim, otherwise it is due again at once (migration 0007). The in-process worker (`src/ugs/`, only when
-configured) claims due rows in a single `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)` that moves `due_at` to a lease
+configured) is policy only (pacing, pauses, backoff, logging) and drives two `MirrorQueue` adapters in `src/ugs/mirror-queue.ts`, deletions first:
+`ProgressWriteQueue` (`ugs_mirror_outbox`, with the generation-checked completion) and `CopyDeletionQueue` (`ugs_mirror_deletions`, with the
+re-link check); tests use an in-memory queue (`test/in-memory-mirror-queue.ts`) for the claim/process/release contract. Each queue
+claims due rows in a single `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)` that moves `due_at` to a lease
 of batch size × request timeout + 60 s (260 s), so instances never share a row and no network call is made while a row or
 player lock is held. It reads the current player,
 writes the Protected key `progress` (no `writeLock`: Postgres is the only writer and `version`/`updatedAt` in the value order

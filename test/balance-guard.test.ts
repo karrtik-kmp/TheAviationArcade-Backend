@@ -82,8 +82,8 @@ export const RULES: { name: string; pattern: RegExp }[] = [
  * update/delete of its queue rows are fine; the direct-write rules above still apply to them.
  */
 export const READ_ONLY_IMPORTERS: Record<string, string> = {
-  "src/ugs/mirror-worker.ts":
-    "claims and finishes its own ugs_mirror_outbox / ugs_mirror_deletions rows (update/delete only; inserts are PlayerBalance's)",
+  "src/ugs/mirror-queue.ts":
+    "claims and finishes its own ugs_mirror_outbox / ugs_mirror_deletions rows (update/delete only; inserts are PlayerBalance's). The Postgres MirrorQueue adapters; the worker itself no longer touches the tables",
 };
 
 const IMPORT_RULE = "imports a ledger or mirror-queue table";

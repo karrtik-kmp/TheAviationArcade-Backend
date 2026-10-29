@@ -823,6 +823,23 @@ describe("account deletion", () => {
     expect(await count("ugs_mirror_deletions")).toBe(0);
   });
 
+  it("priority: with a 1-token budget, one due deletion and one due write, only the deletion is processed", async () => {
+    const doomed = await newPlayer({ link: true });
+    await request(server).delete("/v1/me").set(doomed.auth);
+    const waiting = await newPlayer({ link: true });
+    const config = app.get(APP_CONFIG);
+    const tight = new MirrorWorker(app.get(DatabaseService), app.get(UGS_CLIENT), app.get(UGS_WORKER_OPTIONS), {
+      ...config,
+      ugs: { ...config.ugs!, mirrorMaxPerMin: 1 },
+    });
+    calls.length = 0;
+    const summary = await tight.tick(nextNow());
+    expect(summary).toMatchObject({ deleted: 1, written: 0 });
+    expect(calls.map((c) => c.method)).toEqual(["DELETE"]);
+    expect(await count("ugs_mirror_deletions")).toBe(0);
+    expect(await outbox(waiting.principal)).toBeDefined();
+  });
+
   it("deleting an unlinked account records nothing; a failed UGS delete is retried with backoff", async () => {
     const unlinked = await newPlayer();
     await request(server).delete("/v1/me").set(unlinked.auth);

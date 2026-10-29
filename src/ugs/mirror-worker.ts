@@ -1,27 +1,29 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import type { OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { and, eq, sql } from "drizzle-orm";
 import { rootCause } from "../database/database-errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import { APP_CONFIG } from "../config/config.module.js";
 import type { AppConfig } from "../config/config.module.js";
-import { players, ugsLinks, ugsMirrorDeletions, ugsMirrorOutbox } from "../db/schema.js";
 import {
   BACKOFF_CAP_MS,
   BATCH_MAX,
   CREDENTIALS_PAUSE_MS,
   DEAD_DELETION_BACKOFF_MS,
-  LEASE_MS,
   MAX_REJECTED_ATTEMPTS,
   REJECTED_BACKOFF_MS,
   TokenBucket,
   backoffMs,
-  mirrorSnapshot,
 } from "./mirror-policy.js";
 import { UgsClient } from "./ugs-client.js";
-import type { WriteResult } from "./ugs-client.js";
-import { UGS_CLIENT, UGS_WORKER_OPTIONS } from "./ugs.tokens.js";
+import { CopyDeletionQueue, ProgressWriteQueue } from "./mirror-queue.js";
+import type { Claimed, MirrorQueue } from "./mirror-queue.js";
+import { UGS_CLIENT, UGS_MIRROR_QUEUES, UGS_WORKER_OPTIONS } from "./ugs.tokens.js";
 import type { UgsWorkerOptions } from "./ugs.tokens.js";
+
+/** The production queues in priority order: deletions first (privacy-relevant), then writes. */
+export function defaultMirrorQueues(database: DatabaseService, client: UgsClient): readonly MirrorQueue[] {
+  return [new CopyDeletionQueue(database, client), new ProgressWriteQueue(database, client)];
+}
 
 export type TickSummary = {
   written: number;
@@ -37,9 +39,6 @@ export type TickSummary = {
   lagMs: number;
 };
 
-type Kind = "write" | "delete";
-type Claimed = { key: string; generation: number; claimId: string; attempts: number };
-
 /**
  * One-way, server-written progress mirror to UGS Cloud Save (Protected `progress` item). Postgres is the only
  * writer of progress and nothing is ever read back from UGS.
@@ -49,7 +48,8 @@ type Claimed = { key: string; generation: number; claimId: string; attempts: num
  * The claim also stamps a fresh `claim_id`; every later change by this worker (delete, release, back off) only
  * matches its own claim, so a worker whose lease expired cannot disturb a row another one has claimed since.
  * Success deletes the row only if its generation (a never-repeating sequence value) is unchanged; otherwise it is
- * due again at once. Pacing is a token bucket (UGS_MIRROR_MAX_PER_MIN). A 429 pauses the whole worker for
+ * due again at once. The worker owns policy only; the two queues (src/ugs/mirror-queue.ts: deletions, then writes)
+ * own their tables. Pacing is a token bucket (UGS_MIRROR_MAX_PER_MIN). A 429 pauses the whole worker for
  * Retry-After. Our own credentials refused (401/403) pause it for 15 minutes with one error log. 5xx or network
  * failures back off per row (5 s doubling to 15 min); another 4xx backs off for an hour, is logged once, and the
  * write is dropped after MAX_REJECTED_ATTEMPTS (a deletion is kept and retried daily). Every tick with due rows
@@ -59,6 +59,7 @@ type Claimed = { key: string; generation: number; claimId: string; attempts: num
 export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger("UgsMirror");
   private readonly bucket: TokenBucket | undefined;
+  private readonly queues: readonly MirrorQueue[] | undefined;
   private pausedUntil = 0;
   private timer: NodeJS.Timeout | undefined;
   private inflight: Promise<unknown> | undefined;
@@ -71,8 +72,11 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
     @Inject(UGS_CLIENT) private readonly client: UgsClient | null,
     @Inject(UGS_WORKER_OPTIONS) private readonly options: UgsWorkerOptions,
     @Inject(APP_CONFIG) config: AppConfig,
+    /** Tests inject in-memory queues; production builds the two Postgres adapters. Priority order: deletions, writes. */
+    @Optional() @Inject(UGS_MIRROR_QUEUES) queues?: readonly MirrorQueue[],
   ) {
     this.bucket = config.ugs ? new TokenBucket(config.ugs.mirrorMaxPerMin, options.clock()) : undefined;
+    this.queues = queues ?? (client ? defaultMirrorQueues(database, client) : undefined);
   }
 
   onModuleInit(): void {
@@ -116,207 +120,114 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
       backlog: 0,
       lagMs: 0,
     };
-    if (!this.client || !this.bucket) return summary;
+    if (!this.queues || !this.bucket) return summary;
     const now = new Date(nowMs);
     ({ backlog: summary.backlog, lagMs: summary.lagMs } = await this.backlog(now));
-    if (nowMs < this.pausedUntil) return this.finish(summary, nowMs);
+    if (this.isPaused(nowMs)) return this.finish(summary, nowMs);
     let budget = Math.min(this.bucket.available(nowMs), BATCH_MAX);
     if (budget <= 0) return this.finish(summary, nowMs);
 
-    // Deletions first: they are the privacy-relevant ones.
-    const deletions = await this.claim("ugs_mirror_deletions", "ugs_player_id", budget, now);
-    budget -= deletions.length;
-    const rows = budget > 0 ? await this.claim("ugs_mirror_outbox", "player_id", budget, now) : [];
+    // Priority order: deletions first (the privacy-relevant ones), then writes.
+    const pending: { queue: MirrorQueue; claimed: Claimed }[] = [];
+    for (const queue of this.queues) {
+      if (budget <= 0) break;
+      const rows = await queue.claim(budget, now);
+      budget -= rows.length;
+      for (const claimed of rows) pending.push({ queue, claimed });
+    }
 
-    const pending = [
-      ...deletions.map((c) => ({ c, kind: "delete" as const })),
-      ...rows.map((c) => ({ c, kind: "write" as const })),
-    ];
     let haltUntil: number | undefined;
-    for (const entry of pending) {
+    for (const { queue, claimed } of pending) {
       if (this.stopped || haltUntil !== undefined) {
-        await this.release(entry.kind, entry.c, new Date(haltUntil ?? nowMs));
+        await queue.release(claimed, new Date(haltUntil ?? nowMs));
         continue;
       }
-      if (!this.bucket.take(nowMs)) {
-        await this.release(entry.kind, entry.c, now);
+      if (!this.takeToken(nowMs)) {
+        await queue.release(claimed, now);
         continue;
       }
-      const result = entry.kind === "delete" ? await this.processDeletion(entry.c) : await this.processWrite(entry.c, now);
+      const result = await queue.process(claimed, now, this.abort.signal);
       if (result === "done") {
-        this.rejectedLogged.delete(`${entry.kind}:${entry.c.key}`);
-        if (entry.kind === "delete") summary.deleted += 1;
+        this.rejectedLogged.delete(`${queue.op}:${claimed.key}`);
+        if (queue.op === "delete") summary.deleted += 1;
         else summary.written += 1;
       } else if (result.kind === "rate_limited") {
         summary.rateLimited = true;
         haltUntil = nowMs + result.retryAfterMs;
-        this.pausedUntil = haltUntil;
-        await this.release(entry.kind, entry.c, new Date(haltUntil));
+        this.pause(haltUntil);
+        await queue.release(claimed, new Date(haltUntil));
       } else if (result.kind === "auth_failed") {
         // Our own credentials: every row would fail the same way, so stop calling UGS and say so once.
         summary.credentialsRejected = true;
         haltUntil = nowMs + CREDENTIALS_PAUSE_MS;
-        this.pausedUntil = haltUntil;
+        this.pause(haltUntil);
         this.logger.error({ event: "ugs_mirror_credentials_rejected", status: result.status, pausedMs: CREDENTIALS_PAUSE_MS });
-        await this.release(entry.kind, entry.c, new Date(haltUntil));
+        await queue.release(claimed, new Date(haltUntil));
       } else if (result.kind === "rejected") {
         summary.rejected += 1;
-        await this.reject(entry.kind, entry.c, result.status, nowMs);
+        await this.reject(queue, claimed, result.status, nowMs);
       } else {
         summary.retried += 1;
-        const delay = Math.min(BACKOFF_CAP_MS, backoffMs(entry.c.attempts + 1));
-        await this.fail(entry.kind, entry.c, new Date(nowMs + delay), `http ${result.status}`);
+        const delay = Math.min(BACKOFF_CAP_MS, backoffMs(claimed.attempts + 1));
+        await queue.fail(claimed, new Date(nowMs + delay), `http ${result.status}`);
       }
     }
     return this.finish(summary, nowMs);
+  }
+
+  // Budget and pause state. Per process in S6; S7 replaces these three with a shared Postgres budget row
+  // (reserve before claiming, refund unused tokens, a pause visible to every instance).
+  private isPaused(nowMs: number): boolean {
+    return nowMs < this.pausedUntil;
+  }
+
+  private takeToken(nowMs: number): boolean {
+    return this.bucket!.take(nowMs);
+  }
+
+  private pause(untilMs: number): void {
+    this.pausedUntil = untilMs;
   }
 
   /** One JSON line per tick that had due rows or did something, even while throttled or paused. */
   private finish(summary: TickSummary, nowMs: number): TickSummary {
     const active = summary.written + summary.deleted + summary.retried + summary.rejected > 0 || summary.rateLimited;
     if (active || summary.backlog > 0) {
-      this.logger.log({ event: "ugs_mirror_batch", ...summary, paused: nowMs < this.pausedUntil });
+      this.logger.log({ event: "ugs_mirror_batch", ...summary, paused: this.isPaused(nowMs) });
     }
     return summary;
   }
 
   /** Rows due right now across both queues, and how long the oldest has been due. */
   private async backlog(now: Date): Promise<{ backlog: number; lagMs: number }> {
-    const at = now.toISOString();
-    const result = await this.database.db.execute(sql`
-      SELECT count(*)::int AS n, min(due_at) AS oldest FROM (
-        SELECT due_at FROM ugs_mirror_outbox WHERE due_at <= ${at}::timestamptz
-        UNION ALL
-        SELECT due_at FROM ugs_mirror_deletions WHERE due_at <= ${at}::timestamptz
-      ) due
-    `);
-    const row = result.rows[0] as { n: number; oldest: Date | string | null } | undefined;
-    return {
-      backlog: Number(row?.n ?? 0),
-      lagMs: row?.oldest ? Math.max(0, now.getTime() - new Date(row.oldest).getTime()) : 0,
-    };
+    let backlog = 0;
+    let oldest: Date | null = null;
+    for (const queue of this.queues ?? []) {
+      const due = await queue.backlog(now);
+      backlog += due.count;
+      if (due.oldest && (!oldest || due.oldest < oldest)) oldest = due.oldest;
+    }
+    return { backlog, lagMs: oldest ? Math.max(0, now.getTime() - oldest.getTime()) : 0 };
   }
 
   /** A 4xx other than 429/401/403: back off, log once, and cap the retries. */
-  private async reject(kind: Kind, claimed: Claimed, status: number, nowMs: number): Promise<void> {
+  private async reject(queue: MirrorQueue, claimed: Claimed, status: number, nowMs: number): Promise<void> {
     const attempts = claimed.attempts + 1;
     const dead = attempts >= MAX_REJECTED_ATTEMPTS;
-    const logKey = `${kind}:${claimed.key}`;
-    if (kind === "write" && dead) {
+    const logKey = `${queue.op}:${claimed.key}`;
+    if (queue.op === "write" && dead) {
       // Give up on this snapshot; the next progress change queues the player afresh with a clean slate.
-      await this.database.db
-        .delete(ugsMirrorOutbox)
-        .where(and(eq(ugsMirrorOutbox.playerId, claimed.key), eq(ugsMirrorOutbox.claimId, claimed.claimId)));
+      await queue.drop(claimed);
       this.rejectedLogged.delete(logKey);
-      this.logger.warn({ event: "ugs_mirror_dropped", status, op: kind, attempts });
+      this.logger.warn({ event: "ugs_mirror_dropped", status, op: queue.op, attempts });
       return;
     }
-    const delay = kind === "delete" && dead ? DEAD_DELETION_BACKOFF_MS : REJECTED_BACKOFF_MS;
-    await this.fail(kind, claimed, new Date(nowMs + delay), `http ${status}`);
+    const delay = queue.op === "delete" && dead ? DEAD_DELETION_BACKOFF_MS : REJECTED_BACKOFF_MS;
+    await queue.fail(claimed, new Date(nowMs + delay), `http ${status}`);
     // One log line per row until it succeeds: the long backoff makes repeats rare.
     if (!this.rejectedLogged.has(logKey)) {
       this.rejectedLogged.add(logKey);
-      this.logger.warn({ event: "ugs_mirror_rejected", status, op: kind });
-    }
-  }
-
-  /** Claim up to `limit` due rows: due_at becomes a lease and claim_id a fresh uuid. SKIP LOCKED makes it safe across instances. */
-  private async claim(table: "ugs_mirror_outbox" | "ugs_mirror_deletions", keyColumn: string, limit: number, now: Date): Promise<Claimed[]> {
-    const lease = new Date(now.getTime() + LEASE_MS);
-    const result = await this.database.db.execute(sql`
-      WITH picked AS (
-        SELECT ${sql.identifier(keyColumn)} AS k
-        FROM ${sql.identifier(table)}
-        WHERE due_at <= ${now.toISOString()}::timestamptz
-        ORDER BY due_at
-        LIMIT ${limit}
-        FOR UPDATE SKIP LOCKED
-      )
-      UPDATE ${sql.identifier(table)} AS t
-      SET due_at = ${lease.toISOString()}::timestamptz, claim_id = gen_random_uuid()
-      FROM picked
-      WHERE t.${sql.identifier(keyColumn)} = picked.k
-      RETURNING t.${sql.identifier(keyColumn)} AS key,
-                ${table === "ugs_mirror_outbox" ? sql`t.generation` : sql`0`} AS generation,
-                t.claim_id AS claim_id,
-                t.attempts AS attempts
-    `);
-    return (result.rows as { key: string; generation: string | number; claim_id: string; attempts: number }[]).map((row) => ({
-      key: row.key,
-      generation: Number(row.generation),
-      claimId: row.claim_id,
-      attempts: Number(row.attempts),
-    }));
-  }
-
-  private async processWrite(claimed: Claimed, now: Date): Promise<"done" | Exclude<WriteResult, { kind: "ok" }>> {
-    const mine = and(eq(ugsMirrorOutbox.playerId, claimed.key), eq(ugsMirrorOutbox.claimId, claimed.claimId));
-    const [row] = await this.database.db
-      .select({ player: players, ugsPlayerId: ugsLinks.ugsPlayerId })
-      .from(players)
-      .innerJoin(ugsLinks, eq(ugsLinks.playerId, players.id))
-      .where(eq(players.id, claimed.key));
-    if (!row) {
-      // Deleted or unlinked since it was queued: nothing to mirror.
-      await this.database.db.delete(ugsMirrorOutbox).where(mine);
-      return "done";
-    }
-    const result = await this.client!.writeProgress(row.ugsPlayerId, mirrorSnapshot(row.player, now), this.abort.signal);
-    if (result.kind !== "ok") return result;
-    // Only our own claim, and only if nothing was queued meanwhile (a generation is never reused).
-    const removed = await this.database.db
-      .delete(ugsMirrorOutbox)
-      .where(and(mine, eq(ugsMirrorOutbox.generation, claimed.generation)))
-      .returning({ playerId: ugsMirrorOutbox.playerId });
-    if (removed.length === 0) {
-      // Changed while we were writing: due again now. If our claim was lost (lease expired), this matches nothing.
-      await this.database.db
-        .update(ugsMirrorOutbox)
-        .set({ dueAt: now, attempts: 0, lastError: null, claimId: null })
-        .where(mine);
-    }
-    return "done";
-  }
-
-  private async processDeletion(claimed: Claimed): Promise<"done" | Exclude<WriteResult, { kind: "ok" }>> {
-    // If the same UGS id was linked again meanwhile, its mirror is live again: drop the stale deletion.
-    const [linked] = await this.database.db.select({ id: ugsLinks.playerId }).from(ugsLinks).where(eq(ugsLinks.ugsPlayerId, claimed.key));
-    if (!linked) {
-      const result = await this.client!.deleteProgress(claimed.key, this.abort.signal);
-      if (result.kind !== "ok") return result;
-    }
-    await this.database.db
-      .delete(ugsMirrorDeletions)
-      .where(and(eq(ugsMirrorDeletions.ugsPlayerId, claimed.key), eq(ugsMirrorDeletions.claimId, claimed.claimId)));
-    return "done";
-  }
-
-  /** Give a claimed row back (budget spent, paused or stopping) without counting an attempt. Only our own claim. */
-  private async release(kind: Kind, claimed: Claimed, dueAt: Date): Promise<void> {
-    if (kind === "write") {
-      await this.database.db
-        .update(ugsMirrorOutbox)
-        .set({ dueAt, claimId: null })
-        .where(and(eq(ugsMirrorOutbox.playerId, claimed.key), eq(ugsMirrorOutbox.claimId, claimed.claimId)));
-    } else {
-      await this.database.db
-        .update(ugsMirrorDeletions)
-        .set({ dueAt, claimId: null })
-        .where(and(eq(ugsMirrorDeletions.ugsPlayerId, claimed.key), eq(ugsMirrorDeletions.claimId, claimed.claimId)));
-    }
-  }
-
-  private async fail(kind: Kind, claimed: Claimed, dueAt: Date, label: string): Promise<void> {
-    if (kind === "write") {
-      await this.database.db
-        .update(ugsMirrorOutbox)
-        .set({ dueAt, attempts: sql`${ugsMirrorOutbox.attempts} + 1`, lastError: label, claimId: null })
-        .where(and(eq(ugsMirrorOutbox.playerId, claimed.key), eq(ugsMirrorOutbox.claimId, claimed.claimId)));
-    } else {
-      await this.database.db
-        .update(ugsMirrorDeletions)
-        .set({ dueAt, attempts: sql`${ugsMirrorDeletions.attempts} + 1`, lastError: label, claimId: null })
-        .where(and(eq(ugsMirrorDeletions.ugsPlayerId, claimed.key), eq(ugsMirrorDeletions.claimId, claimed.claimId)));
+      this.logger.warn({ event: "ugs_mirror_rejected", status, op: queue.op });
     }
   }
 }
