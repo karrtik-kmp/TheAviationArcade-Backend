@@ -36,7 +36,7 @@ export class PlayersController {
   @Delete()
   @HttpCode(204)
   async deleteAccount(@Principal() principal: string): Promise<void> {
-    await this.players.deletePlayer(principal);
+    await this.players.deletePlayer(principal, new Date());
   }
 
   @Get("progress")

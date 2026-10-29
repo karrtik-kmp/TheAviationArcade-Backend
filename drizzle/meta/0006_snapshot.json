@@ -1,0 +1,1173 @@
+{
+  "id": "10f4c09c-529d-4ef9-86db-0de21ca1481b",
+  "prevId": "9f9e4139-f50b-4a15-8399-c286b0d80dce",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.admin_audit": {
+      "name": "admin_audit",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "admin_audit_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target": {
+          "name": "target",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "admin_audit_action_check": {
+          "name": "admin_audit_action_check",
+          "value": "\"admin_audit\".\"action\" IN ('content_import')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.content_imports": {
+      "name": "content_imports",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "module": {
+          "name": "module",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_name": {
+          "name": "file_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blob_key": {
+          "name": "blob_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created": {
+          "name": "created",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated": {
+          "name": "updated",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unchanged": {
+          "name": "unchanged",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retired": {
+          "name": "retired",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "imported_by": {
+          "name": "imported_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "content_imports_module_sha256": {
+          "name": "content_imports_module_sha256",
+          "columns": [
+            {
+              "expression": "module",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "content_imports_module_check": {
+          "name": "content_imports_module_check",
+          "value": "\"content_imports\".\"module\" IN ('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',\n  'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')"
+        },
+        "content_imports_sha256_check": {
+          "name": "content_imports_sha256_check",
+          "value": "\"content_imports\".\"sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "content_imports_byte_size_check": {
+          "name": "content_imports_byte_size_check",
+          "value": "\"content_imports\".\"byte_size\" > 0"
+        },
+        "content_imports_counts_check": {
+          "name": "content_imports_counts_check",
+          "value": "\"content_imports\".\"created\" >= 0 AND \"content_imports\".\"updated\" >= 0 AND \"content_imports\".\"unchanged\" >= 0 AND \"content_imports\".\"retired\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.content_items": {
+      "name": "content_items",
+      "schema": "",
+      "columns": {
+        "module": {
+          "name": "module",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rank": {
+          "name": "rank",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "data": {
+          "name": "data",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "import_id": {
+          "name": "import_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "content_items_import_id_content_imports_id_fk": {
+          "name": "content_items_import_id_content_imports_id_fk",
+          "tableFrom": "content_items",
+          "tableTo": "content_imports",
+          "columnsFrom": [
+            "import_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "content_items_pk": {
+          "name": "content_items_pk",
+          "columns": [
+            "module",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "content_items_module_check": {
+          "name": "content_items_module_check",
+          "value": "\"content_items\".\"module\" IN ('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',\n  'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')"
+        },
+        "content_items_rank_check": {
+          "name": "content_items_rank_check",
+          "value": "\"content_items\".\"rank\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "content_items_status_check": {
+          "name": "content_items_status_check",
+          "value": "\"content_items\".\"status\" IN ('approved', 'retired')"
+        },
+        "content_items_source_check": {
+          "name": "content_items_source_check",
+          "value": "\"content_items\".\"source\" IN ('client_sheet', 'admin')"
+        },
+        "content_items_version_check": {
+          "name": "content_items_version_check",
+          "value": "\"content_items\".\"version\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.hint_ledger": {
+      "name": "hint_ledger",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "hint_ledger_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delta": {
+          "name": "delta",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref": {
+          "name": "ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "hint_ledger_idempotency": {
+          "name": "hint_ledger_idempotency",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "hint_ledger_player_time": {
+          "name": "hint_ledger_player_time",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "hint_ledger_player_id_players_id_fk": {
+          "name": "hint_ledger_player_id_players_id_fk",
+          "tableFrom": "hint_ledger",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "hint_ledger_delta_check": {
+          "name": "hint_ledger_delta_check",
+          "value": "\"hint_ledger\".\"delta\" <> 0"
+        },
+        "hint_ledger_kind_check": {
+          "name": "hint_ledger_kind_check",
+          "value": "\"hint_ledger\".\"kind\" IN ('starter', 'hint_pack', 'round_spend')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.miles_ledger": {
+      "name": "miles_ledger",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "miles_ledger_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delta": {
+          "name": "delta",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref": {
+          "name": "ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "miles_ledger_idempotency": {
+          "name": "miles_ledger_idempotency",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "miles_ledger_player_time": {
+          "name": "miles_ledger_player_time",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "miles_ledger_player_id_players_id_fk": {
+          "name": "miles_ledger_player_id_players_id_fk",
+          "tableFrom": "miles_ledger",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "miles_ledger_delta_check": {
+          "name": "miles_ledger_delta_check",
+          "value": "\"miles_ledger\".\"delta\" <> 0"
+        },
+        "miles_ledger_kind_check": {
+          "name": "miles_ledger_kind_check",
+          "value": "\"miles_ledger\".\"kind\" IN ('round_award', 'hint_pack')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.players": {
+      "name": "players",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "status_points": {
+          "name": "status_points",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "miles": {
+          "name": "miles",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "hints": {
+          "name": "hints",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "perfect_streak": {
+          "name": "perfect_streak",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "active_rank": {
+          "name": "active_rank",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_class_until": {
+          "name": "first_class_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "players_status_points_check": {
+          "name": "players_status_points_check",
+          "value": "\"players\".\"status_points\" >= 0"
+        },
+        "players_miles_check": {
+          "name": "players_miles_check",
+          "value": "\"players\".\"miles\" >= 0"
+        },
+        "players_hints_check": {
+          "name": "players_hints_check",
+          "value": "\"players\".\"hints\" >= 0"
+        },
+        "players_perfect_streak_check": {
+          "name": "players_perfect_streak_check",
+          "value": "\"players\".\"perfect_streak\" >= 0"
+        },
+        "players_active_rank_check": {
+          "name": "players_active_rank_check",
+          "value": "\"players\".\"active_rank\" IS NULL OR \"players\".\"active_rank\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "players_version_check": {
+          "name": "players_version_check",
+          "value": "\"players\".\"version\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.rounds": {
+      "name": "rounds",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "module": {
+          "name": "module",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rank": {
+          "name": "rank",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pleasure_cruise": {
+          "name": "pleasure_cruise",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completion_id": {
+          "name": "completion_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finished": {
+          "name": "finished",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_count": {
+          "name": "error_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "used_hint": {
+          "name": "used_hint",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hint_used": {
+          "name": "hint_used",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "time_remaining": {
+          "name": "time_remaining",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completion": {
+          "name": "completion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "speed_bonus": {
+          "name": "speed_bonus",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "streak_miles": {
+          "name": "streak_miles",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_class_pass": {
+          "name": "first_class_pass",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sp_awarded": {
+          "name": "sp_awarded",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "miles_awarded": {
+          "name": "miles_awarded",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "promoted_from": {
+          "name": "promoted_from",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "promoted_to": {
+          "name": "promoted_to",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "rounds_player": {
+          "name": "rounds_player",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issued_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "rounds_one_open_per_player": {
+          "name": "rounds_one_open_per_player",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"rounds\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "rounds_player_id_players_id_fk": {
+          "name": "rounds_player_id_players_id_fk",
+          "tableFrom": "rounds",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "rounds_module_check": {
+          "name": "rounds_module_check",
+          "value": "\"rounds\".\"module\" IN ('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',\n        'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')"
+        },
+        "rounds_rank_check": {
+          "name": "rounds_rank_check",
+          "value": "\"rounds\".\"rank\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "rounds_status_check": {
+          "name": "rounds_status_check",
+          "value": "\"rounds\".\"status\" IN ('open', 'completed', 'abandoned')"
+        },
+        "rounds_completion_check": {
+          "name": "rounds_completion_check",
+          "value": "\"rounds\".\"completion\" IS NULL OR \"rounds\".\"completion\" IN ('perfect', 'standard', 'unfinished')"
+        },
+        "rounds_promoted_from_check": {
+          "name": "rounds_promoted_from_check",
+          "value": "\"rounds\".\"promoted_from\" IS NULL OR \"rounds\".\"promoted_from\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "rounds_promoted_to_check": {
+          "name": "rounds_promoted_to_check",
+          "value": "\"rounds\".\"promoted_to\" IS NULL OR \"rounds\".\"promoted_to\" IN ('trainee', 'first-officer', 'captain', 'check-airman', 'chief-pilot')"
+        },
+        "rounds_error_count_check": {
+          "name": "rounds_error_count_check",
+          "value": "\"rounds\".\"error_count\" IS NULL OR \"rounds\".\"error_count\" >= 0"
+        },
+        "rounds_time_remaining_check": {
+          "name": "rounds_time_remaining_check",
+          "value": "\"rounds\".\"time_remaining\" IS NULL OR \"rounds\".\"time_remaining\" BETWEEN 0 AND 1"
+        },
+        "rounds_sp_awarded_check": {
+          "name": "rounds_sp_awarded_check",
+          "value": "\"rounds\".\"sp_awarded\" IS NULL OR \"rounds\".\"sp_awarded\" >= 0"
+        },
+        "rounds_miles_awarded_check": {
+          "name": "rounds_miles_awarded_check",
+          "value": "\"rounds\".\"miles_awarded\" IS NULL OR \"rounds\".\"miles_awarded\" >= 0"
+        },
+        "rounds_streak_miles_check": {
+          "name": "rounds_streak_miles_check",
+          "value": "\"rounds\".\"streak_miles\" IS NULL OR \"rounds\".\"streak_miles\" >= 0"
+        },
+        "rounds_expires_after_issue_check": {
+          "name": "rounds_expires_after_issue_check",
+          "value": "\"rounds\".\"expires_at\" > \"rounds\".\"issued_at\""
+        },
+        "rounds_completed_has_award_check": {
+          "name": "rounds_completed_has_award_check",
+          "value": "\"rounds\".\"status\" <> 'completed'\n        OR (\"rounds\".\"completion_id\" IS NOT NULL AND \"rounds\".\"sp_awarded\" IS NOT NULL AND \"rounds\".\"miles_awarded\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ugs_links": {
+      "name": "ugs_links",
+      "schema": "",
+      "columns": {
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "ugs_player_id": {
+          "name": "ugs_player_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "linked_at": {
+          "name": "linked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ugs_links_ugs_player_id": {
+          "name": "ugs_links_ugs_player_id",
+          "columns": [
+            {
+              "expression": "ugs_player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ugs_links_player_id_players_id_fk": {
+          "name": "ugs_links_player_id_players_id_fk",
+          "tableFrom": "ugs_links",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ugs_mirror_deletions": {
+      "name": "ugs_mirror_deletions",
+      "schema": "",
+      "columns": {
+        "ugs_player_id": {
+          "name": "ugs_player_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ugs_mirror_deletions_due": {
+          "name": "ugs_mirror_deletions_due",
+          "columns": [
+            {
+              "expression": "due_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ugs_mirror_deletions_last_error_check": {
+          "name": "ugs_mirror_deletions_last_error_check",
+          "value": "\"ugs_mirror_deletions\".\"last_error\" IS NULL OR length(\"ugs_mirror_deletions\".\"last_error\") <= 80"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ugs_mirror_outbox": {
+      "name": "ugs_mirror_outbox",
+      "schema": "",
+      "columns": {
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ugs_mirror_outbox_due": {
+          "name": "ugs_mirror_outbox_due",
+          "columns": [
+            {
+              "expression": "due_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ugs_mirror_outbox_player_id_players_id_fk": {
+          "name": "ugs_mirror_outbox_player_id_players_id_fk",
+          "tableFrom": "ugs_mirror_outbox",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ugs_mirror_outbox_attempts_check": {
+          "name": "ugs_mirror_outbox_attempts_check",
+          "value": "\"ugs_mirror_outbox\".\"attempts\" >= 0"
+        },
+        "ugs_mirror_outbox_last_error_check": {
+          "name": "ugs_mirror_outbox_last_error_check",
+          "value": "\"ugs_mirror_outbox\".\"last_error\" IS NULL OR length(\"ugs_mirror_outbox\".\"last_error\") <= 80"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

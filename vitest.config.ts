@@ -15,6 +15,7 @@ export default defineConfig({
       "test/xlsx.test.ts",
       "test/military-mapping.test.ts",
       "test/import-plan.test.ts",
+      "test/ugs.test.ts",
     ],
   },
 });

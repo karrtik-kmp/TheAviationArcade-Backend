@@ -1,11 +1,13 @@
 import { Injectable } from "@nestjs/common";
 import { eq } from "drizzle-orm";
 import { DatabaseService } from "../database/database.module.js";
-import { hintLedger, players } from "../db/schema.js";
+import { hintLedger, players, ugsLinks, ugsMirrorDeletions } from "../db/schema.js";
 import type { PlayerRow } from "../db/schema.js";
 import { STARTER_HINTS } from "../rules/hints.js";
 import { certifiedRankFor, rankIndex } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
+import { mirrorDeletionDueAt } from "../ugs/mirror-policy.js";
+import { enqueueMirror } from "../ugs/outbox.js";
 
 @Injectable()
 export class PlayersService {
@@ -32,6 +34,9 @@ export class PlayersService {
         await tx
           .insert(hintLedger)
           .values({ playerId: principal, delta: STARTER_HINTS, kind: "starter", ref: "starter", createdAt: now });
+        // A brand-new player has no UGS link yet (a deleted account's link went with it), so this is a no-op
+        // today; it keeps every progress-creating write on the same rule.
+        await enqueueMirror(tx, principal, 1, now);
       }
       const [player] = await tx.select().from(players).where(eq(players.id, principal));
       if (!player) throw new Error("Player row missing after insert.");
@@ -41,20 +46,27 @@ export class PlayersService {
 
   /**
    * Dial Active Rank. Returns null when the rank is above Certified. Choosing Certified clears the
-   * stored value so Active follows future promotions again. No lock is needed for the ceiling check
-   * because Certified Rank never drops. The version is deliberately NOT bumped: Round scoring uses the
-   * rank snapshotted at issue, and this is not a balance change.
+   * stored value so Active follows future promotions again. Runs under the player row lock like every other
+   * progress write, so the ceiling check and the UGS mirror enqueue see one consistent row. The version is
+   * deliberately NOT bumped: Round scoring uses the rank snapshotted at issue, and this is not a balance change.
+   * The mirror still carries Active Rank, so it is enqueued (its generation, not the version, records the change).
    */
   async setActiveRank(player: PlayerRow, rank: Rank, now: Date): Promise<PlayerRow | null> {
-    const certified = certifiedRankFor(player.statusPoints);
-    if (rankIndex(rank) > rankIndex(certified)) return null;
-    const stored = rank === certified ? null : rank;
-    const [updated] = await this.database.db
-      .update(players)
-      .set({ activeRank: stored, updatedAt: now })
-      .where(eq(players.id, player.id))
-      .returning();
-    return updated ?? null;
+    return this.database.withTransaction(async (tx) => {
+      const [locked] = await tx.select().from(players).where(eq(players.id, player.id)).for("update");
+      if (!locked) return null;
+      const certified = certifiedRankFor(locked.statusPoints);
+      if (rankIndex(rank) > rankIndex(certified)) return null;
+      const stored = rank === certified ? null : rank;
+      const [updated] = await tx
+        .update(players)
+        .set({ activeRank: stored, updatedAt: now })
+        .where(eq(players.id, player.id))
+        .returning();
+      if (!updated) return null;
+      if (locked.activeRank !== stored) await enqueueMirror(tx, updated.id, updated.version, now);
+      return updated;
+    });
   }
 
   /**
@@ -63,7 +75,7 @@ export class PlayersService {
    * either commits before the delete or finds no player afterwards (404). Idempotent: deleting a
    * missing player is a no-op. Returns whether a player existed.
    */
-  async deletePlayer(principal: string): Promise<boolean> {
+  async deletePlayer(principal: string, now: Date = new Date()): Promise<boolean> {
     return this.database.withTransaction(async (tx) => {
       const [player] = await tx
         .select({ id: players.id })
@@ -71,6 +83,16 @@ export class PlayersService {
         .where(eq(players.id, principal))
         .for("update");
       if (!player) return false;
+      // The UGS copy cannot be deleted inside this lock (no network here): record the UGS id, and the mirror
+      // worker deletes the Cloud Save item. The link and any outbox row go with the player (cascade). Due only
+      // after any write another instance has in flight can have finished, so it cannot recreate the copy.
+      const [link] = await tx.select().from(ugsLinks).where(eq(ugsLinks.playerId, principal));
+      if (link) {
+        await tx
+          .insert(ugsMirrorDeletions)
+          .values({ ugsPlayerId: link.ugsPlayerId, dueAt: mirrorDeletionDueAt(now), createdAt: now })
+          .onConflictDoUpdate({ target: ugsMirrorDeletions.ugsPlayerId, set: { dueAt: mirrorDeletionDueAt(now) } });
+      }
       await tx.delete(players).where(eq(players.id, principal));
       return true;
     });

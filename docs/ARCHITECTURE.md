@@ -56,6 +56,7 @@ src/players/, src/rounds/ feature modules: controller (HTTP) + service (transact
 src/storage/              BlobStore (Bunny / memory / none), key validation
 src/content/              staff xlsx import/export: module mappings, pure import planner, service, controller
 src/admin/                GET /v1/admin/me (staff check for the website)
+src/ugs/                  UGS progress mirror: link route, token check, outbox helper, worker, admin client
 ```
 
 Concurrency rule: every balance change runs in `DatabaseService.withTransaction` (explicit client,
@@ -158,32 +159,79 @@ Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only ke
   once used it stays. Implies a boost is held as an unused item and applied when the player uses it, so
   "Certified Rank never drops" holds. (Interpretation of "used" to confirm when the boost slice starts.)
 
-## Unity Gaming Services (decided 2026-10-27, user)
+## Unity Gaming Services (revised 2026-10-28, user)
 
-This backend's Postgres is the **single source of truth** for Miles, Status Points, ranks, Rounds and
-entitlements. UGS never holds a copy of player progress: no Cloud Save mirror, no UGS Economy currency.
-UGS is used only where it adds something we don't build (e.g. Analytics).
+**Decision (2026-10-28, binding; reverses the 2026-10-27 "UGS keeps no copy" ruling).** UGS is the first support path for
+the game: it reads progress (and, later, content) from UGS first; this backend is the authority and the backup. Postgres
+remains the **only writer** of Miles, Status Points, ranks, Rounds and entitlements and the server computes every award.
+UGS receives a **one-way, server-written, player-read-only mirror** of progress in Cloud Save. The game never writes
+progress to UGS and the backend never reads progress back from UGS. No UGS Economy currency. Content via CCD/Remote Config
+with a Bunny backup is a follow-up, with releases.
 
-State found on 2026-10-27 in Unity v2: `authentication`, `cloudsave`, `cloudcode`, `analytics` packages are
-installed, but Authentication is never called (backlog BLK-10). The only Cloud Save/Cloud Code code is
-Unity's Blocks Achievements sample; the game's Field Awards are separate (`_Project`). Nothing to sync.
+State found on 2026-10-27 in Unity v2: `authentication`, `cloudsave`, `cloudcode`, `analytics` packages are installed,
+but Authentication is never called (backlog BLK-10); the only Cloud Save/Cloud Code code is the Blocks Achievements
+sample. Nothing existed to sync.
 
-If a UGS service that needs a player is adopted later:
+**Verified facts (2026-10-28, from docs.unity.com; re-check before changing):**
 
-- **Identity:** UGS Authentication with Firebase as an OpenID Connect custom ID provider (issuer
-  `https://securetoken.google.com/<projectId>`); the game calls `SignInWithOpenIdConnectAsync` with the
-  Firebase ID token. The UGS player then derives from a verified Firebase token. Never accept a
-  client-supplied UGS player ID as a link to our principal.
-- **UGS → backend:** Triggers webhook action, authenticated with `{{ hmac_sha256 "SECRET" }}` over the
-  rendered body (or the `{{ jwt }}` header, checking project/environment claims). Idempotent on
-  `X-Unity-Event-ID`; return non-2xx only on transient failure (5xx/timeout/429 are retried, then
-  dead-lettered; other 4xx are dropped). Public URL only, so local testing needs a tunnel.
-- **Backend → UGS:** Admin REST with a service account, via `POST
-  https://services.api.unity.com/auth/v1/token-exchange` (1 h JWT; 20 req/s). Credentials come from the
-  host environment, never the repo.
+- Cloud Save player data **Protected** class: the player reads their own, only the server writes. Admin write: `POST
+  https://services.api.unity.com/cloud-save/v1/data/projects/{projectId}/environments/{environmentId}/players/{playerId}/protected/items`
+  with `{ key, value, writeLock? }`, returns `{ writeLock }`; value JSON up to 5 MB. Auth: `Authorization: Basic
+  base64(keyId:secret)` of a service account with the role Cloud Save Editor (documented for the Cloud Save admin API, so
+  no token exchange). Delete: `DELETE .../protected/items/{key}`.
+- **Admin API rate limit: 60 req/s and 1,000 requests per 30 minutes per project per IP (about 33/min sustained).** This is the
+  binding constraint and why the mirror is paced (default 25/min) and coalesced per player.
+- UGS player tokens: RS256, JWKS `https://player-auth.services.api.unity.com/.well-known/jwks.json` (kid `public:<uuid>`), `iss`
+  `https://player-auth.services.api.unity.com`, `sub` = the UGS player id, `exp`/`nbf`.
+- Player Auth admin: `GET https://services.api.unity.com/player-identity/v1/projects/{projectId}/users/{playerId}` (Basic
+  service account; the API must be enabled in the dashboard) returns `externalIds[] { externalId, providerId }`. Rate limit
+  10 req/s and 500 per 30 minutes.
 
-Docs: docs.unity.com — `triggers/webhooks`, `authentication/openid-connect`,
-`services-web-apis/service-account-auth`. Re-check before building; these were read on 2026-10-27.
+**UNVERIFIED (kept as `ASSUMPTION` tests; confirm against a real UGS project before relying on them).:**
+
+1. The token claims `project_id` / `upid`, `envId` and `idd` are described only in a support article. The code requires a
+   project claim (either name), checks `envId` when present, and ignores `idd`.
+2. That the `externalId` of the OIDC link equals the Firebase uid, and that `providerId` equals the provider id configured
+   in `UGS_OIDC_PROVIDER` (for example `oidc-firebase`). If the service account credential is rejected, link answers 503
+   `service_unavailable`.
+
+**Identity link (`PUT /v1/me/ugs-link`).** UGS Authentication with Firebase as an OpenID Connect provider (issuer
+`https://securetoken.google.com/<projectId>`); the game signs in with the Firebase ID token and sends the resulting UGS token.
+The server verifies it (jose, remote JWKS with the same fail-closed key handling as Firebase: unreachable keys are 503
+`auth_unavailable`; a bad UGS token is 400 `invalid_request`, because 401 is reserved for the Firebase token), then proves
+the link server-side with Player Auth admin (403 without proof; UGS down is 503 `service_unavailable`). A client-supplied UGS
+player id is never accepted. Table `ugs_links` (`player_id` PK, `ugs_player_id` unique): re-link to the same UGS player is an
+idempotent 200; to another replaces the link under the player lock (progress and `version` untouched) and queues deletion of
+the old copy; a UGS player already linked to another principal is 409 `ugs_link_conflict`, unless the same proof shows
+UGS no longer lists that principal's uid, in which case the link moves (both players locked in id order). A token for the UGS
+player already on record is answered from `ugs_links` without a Player Auth call. Proof calls are limited to 5 per hour per
+principal and a process-wide sliding window of 12/min (burst 10) under the 500 per 30 min Player Auth admin limit.
+
+**Outbox and worker.** `ugs_mirror_outbox` holds at most one row per linked player (`version` = highest seen, `generation` =
+count of enqueues, `due_at`, `attempts`, short `last_error`). One helper (`enqueueMirror`) is called inside the same
+transaction, after the player row is locked, from every write that changes what the mirror shows: Round result, hint spend,
+hint pack, Active Rank change (`PUT /v1/me` creation calls it too, a no-op because a new player has no link). Active Rank
+does not bump `players.version` (until D-1), so the row carries a `generation` drawn from a sequence (never repeats, even
+after the row is deleted and re-inserted) and each claim stamps a `claim_id`; the worker deletes or releases a row only if
+both still match its claim, otherwise it is due again at once (migration 0007). The in-process worker (`src/ugs/`, only when
+configured) claims due rows in a single `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)` that moves `due_at` to a lease
+of batch size × request timeout + 60 s (260 s), so instances never share a row and no network call is made while a row or
+player lock is held. It reads the current player,
+writes the Protected key `progress` (no `writeLock`: Postgres is the only writer and `version`/`updatedAt` in the value order
+updates), through a token bucket (`UGS_MIRROR_MAX_PER_MIN`, burst ≤ 10; per process — the shared Postgres budget row is
+brief S7, decided 2026-10-29 D-4). A 429 pauses the whole worker for `Retry-After`; 401/403 (our credentials) pause it for
+15 min with one error log; 5xx or network errors back off per row (5 s doubling, cap 15 min); another 4xx is logged once and a
+write is dropped after 3 rejections (the next change re-queues it), a deletion retries daily. Each tick with due rows logs
+backlog and lag. On shutdown it stops before the pool closes and aborts in-flight requests. Account deletion and re-link
+record the old UGS player id in `ugs_mirror_deletions` in the same transaction, due at lease + request timeout so a write
+already in flight cannot land after it; the worker deletes the Cloud Save item (retried). Known gap: a write in flight for a
+holder at the moment its link moves can still land on that UGS player; the new holder's next write overwrites it.
+
+**UGS to backend (unchanged, not built).** Triggers webhook action authenticated with `{{ hmac_sha256 "SECRET" }}` over the
+rendered body (or the `{{ jwt }}` header), idempotent on `X-Unity-Event-ID`; public URL only.
+
+Docs: docs.unity.com `cloud-save` (data access classes, admin API), `authentication/openid-connect`, `services-web-apis`,
+`triggers/webhooks`.
 
 ## Sign in with Apple (if the project rule changes)
 

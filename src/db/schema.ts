@@ -7,8 +7,10 @@ import {
   index,
   integer,
   jsonb,
+  pgSequence,
   pgTable,
   primaryKey,
+  uuid,
   text,
   timestamp,
   uniqueIndex,
@@ -245,6 +247,76 @@ export const adminAudit = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import')`)],
+);
+
+/**
+ * Phase 5.1: the link between a player and their Unity Gaming Services player id, proven server-side at link
+ * time (never client-supplied). One UGS id belongs to at most one player. Deleted with the player.
+ */
+export const ugsLinks = pgTable(
+  "ugs_links",
+  {
+    playerId: text("player_id")
+      .primaryKey()
+      .references(() => players.id, { onDelete: "cascade" }),
+    ugsPlayerId: text("ugs_player_id").notNull(),
+    linkedAt: timestamp("linked_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [uniqueIndex("ugs_links_ugs_player_id").on(t.ugsPlayerId)],
+);
+
+/** Source of `ugs_mirror_outbox.generation`: never restarts, so a row deleted and re-inserted gets a new value. */
+export const ugsMirrorGeneration = pgSequence("ugs_mirror_generation_seq");
+
+/**
+ * Coalesced mirror queue: at most one row per linked player. Written in the same transaction as every
+ * progress change. `version` is the highest players.version seen (informational); `generation` comes from a
+ * sequence and changes on every enqueue (including ones that do not bump players.version, e.g. Active Rank), so
+ * the worker deletes a row only if nothing changed since it claimed it. `claim_id` is set when a worker claims
+ * the row (due_at is then a lease); the worker's later delete/release/fail only match that claim, so a worker
+ * whose lease expired cannot touch a row another worker has since claimed. `last_error` is a short status
+ * such as "http 503", never a body, token or value.
+ */
+export const ugsMirrorOutbox = pgTable(
+  "ugs_mirror_outbox",
+  {
+    playerId: text("player_id")
+      .primaryKey()
+      .references(() => players.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    generation: bigint("generation", { mode: "number" }).notNull().default(sql`nextval('ugs_mirror_generation_seq')`),
+    claimId: uuid("claim_id"),
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+  },
+  (t) => [
+    index("ugs_mirror_outbox_due").on(t.dueAt),
+    check("ugs_mirror_outbox_attempts_check", sql`${t.attempts} >= 0`),
+    check("ugs_mirror_outbox_last_error_check", sql`${t.lastError} IS NULL OR length(${t.lastError}) <= 80`),
+  ],
+);
+
+/**
+ * UGS copies to delete after an account deletion (the link row is gone by then, so the UGS id is kept here).
+ * Written in the deleting transaction; the worker deletes the Cloud Save item. No player reference, no PII:
+ * a UGS player id is not a credential.
+ */
+export const ugsMirrorDeletions = pgTable(
+  "ugs_mirror_deletions",
+  {
+    ugsPlayerId: text("ugs_player_id").primaryKey(),
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    /** Set when a worker claims the row; later changes by that worker only match this claim. */
+    claimId: uuid("claim_id"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("ugs_mirror_deletions_due").on(t.dueAt),
+    check("ugs_mirror_deletions_last_error_check", sql`${t.lastError} IS NULL OR length(${t.lastError}) <= 80`),
+  ],
 );
 
 export type PlayerRow = typeof players.$inferSelect;

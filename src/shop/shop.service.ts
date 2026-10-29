@@ -4,6 +4,7 @@ import { DatabaseService } from "../database/database.module.js";
 import { hintLedger, milesLedger, players } from "../db/schema.js";
 import type { PlayerRow } from "../db/schema.js";
 import { MILES_HINT_PACK } from "../rules/hints.js";
+import { enqueueMirror } from "../ugs/outbox.js";
 
 export type HintPackReceipt = { hints: number; priceMiles: number };
 
@@ -75,6 +76,7 @@ export class ShopService {
         .where(eq(players.id, principal))
         .returning();
       if (!updated) throw new Error("Player row missing after hint pack purchase.");
+      await enqueueMirror(tx, principal, updated.version, now);
       return {
         kind: "purchased",
         player: updated,

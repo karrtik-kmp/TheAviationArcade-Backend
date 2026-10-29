@@ -13,6 +13,7 @@ import { ERROR_CODES } from "../src/common/errors.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
 import { XLSX_MIME } from "../src/content/xlsx.js";
+import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
 import { clientSheet } from "./fixtures.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -90,6 +91,21 @@ describe("openapi contract parity", () => {
     expect([...spec.components.schemas.Error.properties.error.properties.code.enum].sort()).toEqual(
       [...ERROR_CODES].sort(),
     );
+  });
+
+  it("UgsMirrorProgress matches the value the mirror writes", () => {
+    const ajv = new Ajv2020({ strict: false, validateFormats: false, allErrors: true });
+    ajv.addSchema({ $id: "spec", components: spec.components });
+    const validate = ajv.compile({ $ref: "spec#/components/schemas/UgsMirrorProgress" });
+    const player = {
+      id: "p", statusPoints: 1200, miles: 30, hints: 5, perfectStreak: 2, activeRank: null,
+      firstClassUntil: null, version: 4, createdAt: new Date(), updatedAt: new Date(),
+    };
+    const value = mirrorSnapshot(player, new Date());
+    expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate(mirrorSnapshot({ ...player, firstClassUntil: new Date() }, new Date()))).toBe(true);
+    expect(validate({ ...value, extra: 1 })).toBe(false);
+    expect(validate({ ...value, schemaVersion: 2 })).toBe(false);
   });
 
   it("rank and module enums match src/rules", () => {

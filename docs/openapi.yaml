@@ -186,6 +186,112 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/me/ugs-link:
+    put:
+      tags: [player]
+      operationId: linkUgs
+      summary: Link this sign-in to its Unity Gaming Services player
+      description: |
+        Lets the server mirror this player's progress to Unity Gaming Services (UGS) Cloud Save, where the game
+        reads it first (see `UgsMirrorProgress`). Send the UGS player token (`AuthenticationService.Instance.AccessToken`)
+        after the game has signed in to UGS with Firebase as the OpenID Connect provider. The server verifies the
+        token and then asks UGS which external identity is linked to that UGS player: it must be the Firebase user
+        making this request. A client-supplied player id is never accepted and the body cannot name one.
+
+        The mirror is one-way and read-only for the game: the server is the only writer and the game must never write
+        progress to UGS. The server stays the authority: prefer `GET /v1/me/progress` whenever the server is
+        reachable, and treat the UGS copy as a fallback that can lag the server by seconds to minutes under load.
+
+        201 on the first link. 200 when this player was already linked to that UGS player (answered from the
+        server's own record with no call to UGS, so calling this on every launch is cheap), or when it was
+        re-pointed to a different UGS player (the old copy is deleted by the server; progress is unchanged).
+        Requires a player (`PUT /v1/me` first). 404 `not_found` means this server has the mirror turned off.
+
+        Any other attempt asks UGS for the link proof and counts against 5 per hour per player (429 `rate_limited`
+        with `Retry-After`) and a server-wide proof budget (503 `service_unavailable`, `Retry-After: 5`). If the UGS
+        player is still recorded against another sign-in that UGS no longer lists as linked, the link moves to this
+        player.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UgsLinkRequest" }
+      responses:
+        "200":
+          description: Already linked to this UGS player, or re-pointed to it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UgsLinkResponse" }
+        "201":
+          description: Linked. A first mirror write is queued.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UgsLinkResponse" }
+        "400":
+          description: |
+            Malformed or unknown body field, or the UGS token is not acceptable (the message says which check failed,
+            for example `UGS token rejected: expired.`). 401 stays reserved for the Firebase token.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: The UGS player is not linked to this Firebase sign-in (`UGS account is not linked to this sign-in`).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [forbidden]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`player_not_found` (call `PUT /v1/me` first) or `not_found` (the mirror is not enabled on this server)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [player_not_found, not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: That UGS player is already linked to another player, and UGS still lists that player's sign-in as linked.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [ugs_link_conflict]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: |
+            `auth_unavailable`: the UGS or Firebase signing keys could not be fetched. `service_unavailable`: the
+            database, or UGS (needed for the link proof), is unreachable, or the server-wide link-proof budget is
+            spent. Retry later with the same request.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [auth_unavailable, service_unavailable]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/rounds:
     post:
       tags: [rounds]
@@ -742,7 +848,7 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     ServiceUnavailable:
       description: |
-        `auth_unavailable`: the Google signing keys could not be fetched. `service_unavailable`: database
+        `auth_unavailable`: the Google signing keys could not be fetched (on the UGS link route, the UGS keys too). `service_unavailable`: database
         unreachable or timed out (also readiness failing). Both carry `Retry-After`; retry later with the
         same token and the same request.
       headers:
@@ -827,6 +933,7 @@ components:
                 - import_invalid
                 - plan_changed
                 - import_in_progress
+                - ugs_link_conflict
                 - storage_unavailable
                 - service_unavailable
                 - internal_error
@@ -1034,6 +1141,51 @@ components:
       required: [progress]
       properties:
         progress: { $ref: "#/components/schemas/Progress" }
+    UgsLinkRequest:
+      type: object
+      additionalProperties: false
+      required: [ugsToken]
+      properties:
+        ugsToken:
+          type: string
+          minLength: 1
+          maxLength: 8000
+          description: The UGS player access token. Verified server-side; the player id comes from it, never from the client.
+    UgsLinkResponse:
+      type: object
+      additionalProperties: false
+      required: [link]
+      properties:
+        link:
+          type: object
+          additionalProperties: false
+          required: [linkedAt]
+          properties:
+            linkedAt: { type: string, format: date-time }
+    UgsMirrorProgress:
+      type: object
+      additionalProperties: false
+      description: |
+        NOT an API response: the JSON value of the Cloud Save **Protected** item with key `progress`, written by the
+        server for each linked player (the player can read their own, only the server can write). Same field names
+        and values as `Progress` where they overlap. It is a fallback: prefer the server when it is reachable, and
+        expect the copy to lag by seconds to minutes. Never write it. Order updates by `updatedAt` (an Active Rank
+        change updates `updatedAt` but does not bump `version`).
+      required: [schemaVersion, version, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        version: { type: integer, minimum: 1, description: "The server's player version at the time of the snapshot." }
+        statusPoints: { type: integer, minimum: 0 }
+        miles: { type: integer, minimum: 0 }
+        hints: { type: integer, minimum: 0, description: Co-Pilot hints left. }
+        perfectStreak: { type: integer, minimum: 0 }
+        certifiedRank: { $ref: "#/components/schemas/Rank" }
+        activeRank: { $ref: "#/components/schemas/Rank" }
+        firstClassUntil:
+          type: [string, "null"]
+          format: date-time
+          description: End of the First Class Pass, or null. The pass is active while this is in the future.
+        updatedAt: { type: string, format: date-time, description: "Server time of the player's last change." }
     SetActiveRankRequest:
       type: object
       additionalProperties: false

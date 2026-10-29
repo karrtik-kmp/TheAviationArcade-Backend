@@ -11,6 +11,7 @@ import { activeRankFor, certifiedRankFor, rankIndex } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import { nextPerfectStreak, scoreRound } from "../rules/scoring.js";
 import type { Completion, RoundAward } from "../rules/scoring.js";
+import { enqueueMirror } from "../ugs/outbox.js";
 
 export const ROUND_TTL_SECONDS = 30 * 60;
 
@@ -203,6 +204,8 @@ export class RoundsService {
         .where(eq(players.id, principal))
         .returning();
       if (!updated) throw new Error("Player row missing after credit.");
+      // Same transaction as the balance: a linked player's UGS mirror can never miss this change.
+      await enqueueMirror(tx, principal, updated.version, now);
       // Same transaction as the balance, one entry per Round (the unique key makes a double pay impossible).
       if (award.miles > 0) {
         await tx
@@ -257,6 +260,7 @@ export class RoundsService {
         .where(eq(players.id, principal))
         .returning();
       if (!updated) throw new Error("Player row missing after hint spend.");
+      await enqueueMirror(tx, principal, updated.version, now);
       return { kind: "spent", player: updated, replayed: false };
     });
   }

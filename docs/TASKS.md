@@ -53,7 +53,7 @@ Module IDs on the wire are the Unity `ModuleRegistry` BackendIds. Unity split Co
 | 3.2 | Spending (hints, skips) | Partial (local) | Server hint bank: 5 starter hints, `POST /v1/rounds/:id/hint` (1 per Round, idempotent), `POST /v1/shop/miles-hint-pack` 5,000 Miles → 10 hints (CF-53), `hint_ledger`. Numbers from Unity `HintBank`/`MilesHintPack`. Not built: Trip/7-day hint grants (need a server Trip concept), skips (no price anywhere) |
 | 3.3 | Flight Segment set bonuses | Blocked | Josh: per Module? does a hint break Perfect Manifest? |
 | 3.4 | Rule rulings | Blocked | Josh: per-Module/rank minimum Round time (the app still owes the timer table; 3 s floor stays). Hint vs streak: the app now agrees with the server (a hinted Round is Standard and breaks the streak, Unity `9576a63`); the ruling itself is still Josh's |
-| 3.5 | Field Awards | Not started | Client source is now `../docs/Field Awards #1.xlsx` (2026-10-28, 28 rows; supersedes `Draft_for_FieldAwards v2.xlsx`: Go Around is redefined as a full green Trip after a non-full one, Quad-Engine Royalty lists military types). Awards pay no Miles or Status Points. Use exactly the client's rows; Unity owns the catalog |
+| 3.5 | Field Awards | Not started | Client source is now `../docs/Field Awards #1.xlsx` (2026-10-28, 28 rows; supersedes `Draft_for_FieldAwards v2.xlsx`: Go Around is redefined as a full green Trip after a non-full one, Quad-Engine Royalty lists military types). Awards pay no Miles or Status Points. Use exactly the client's rows; the backend owns the catalog and progress (C12, 2026-10-28), delivered to Unity as data |
 
 Deploy note for migration 0003: apply it with no old-image instance serving (stop the world). An old
 image would create players without starter hints and bank Rounds without ledger rows, and nothing would
@@ -70,7 +70,11 @@ Google RTDN. Design in ARCHITECTURE.md.
 | # | Job | State | Notes |
 |---|---|---|---|
 | 5.0 | Admin content store foundation | Done (local, uncommitted) | Staff-only API (`STAFF_EMAILS` + verified email): import xlsx → `content_items`, list, export, `GET /v1/admin/me`. Military mapping from the client's sheet (31 rows → `mil-a1`…`mil-a31`, approved, source `client_sheet`). Idempotent by file sha256, all-or-nothing, unzip-bomb guard. Import semantics ruled 2026-10-28 (Q1-Q9 below): client sheets are authoritative with stable ids (matched by `file`), retire missing rows, field diffs and a `planHash` confirm before any overwrite/retire (409 `plan_changed`); admin exports keep versioned edits. `BlobStore` (Bunny S3 with SigV4 / memory / none), migrations 0004 (`content_imports`, `content_items`, `admin_audit`) and 0005 (`retired` status and count). Real Bunny never contacted |
+| 5.1 | UGS progress mirror | Done (local, uncommitted), UGS not contacted | Decision 2026-10-28 (see Design rules). `PUT /v1/me/ugs-link` (server-side link proof via UGS Player Auth admin, strict body, 400/403/404/409/503 mapping), migration 0006 (`ugs_links`, `ugs_mirror_outbox`, `ugs_mirror_deletions`), `enqueueMirror` called inside every progress-changing transaction (Round result, hint spend, hint pack, Active Rank, player create) with a test per write path, in-process worker (SKIP LOCKED lease, token bucket `UGS_MIRROR_MAX_PER_MIN`, 429 pause, per-row backoff), account-deletion cleanup via `ugs_mirror_deletions`. UGS reached only through an injected fetcher; tests stub it. UNVERIFIED (ASSUMPTION tests): token claim names `project_id`/`upid`/`envId`; OIDC `externalId` = Firebase uid. **Open, all need user sign-off in the UGS dashboard:** create the OIDC provider for Firebase, enable the Player Auth admin API, create a service account with Cloud Save Editor + `player_auth.users.get`, then set the `UGS_*` variables; run one real link end to end and decode a real token to settle the UNVERIFIED items. Follow-up (with releases): content via CCD/Remote Config with a Bunny backup |
 | 5.2+ | Follow-ups (not started) | — | Releases and versioned packages with rollback; player content delivery and Rounds tied to a release; server-side answer checks (closes the client-reported-results gap); photo upload/serving; retire and edit-in-place endpoints; importers for the other seven modules; website admin integration; first `bunny:check` against the real zone (needs sign-off and the zone password) |
+
+Field Awards: since C12 (2026-10-28) the backend owns the catalog and progress; built after the Trips
+contract (see Decisions).
 
 ### Phase 6 — Hosting and launch
 
@@ -119,13 +123,36 @@ verified email for ranked play).
     server-to-server through its Worker: no CORS. Q6 Military is the only importer. Q7 original uploads are kept
     forever in Bunny. Q8 identical bytes replay first. Q9 source is `client_sheet` for client-sheet creates/updates,
     `admin` for admin-export ones.
-- 2026-10-27: backend Postgres owns all progress; UGS keeps no copy (no Cloud Save mirror, no UGS
-  Economy). Firebase-OIDC link and webhooks only if a UGS service is adopted. See ARCHITECTURE.md.
+- 2026-10-27: backend Postgres owns all progress; no UGS Economy. (The "UGS keeps no copy" half was reversed on
+  2026-10-28, next entry.)
+- 2026-10-28 (user), 5.1 UGS mirror: UGS is the game's first support path and reads progress (later content) from UGS
+  first; the backend server is the authority and backup. Postgres stays the only writer and computes every award; UGS
+  gets a one-way, server-written, player-read-only Cloud Save mirror (Protected `progress`). The game never writes
+  progress to UGS; the backend never reads it back. Reverses the 2026-10-27 "UGS keeps no copy" ruling. See
+  ARCHITECTURE.md "Unity Gaming Services".
 - 2026-10-28 (user): a client-sheet import into an EMPTY module must also have unique, non-blank trimmed `file` names
   (row error otherwise), same as the non-empty case, so later sheets can always match by file name. The real client
   sheet (31 rows) still imports 31 items.
 - 2026-10-28: an admin edit of a retired item leaves it retired (only a client sheet listing it again returns it to
   `approved`).
+- 2026-10-28 (user, cross-repo rulings via `../docs/PROJECT_STATE.md` §3): C1 backend Postgres owns editorial
+  content and the website desks become clients of the staff admin API (server-to-server through the Worker with
+  the staff member's own token); releases (5.2+) are built here. C3 the game shows the UGS copy first, then
+  checks the server; a higher server `version` wins on screen and the copy is re-queued. C4 the backend verifies
+  store receipts itself (Phase 4 as designed; no Cloud Code in the purchase path). C5 the backend owns the
+  `/v1/trips` contract. C8 vocabulary: backend Round = one Flight, Flight Segment = Trip (Unity ADR-0007). C12
+  the backend records first and Unity receives as data: content, the Field Award catalog text and thresholds,
+  aircraft tags, Field Award progress, Go Around (from server Trips) and Logbook history. **This reverses
+  "Unity owns the Field Award catalog"** (3.5 and the Phase 5 note). PROJECT_STATE §4 row C10 still says the
+  opposite; C12 is the later ruling.
+- 2026-10-29 (user), order after the 5.0/5.1 review and commits: C8 line in CLAUDE.md, then the deepening
+  brief `../docs/briefs/backend.md` S1–S7 (the per-player UGS write interval folds into S6/S7), then the Trips,
+  Field Award, Logbook and admin-update delivery contracts on top of PlayerBalance, then the catalog/dealer
+  slices B1–B5 (`../docs/briefs/cross-repo-catalog-dealer.md`). S8 waits for Phase 4.
+- 2026-10-29 (user) D-1: an Active Rank change and a UGS re-link bump `players.version`, and `GET /v1/me/progress`
+  exposes `version` (needed for C3). D-4: cross-instance UGS budget is a shared Postgres row (S7); link-proof
+  calls get their own row. D-5: the module catalog originates in Unity `ModuleRegistry`; the backend mirrors it.
+  Still open: D-3 (Perfect Streak per Trip or lifetime) — Josh.
 
 ## Open questions for Josh
 
@@ -134,6 +161,13 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-10-29 (5.1 independent review + fixes): Opus review (read-only) found no missing enqueue and a sound
+  single-instance design; fixed: Player Auth budget exhaustion by one player (shortcut for the recorded link, 5/h per
+  principal, 12/min process-wide), copy surviving deletion/re-link with several instances (deletion due after lease +
+  timeout), generation ABA after lease expiry (sequence generation + `claim_id`, migration 0007, lease 260 s), stale
+  link holder blocking forever (link moves when UGS no longer lists the holder), config all-or-none, credentials
+  401/403 global pause, capped 4xx retries, backlog logging, Retry-After decimals, response bodies cancelled. Deferred
+  by plan: shared cross-instance budget (S7), per-player write interval (S6/S7), `version` bump on Active Rank (D-1).
 - 2026-10-29 (5.0 independent review + fixes): Opus review (read-only) reproduced a 2.7 KB xlsx (one cell at
   `XFD1048576`) OOM-killing node, because `read-excel-file` densifies sparse sheets past the zip-bomb guard. Fixed with a
   cell-reference scan before parsing (tests at XFD1048576 / ZZ100000, < 3 s, < 100 MB). Also fixed: admin exports could

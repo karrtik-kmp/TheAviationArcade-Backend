@@ -18,6 +18,7 @@ export const ERROR_CODES = [
   "import_invalid",
   "plan_changed",
   "import_in_progress",
+  "ugs_link_conflict",
   "storage_unavailable",
   "service_unavailable",
   "internal_error",

@@ -39,6 +39,21 @@ export type AppConfig = {
   blobStore: BlobStoreKind;
   /** Present only when blobStore is "bunny". The password is a secret: never log or echo it. */
   bunny: BunnyConfig | undefined;
+  /** Present only when every UGS_* setting is given: the one-way progress mirror to Unity Gaming Services. */
+  ugs: UgsConfig | undefined;
+};
+
+export type UgsConfig = {
+  projectId: string;
+  environmentId: string;
+  /** Service account key id (Basic auth user). */
+  serviceAccountKeyId: string;
+  /** Service account secret (Basic auth password): never log or echo it. */
+  serviceAccountSecret: string;
+  /** Player Auth OIDC provider id (for example oidc-firebase) the Firebase link is proven against. */
+  oidcProvider: string;
+  /** Mirror writes per minute (token bucket). UGS admin APIs allow about 33/min sustained per project and IP. */
+  mirrorMaxPerMin: number;
 };
 
 export type BlobStoreKind = "none" | "memory" | "bunny";
@@ -87,6 +102,18 @@ function databaseUrlSetsSsl(databaseUrl: string): boolean {
   }
 }
 
+/** Trimmed env string where unset and empty mean "not set". */
+const optionalText = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().trim().optional(),
+);
+
+/** Ids that end up in UGS URL paths: restricted so nothing can alter the path. */
+const UGS_ID = /^[A-Za-z0-9-]{1,64}$/;
+const UGS_OIDC_PROVIDER = /^oidc-[a-z0-9_-]{1,15}$/;
+/** Basic auth is `keyId:secret`, so the key id can contain neither a colon nor whitespace. */
+const UGS_KEY_ID = /^[^\s:]{1,128}$/;
+
 /** Same zone-name rule as the website's Bunny client. */
 const BUNNY_ZONE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** Relative key prefix: lowercase segments joined and ended by "/", so no leading "/", no "//", no "..". */
@@ -133,6 +160,13 @@ const envSchema = z.object({
   /** Defaults (de, backend/) are applied only for BLOB_STORE=bunny, so "was it set at all" stays visible. */
   BUNNY_STORAGE_REGION: z.enum(BUNNY_REGIONS).optional(),
   BUNNY_STORAGE_PREFIX: z.string().trim().optional(),
+  /** UGS progress mirror: all-or-none (UGS_MIRROR_MAX_PER_MIN is optional with a default). */
+  UGS_PROJECT_ID: optionalText,
+  UGS_ENVIRONMENT_ID: optionalText,
+  UGS_SERVICE_ACCOUNT_KEY_ID: optionalText,
+  UGS_SERVICE_ACCOUNT_SECRET: optionalText,
+  UGS_OIDC_PROVIDER: optionalText,
+  UGS_MIRROR_MAX_PER_MIN: optionalInt(1, 33),
 });
 
 /** Parse the environment once. Fails fast, naming the bad variables but never their values. */
@@ -162,6 +196,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     BUNNY_STORAGE_PASSWORD,
     BUNNY_STORAGE_REGION,
     BUNNY_STORAGE_PREFIX,
+    UGS_PROJECT_ID,
+    UGS_ENVIRONMENT_ID,
+    UGS_SERVICE_ACCOUNT_KEY_ID,
+    UGS_SERVICE_ACCOUNT_SECRET,
+    UGS_OIDC_PROVIDER,
+    UGS_MIRROR_MAX_PER_MIN,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -235,6 +275,14 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       prefix,
     };
   }
+  const ugs = parseUgsConfig({
+    UGS_PROJECT_ID,
+    UGS_ENVIRONMENT_ID,
+    UGS_SERVICE_ACCOUNT_KEY_ID,
+    UGS_SERVICE_ACCOUNT_SECRET,
+    UGS_OIDC_PROVIDER,
+    UGS_MIRROR_MAX_PER_MIN,
+  });
   return {
     appEnv: APP_ENV,
     databaseUrl: DATABASE_URL,
@@ -254,6 +302,41 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     staffEmails: parseStaffEmails(STAFF_EMAILS),
     blobStore,
     bunny,
+    ugs,
+  };
+}
+
+const UGS_REQUIRED = [
+  "UGS_PROJECT_ID",
+  "UGS_ENVIRONMENT_ID",
+  "UGS_SERVICE_ACCOUNT_KEY_ID",
+  "UGS_SERVICE_ACCOUNT_SECRET",
+  "UGS_OIDC_PROVIDER",
+] as const;
+
+/** All-or-none. Errors name variables only, never values (the secret must not appear anywhere). */
+function parseUgsConfig(env: Partial<Record<(typeof UGS_REQUIRED)[number], string>> & { UGS_MIRROR_MAX_PER_MIN?: number }): UgsConfig | undefined {
+  // UGS_MIRROR_MAX_PER_MIN alone counts as "given": a stray tuning knob must not silently leave the mirror off.
+  const given = UGS_REQUIRED.filter((name) => env[name] !== undefined);
+  if (given.length === 0 && env.UGS_MIRROR_MAX_PER_MIN === undefined) return undefined;
+  const missing = UGS_REQUIRED.filter((name) => env[name] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`Invalid environment configuration: ${missing.join(", ")} required when any UGS_* setting is given`);
+  }
+  const bad = [
+    ...(UGS_ID.test(env.UGS_PROJECT_ID ?? "") ? [] : ["UGS_PROJECT_ID"]),
+    ...(UGS_ID.test(env.UGS_ENVIRONMENT_ID ?? "") ? [] : ["UGS_ENVIRONMENT_ID"]),
+    ...(UGS_KEY_ID.test(env.UGS_SERVICE_ACCOUNT_KEY_ID ?? "") ? [] : ["UGS_SERVICE_ACCOUNT_KEY_ID"]),
+    ...(UGS_OIDC_PROVIDER.test(env.UGS_OIDC_PROVIDER ?? "") ? [] : ["UGS_OIDC_PROVIDER"]),
+  ];
+  if (bad.length > 0) throw new Error(`Invalid environment configuration: ${bad.join(", ")}`);
+  return {
+    projectId: env.UGS_PROJECT_ID ?? "",
+    environmentId: env.UGS_ENVIRONMENT_ID ?? "",
+    serviceAccountKeyId: env.UGS_SERVICE_ACCOUNT_KEY_ID ?? "",
+    serviceAccountSecret: env.UGS_SERVICE_ACCOUNT_SECRET ?? "",
+    oidcProvider: env.UGS_OIDC_PROVIDER ?? "",
+    mirrorMaxPerMin: env.UGS_MIRROR_MAX_PER_MIN ?? 25,
   };
 }
 

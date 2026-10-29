@@ -65,6 +65,8 @@ keys. Players created this way live in your local database only.
 | `BLOB_STORE` | `none` / `memory` / `bunny`. Where staff-uploaded files go. Default `memory` locally and in tests (lost on restart), `none` in production (uploads answer 503 `storage_unavailable`); production refuses `memory` |
 | `BUNNY_STORAGE_ZONE` / `BUNNY_STORAGE_PASSWORD` | Required when `BLOB_STORE=bunny`. Zone `aviation-arcade-website` (shared with the website) and its read-write zone password, used exactly as given (not trimmed); a secret, never logged or echoed in config errors. Any `BUNNY_STORAGE_*` set while `BLOB_STORE` is not `bunny` fails at startup |
 | `BUNNY_STORAGE_REGION` / `BUNNY_STORAGE_PREFIX` | Default `de` (endpoint `https://de-s3.storage.bunnycdn.com`) and `backend/`. The prefix keeps this backend's objects apart from the website's: lowercase `[a-z0-9_-]` segments, ending in `/`, no leading `/` or `..` |
+| `UGS_PROJECT_ID` / `UGS_ENVIRONMENT_ID` / `UGS_SERVICE_ACCOUNT_KEY_ID` / `UGS_SERVICE_ACCOUNT_SECRET` / `UGS_OIDC_PROVIDER` | Optional, **all five or none** (a partial set fails at startup, naming the missing variables only). Turns on the UGS progress mirror and `PUT /v1/me/ugs-link`. The secret is a service account secret, never logged or echoed. `UGS_OIDC_PROVIDER` is the Player Auth OIDC provider id (`oidc-` + up to 15 of `a-z0-9_-`, for example `oidc-firebase`) |
+| `UGS_MIRROR_MAX_PER_MIN` | Default 25, 1–33. Mirror writes per minute (token bucket, burst ≤ 10), per instance for now. UGS allows about 33/min sustained per project and IP. Setting it without the other `UGS_*` variables fails at startup |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
 The server runs locally only for now; hosting is not chosen.
@@ -92,6 +94,7 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | PUT | `/v1/me` | Sign-in handshake. Creates the player on first call (201), else 200. Returns progress |
 | GET | `/v1/me/progress` | Progress. 404 `player_not_found` until `PUT /v1/me` |
 | PUT | `/v1/me/active-rank` | `{ rank }`. Dial Active Rank down (Pleasure Cruise) or back to Certified. 403 above Certified |
+| PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
 | POST | `/v1/rounds` | `{ module }`. Issues a single-use Round; abandons any other open Round |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
 | POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction }`. Scores and banks it |
@@ -148,6 +151,46 @@ of file (ruled 2026-10-28):
 
 The original upload is kept forever in Bunny Storage under `backend/imports/<module>/<sha256>.xlsx`. No email is
 stored: receipts and the append-only audit log carry the staff principal. Details: ARCHITECTURE.md "Admin content store".
+
+## UGS mirror
+
+Decided 2026-10-28 (user): Unity Gaming Services is the game's first support path and reads progress from UGS first;
+this backend stays the authority and the backup. Postgres is the **only writer** of progress and the server computes
+every award. UGS holds a **one-way, server-written, player-read-only copy**: the game never writes progress to UGS and
+the backend never reads it back. Off unless all `UGS_*` settings are given. Design and facts: ARCHITECTURE.md
+"Unity Gaming Services".
+
+- **Link.** After the game signs in to UGS (Firebase as the OIDC provider), it calls `PUT /v1/me/ugs-link` with the UGS
+  player token. The server verifies the token (RS256, JWKS, issuer, `exp`/`nbf`, project and environment) and asks UGS
+  Player Auth which external identity is on that UGS player; it must be provider `UGS_OIDC_PROVIDER` with the
+  Firebase uid. Nothing the client names is trusted. One UGS player links to one backend player (409
+  `ugs_link_conflict`, unless UGS no longer lists the other sign-in, in which case the link moves); re-linking the
+  same UGS player is a 200 no-op answered without calling UGS; pointing at another UGS player replaces the link and
+  queues deletion of the old copy. Link proofs are limited to 5 per hour per player and a server-wide 12/min (burst
+  10), because UGS allows only 500 Player Auth admin calls per 30 min per project.
+- **What is mirrored.** The Cloud Save **Protected** item `progress`: `{ schemaVersion: 1, version, statusPoints, miles,
+  hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt }` (see `UgsMirrorProgress` in
+  `docs/openapi.yaml`). Field names and values match `GET /v1/me/progress`.
+- **How.** Every transaction that changes progress (Round result, hint spend, hint pack, Active Rank change) writes a
+  coalesced `ugs_mirror_outbox` row (one per player) in the same transaction, for linked players only. An in-process
+  worker claims due rows (`FOR UPDATE SKIP LOCKED`, so several instances are safe), writes them to Cloud Save, and
+  deletes the row only if its own claim is still current. Pacing is `UGS_MIRROR_MAX_PER_MIN` (per instance until the
+  shared budget row, brief S7); a UGS 429 pauses the worker for `Retry-After`; 401/403 (our credentials) pause it for
+  15 min with one error log; 5xx/network failures back off per row (5 s doubling to 15 min); another 4xx is retried
+  and a write is dropped after 3 rejections (the next progress change queues it again), while a deletion keeps
+  retrying daily. Every tick with due rows logs backlog and lag (never values). `/v1/health/ready` ignores UGS.
+- **Ordering.** Until `version` bumps on every visible change (decided 2026-10-29, D-1, not built yet), the game orders
+  copies by `updatedAt`: an Active Rank change updates `updatedAt` but not `version`.
+- **Lag.** Writes are paced to stay inside UGS's admin rate limit (60 req/s and 1,000 per 30 min per project and IP, about
+  33/min sustained), so under load the copy can trail the server by minutes. **The game must prefer the server whenever it
+  is reachable** and use the UGS copy only as a fallback; the mirror is read-only for the game.
+- **Account deletion.** `DELETE /v1/me` removes the link and queued work in its transaction and records the UGS player id
+  in `ugs_mirror_deletions`, due only after any in-flight write could have finished (lease + request timeout); the
+  worker deletes the Cloud Save item afterwards, best effort and retried. No network call happens inside the player
+  lock.
+- **Not verified yet** (needs a real UGS project and token): the project/environment claim names in the UGS token
+  (`project_id` or `upid`, `envId`), and that the OIDC link's `externalId` equals the Firebase uid. Both are covered by
+  `ASSUMPTION` tests against stubs; nothing in the tests contacts UGS.
 
 ## Design rules
 
