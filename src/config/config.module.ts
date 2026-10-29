@@ -33,7 +33,27 @@ export type AppConfig = {
   rateLimitPublicPerMin: number;
   /** Lowest accepted X-Client-Version build number. Undefined = the gate is off. */
   minClientBuild: number | undefined;
+  /** Lowercased emails that may call staff-only (admin) routes, together with a verified token email. Never logged. */
+  staffEmails: readonly string[];
+  /** Where staff-uploaded files go: none = refuse (503), memory = process-local (local/test only), bunny = Bunny Storage. */
+  blobStore: BlobStoreKind;
+  /** Present only when blobStore is "bunny". The password is a secret: never log or echo it. */
+  bunny: BunnyConfig | undefined;
 };
+
+export type BlobStoreKind = "none" | "memory" | "bunny";
+
+export type BunnyConfig = {
+  zone: string;
+  password: string;
+  /** Bunny Storage region code; the S3 endpoint is https://<region>-s3.storage.bunnycdn.com. */
+  region: BunnyRegion;
+  /** Key prefix inside the (shared) zone, always ending in "/". */
+  prefix: string;
+};
+
+export const BUNNY_REGIONS = ["de", "ny", "la", "sg", "syd", "uk", "se", "jh"] as const;
+export type BunnyRegion = (typeof BUNNY_REGIONS)[number];
 
 export type DatabaseSsl = "disable" | "require" | "verify-full";
 
@@ -67,6 +87,21 @@ function databaseUrlSetsSsl(databaseUrl: string): boolean {
   }
 }
 
+/** Same zone-name rule as the website's Bunny client. */
+const BUNNY_ZONE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** Relative key prefix: lowercase segments joined and ended by "/", so no leading "/", no "//", no "..". */
+const BUNNY_PREFIX = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*\/$/;
+
+/** Comma-separated emails: trimmed, lowercased, empty entries dropped, duplicates removed. */
+function parseStaffEmails(raw: string | undefined): readonly string[] {
+  if (!raw) return [];
+  const emails = raw
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter((email) => email.length > 0);
+  return [...new Set(emails)];
+}
+
 const envSchema = z.object({
   /** Where this process runs. Required, so a deployment can never fall back to local behaviour. */
   APP_ENV: z.enum(["local", "test", "production"]),
@@ -88,6 +123,16 @@ const envSchema = z.object({
   RATE_LIMIT_AUTH_PER_MIN: z.coerce.number().int().min(1).max(100_000).default(120),
   RATE_LIMIT_PUBLIC_PER_MIN: z.coerce.number().int().min(1).max(100_000).default(60),
   MIN_CLIENT_BUILD: optionalInt(1, 999_999_999),
+  /** Server-only allowlist for staff routes. Unset = nobody is staff. */
+  STAFF_EMAILS: z.string().optional(),
+  /** Default depends on APP_ENV (memory locally, none in production), so it is applied after parsing. */
+  BLOB_STORE: z.enum(["none", "memory", "bunny"]).optional(),
+  BUNNY_STORAGE_ZONE: z.string().trim().optional(),
+  /** Not trimmed: a password is used byte for byte. Blank (whitespace only) counts as unset. */
+  BUNNY_STORAGE_PASSWORD: z.string().optional(),
+  /** Defaults (de, backend/) are applied only for BLOB_STORE=bunny, so "was it set at all" stays visible. */
+  BUNNY_STORAGE_REGION: z.enum(BUNNY_REGIONS).optional(),
+  BUNNY_STORAGE_PREFIX: z.string().trim().optional(),
 });
 
 /** Parse the environment once. Fails fast, naming the bad variables but never their values. */
@@ -112,6 +157,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     RATE_LIMIT_AUTH_PER_MIN,
     RATE_LIMIT_PUBLIC_PER_MIN,
     MIN_CLIENT_BUILD,
+    STAFF_EMAILS,
+    BUNNY_STORAGE_ZONE,
+    BUNNY_STORAGE_PASSWORD,
+    BUNNY_STORAGE_REGION,
+    BUNNY_STORAGE_PREFIX,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -143,6 +193,48 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       throw new Error("Invalid environment configuration: FIREBASE_PROJECT_ID must not be a demo- project when APP_ENV=production");
     }
   }
+  const blobStore: BlobStoreKind = parsed.data.BLOB_STORE ?? (APP_ENV === "production" ? "none" : "memory");
+  if (APP_ENV === "production" && blobStore === "memory") {
+    throw new Error("Invalid environment configuration: BLOB_STORE=memory is not allowed when APP_ENV=production");
+  }
+  let bunny: BunnyConfig | undefined;
+  const passwordGiven = (BUNNY_STORAGE_PASSWORD ?? "").trim() !== "";
+  if (blobStore !== "bunny") {
+    // A half-configured Bunny store is a mistake worth failing on, not silently ignoring. Names only.
+    const stray = [
+      ...(BUNNY_STORAGE_ZONE ? ["BUNNY_STORAGE_ZONE"] : []),
+      ...(passwordGiven ? ["BUNNY_STORAGE_PASSWORD"] : []),
+      ...(BUNNY_STORAGE_REGION !== undefined ? ["BUNNY_STORAGE_REGION"] : []),
+      ...(BUNNY_STORAGE_PREFIX ? ["BUNNY_STORAGE_PREFIX"] : []),
+    ];
+    if (stray.length > 0) {
+      throw new Error(`Invalid environment configuration: ${stray.join(", ")} set but BLOB_STORE is not bunny`);
+    }
+  } else {
+    // Names only, never values: the password must not appear in any error.
+    const missing = [
+      ...(BUNNY_STORAGE_ZONE ? [] : ["BUNNY_STORAGE_ZONE"]),
+      ...(passwordGiven ? [] : ["BUNNY_STORAGE_PASSWORD"]),
+    ];
+    if (missing.length > 0) {
+      throw new Error(`Invalid environment configuration: ${missing.join(", ")} required when BLOB_STORE=bunny`);
+    }
+    if (!BUNNY_ZONE.test(BUNNY_STORAGE_ZONE ?? "")) {
+      throw new Error("Invalid environment configuration: BUNNY_STORAGE_ZONE");
+    }
+    const prefix = BUNNY_STORAGE_PREFIX || "backend/";
+    if (!BUNNY_PREFIX.test(prefix)) {
+      throw new Error(
+        "Invalid environment configuration: BUNNY_STORAGE_PREFIX must be lowercase [a-z0-9_-] segments ending in /",
+      );
+    }
+    bunny = {
+      zone: BUNNY_STORAGE_ZONE ?? "",
+      password: BUNNY_STORAGE_PASSWORD ?? "",
+      region: BUNNY_STORAGE_REGION ?? "de",
+      prefix,
+    };
+  }
   return {
     appEnv: APP_ENV,
     databaseUrl: DATABASE_URL,
@@ -159,6 +251,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rateLimitAuthPerMin: RATE_LIMIT_AUTH_PER_MIN,
     rateLimitPublicPerMin: RATE_LIMIT_PUBLIC_PER_MIN,
     minClientBuild: MIN_CLIENT_BUILD,
+    staffEmails: parseStaffEmails(STAFF_EMAILS),
+    blobStore,
+    bunny,
   };
 }
 

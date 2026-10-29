@@ -6,7 +6,9 @@ import {
   doublePrecision,
   index,
   integer,
+  jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -167,5 +169,85 @@ export const hintLedger = pgTable(
   ],
 );
 
+const MODULE_LIST = sql`('airport-spotter', 'atc-match', 'call-sign-match', 'identifier',
+  'aircraft-identifier-military', 'code-search', 'runway-identifier', 'tail-identifier')`;
+
+/**
+ * One staff xlsx import (Phase 5.0). The original file lives in blob storage under blob_key; this row is the
+ * receipt. UNIQUE (module, sha256) is the idempotency key: identical bytes replay the earlier result.
+ */
+export const contentImports = pgTable(
+  "content_imports",
+  {
+    id: text("id").primaryKey(),
+    module: text("module").notNull(),
+    fileName: text("file_name").notNull(),
+    sha256: text("sha256").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    blobKey: text("blob_key").notNull(),
+    created: integer("created").notNull(),
+    updated: integer("updated").notNull(),
+    unchanged: integer("unchanged").notNull(),
+    // Items a client-sheet import retired because the file no longer lists them.
+    retired: integer("retired").notNull().default(0),
+    importedBy: text("imported_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("content_imports_module_sha256").on(t.module, t.sha256),
+    check("content_imports_module_check", sql`${t.module} IN ${MODULE_LIST}`),
+    check("content_imports_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+    check("content_imports_byte_size_check", sql`${t.byteSize} > 0`),
+    check("content_imports_counts_check", sql`${t.created} >= 0 AND ${t.updated} >= 0 AND ${t.unchanged} >= 0 AND ${t.retired} >= 0`),
+  ],
+);
+
+/**
+ * Admin-curated question content: the source of truth for the website admin and, later, Unity. One row per
+ * (module, id). `data` is the module payload, validated by that module's mapping before every write. No
+ * email is stored: updated_by is the staff principal.
+ */
+export const contentItems = pgTable(
+  "content_items",
+  {
+    module: text("module").notNull(),
+    id: text("id").notNull(),
+    rank: text("rank").notNull(),
+    // approved | retired. A client-sheet import retires rows its file no longer lists; drafts come later.
+    status: text("status").notNull(),
+    source: text("source").notNull(),
+    data: jsonb("data").notNull(),
+    version: integer("version").notNull().default(1),
+    importId: text("import_id").references(() => contentImports.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "content_items_pk", columns: [t.module, t.id] }),
+    check("content_items_module_check", sql`${t.module} IN ${MODULE_LIST}`),
+    check("content_items_rank_check", sql`${t.rank} IN ${RANK_LIST}`),
+    check("content_items_status_check", sql`${t.status} IN ('approved', 'retired')`),
+    check("content_items_source_check", sql`${t.source} IN ('client_sheet', 'admin')`),
+    check("content_items_version_check", sql`${t.version} >= 1`),
+  ],
+);
+
+/** Append-only record of staff actions. Principal only, never an email. */
+export const adminAudit = pgTable(
+  "admin_audit",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    actor: text("actor").notNull(),
+    action: text("action").notNull(),
+    target: text("target").notNull(),
+    detail: jsonb("detail").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import')`)],
+);
+
 export type PlayerRow = typeof players.$inferSelect;
 export type RoundRow = typeof rounds.$inferSelect;
+export type ContentItemRow = typeof contentItems.$inferSelect;
+export type ContentImportRow = typeof contentImports.$inferSelect;

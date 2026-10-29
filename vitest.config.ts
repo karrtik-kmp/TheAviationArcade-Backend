@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-// Unit tests: rules, config, token verification, error mapping, guard and filter. No database.
+// Unit tests: rules, config, token verification, error mapping, guards, storage, xlsx and content mapping. No database.
 export default defineConfig({
   test: {
     include: [
@@ -10,6 +10,11 @@ export default defineConfig({
       "test/database-errors.test.ts",
       "test/guard-filter.test.ts",
       "test/platform.test.ts",
+      "test/staff.test.ts",
+      "test/blob-store.test.ts",
+      "test/xlsx.test.ts",
+      "test/military-mapping.test.ts",
+      "test/import-plan.test.ts",
     ],
   },
 });

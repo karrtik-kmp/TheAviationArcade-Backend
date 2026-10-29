@@ -41,6 +41,9 @@ describe("loadConfig", () => {
       rateLimitAuthPerMin: 120,
       rateLimitPublicPerMin: 60,
       minClientBuild: undefined,
+      staffEmails: [],
+      blobStore: "memory",
+      bunny: undefined,
     });
   });
 
@@ -175,6 +178,96 @@ describe("loadConfig", () => {
       for (const value of ["0", "-3", "1.5", "abc", "1000000000"]) {
         expect(message({ ...local, MIN_CLIENT_BUILD: value }), value).toContain("MIN_CLIENT_BUILD");
       }
+    });
+  });
+
+  describe("STAFF_EMAILS", () => {
+    it("is empty when unset or blank", () => {
+      expect(loadConfig(local).staffEmails).toEqual([]);
+      expect(loadConfig({ ...local, STAFF_EMAILS: "  ,, " }).staffEmails).toEqual([]);
+    });
+
+    it("trims, lowercases, drops empty entries and duplicates", () => {
+      expect(loadConfig({ ...local, STAFF_EMAILS: " Josh@Example.com, ,hiren@KMPHITECH.com,josh@example.com," }).staffEmails).toEqual([
+        "josh@example.com",
+        "hiren@kmphitech.com",
+      ]);
+    });
+  });
+
+  describe("BLOB_STORE", () => {
+    const bunny = {
+      BLOB_STORE: "bunny",
+      BUNNY_STORAGE_ZONE: "aviation-arcade-website",
+      BUNNY_STORAGE_PASSWORD: "pw-secret-value-1",
+    };
+
+    it("defaults to memory outside production and none in production", () => {
+      expect(loadConfig(local).blobStore).toBe("memory");
+      expect(loadConfig({ ...local, APP_ENV: "test" }).blobStore).toBe("memory");
+      expect(loadConfig(production).blobStore).toBe("none");
+    });
+
+    it("refuses memory in production, and unknown kinds", () => {
+      expect(message({ ...production, BLOB_STORE: "memory" })).toContain("BLOB_STORE");
+      expect(message({ ...local, BLOB_STORE: "s3" })).toContain("BLOB_STORE");
+      expect(loadConfig({ ...production, BLOB_STORE: "none" }).blobStore).toBe("none");
+    });
+
+    it("bunny needs a zone and a password, and names the missing one without values", () => {
+      expect(message({ ...local, BLOB_STORE: "bunny", BUNNY_STORAGE_PASSWORD: "pw-secret-value-1" })).toContain("BUNNY_STORAGE_ZONE");
+      const text = message({ ...local, BLOB_STORE: "bunny", BUNNY_STORAGE_ZONE: "aviation-arcade-website" });
+      expect(text).toContain("BUNNY_STORAGE_PASSWORD");
+      expect(message({ ...local, BLOB_STORE: "bunny", BUNNY_STORAGE_ZONE: "aviation-arcade-website", BUNNY_STORAGE_PASSWORD: "   " })).toContain(
+        "BUNNY_STORAGE_PASSWORD",
+      );
+    });
+
+    it("the Bunny password is used byte for byte (not trimmed); whitespace alone still counts as missing", () => {
+      expect(loadConfig({ ...local, ...bunny, BUNNY_STORAGE_PASSWORD: "  pw with edges  " }).bunny?.password).toBe("  pw with edges  ");
+    });
+
+    it("BUNNY_* set while BLOB_STORE is not bunny fails fast, naming variables but not values", () => {
+      const text = message({ ...local, BUNNY_STORAGE_ZONE: "aviation-arcade-website", BUNNY_STORAGE_PASSWORD: "pw-secret-value-1" });
+      expect(text).toContain("BUNNY_STORAGE_ZONE");
+      expect(text).toContain("BUNNY_STORAGE_PASSWORD");
+      expect(text).not.toContain("pw-secret-value-1");
+      expect(message({ ...local, BLOB_STORE: "memory", BUNNY_STORAGE_PREFIX: "backend/" })).toContain("BUNNY_STORAGE_PREFIX");
+      expect(message({ ...production, BLOB_STORE: "none", BUNNY_STORAGE_REGION: "ny" })).toContain("BUNNY_STORAGE_REGION");
+      expect(loadConfig({ ...local, BUNNY_STORAGE_ZONE: " ", BUNNY_STORAGE_PASSWORD: "  " }).bunny).toBeUndefined();
+    });
+
+    it("bunny applies the defaults: region de and prefix backend/", () => {
+      expect(loadConfig({ ...local, ...bunny }).bunny).toEqual({
+        zone: "aviation-arcade-website",
+        password: "pw-secret-value-1",
+        region: "de",
+        prefix: "backend/",
+      });
+      expect(loadConfig({ ...production, ...bunny }).blobStore).toBe("bunny");
+    });
+
+    it("validates the zone, region and prefix, never echoing the password", () => {
+      for (const zone of ["Bad_Zone", "-lead", "trail-", "a b"]) {
+        const text = message({ ...local, ...bunny, BUNNY_STORAGE_ZONE: zone });
+        expect(text, zone).toContain("BUNNY_STORAGE_ZONE");
+        expect(text).not.toContain("pw-secret-value-1");
+      }
+      const region = message({ ...local, ...bunny, BUNNY_STORAGE_REGION: "mars" });
+      expect(region).toContain("BUNNY_STORAGE_REGION");
+      expect(region).not.toContain("pw-secret-value-1");
+      expect(loadConfig({ ...local, ...bunny, BUNNY_STORAGE_REGION: "ny" }).bunny?.region).toBe("ny");
+      for (const prefix of ["/backend/", "backend", "back/../end/", "../", "Backend/", "a//b/", "a b/", "/", "café/"]) {
+        const text = message({ ...local, ...bunny, BUNNY_STORAGE_PREFIX: prefix });
+        expect(text, prefix).toContain("BUNNY_STORAGE_PREFIX");
+        expect(text).not.toContain("pw-secret-value-1");
+      }
+      expect(loadConfig({ ...local, ...bunny, BUNNY_STORAGE_PREFIX: "backend/staging/" }).bunny?.prefix).toBe("backend/staging/");
+    });
+
+    it("refuses Bunny settings when another store is chosen (covered above); a blank one is ignored", () => {
+      expect(message({ ...local, BLOB_STORE: "memory", BUNNY_STORAGE_PASSWORD: "pw" })).toContain("BUNNY_STORAGE_PASSWORD");
+      expect(loadConfig({ ...local, BLOB_STORE: "memory", BUNNY_STORAGE_PASSWORD: "" }).bunny).toBeUndefined();
     });
   });
 });

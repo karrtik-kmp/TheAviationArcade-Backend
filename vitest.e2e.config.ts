@@ -31,6 +31,8 @@ export default defineConfig({
       FIREBASE_PROJECT_ID: "demo-airplane-games",
       ALLOW_EMULATOR_TOKENS: "true",
       APP_ENV: "test",
+      // Staff allowlist for the admin tests: the second entry checks trimming and case-insensitive matching.
+      STAFF_EMAILS: " staff@sites.test , Other.Staff@Sites.Test ",
       // test/api.test.ts sends far more than the default per-minute limits from one IP and one principal.
       // The rate limit tests build their own app with low limits.
       RATE_LIMIT_AUTH_PER_MIN: "100000",

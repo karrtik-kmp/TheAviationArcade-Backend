@@ -65,11 +65,12 @@ Needs App Store Connect / Play Console access and credentials. First Class Pass 
 consumables, Status Point boosts (refund reverses only an unused boost; confirm "used"), Apple ASSN v2 and
 Google RTDN. Design in ARCHITECTURE.md.
 
-### Phase 5 — Content releases
+### Phase 5 — Content
 
-Admin-approved packages from the website → versioned release + rollback; Rounds tied to a release;
-server-side answer checks (closes the client-reported-results gap). Needs the website export format.
-Package files and images live in Bunny Storage (zone choice: share the website's or a new one, sign-off).
+| # | Job | State | Notes |
+|---|---|---|---|
+| 5.0 | Admin content store foundation | Done (local, uncommitted) | Staff-only API (`STAFF_EMAILS` + verified email): import xlsx → `content_items`, list, export, `GET /v1/admin/me`. Military mapping from the client's sheet (31 rows → `mil-a1`…`mil-a31`, approved, source `client_sheet`). Idempotent by file sha256, all-or-nothing, unzip-bomb guard. Import semantics ruled 2026-10-28 (Q1-Q9 below): client sheets are authoritative with stable ids (matched by `file`), retire missing rows, field diffs and a `planHash` confirm before any overwrite/retire (409 `plan_changed`); admin exports keep versioned edits. `BlobStore` (Bunny S3 with SigV4 / memory / none), migrations 0004 (`content_imports`, `content_items`, `admin_audit`) and 0005 (`retired` status and count). Real Bunny never contacted |
+| 5.2+ | Follow-ups (not started) | — | Releases and versioned packages with rollback; player content delivery and Rounds tied to a release; server-side answer checks (closes the client-reported-results gap); photo upload/serving; retire and edit-in-place endpoints; importers for the other seven modules; website admin integration; first `bunny:check` against the real zone (needs sign-off and the zone password) |
 
 ### Phase 6 — Hosting and launch
 
@@ -92,8 +93,39 @@ verified email for ranked play).
 - 2026-10-27: Chief Pilot is certified at 400,000 SP (user ruling; matches the Unity app).
 - 2026-10-28: module IDs on the wire are exactly the Unity `ModuleRegistry` BackendIds (Military =
   `aircraft-identifier-military`, migration 0002). Final Military name/ID still a working title.
+- 2026-10-28 (user): Backend Postgres is the source of truth for admin content; a staff-only admin API
+  (import xlsx → items, export xlsx, list). Website admin and Unity consume it later.
+- 2026-10-28 (user): staff = token `email_verified === true` AND lowercased `email` in server-only
+  `STAFF_EMAILS` (the website's rule). Never a client-supplied role.
+- 2026-10-28 (user): Bunny Storage shares the website zone `aviation-arcade-website` (Frankfurt, `de`) under key
+  prefix `backend/`. Built against an in-memory fake; the real zone is probed only with explicit sign-off.
+- 2026-10-28 (user): client-sheet rows import as `approved` (source `client_sheet`, file sha256 recorded). No
+  player-facing content route, no release in this slice.
+- 2026-10-28 (user), 5.0 import semantics. A **client sheet** is an upload without an `Id` column; an **admin
+  export** has one.
+  - Q1 stable ids: into an empty module ids are row order (`mil-a1`…); into a non-empty one rows match stored items by
+    the trimmed `file` value (exact), unmatched rows get `mil-a<max suffix + 1>` in sheet order; a missing or
+    repeated file name is a row error (never guessed), into an EMPTY module too (user ruling 2026-10-28, so later
+    sheets can always match by file name). Re-importing the original sheet is all `unchanged`.
+  - Q2 the client sheet is authoritative: a matched row with different data is an update (version + 1, source
+    `client_sheet`); the dry run shows `{ field, from, to }` per updated row.
+  - Q3 rows missing from a client sheet are retired (`status = retired`, version + 1, listed in the plan); a retired
+    item that reappears returns to `approved`; admin-export imports never retire. Items list/export carry status
+    (export has a `Status` column, ignored on import). Migration 0005 (0004 left untouched).
+  - Confirm before overwrite: dry run returns `planHash`; a client-sheet apply that updates or retires needs
+    `?confirm=<planHash>` (missing 422 `import_invalid`; changed data 409 new code `plan_changed`). Creates-only and
+    admin-export applies need none.
+  - Q4 gaps (empty Photographer/file) import as `approved` with warnings. Q5 the website reaches the backend
+    server-to-server through its Worker: no CORS. Q6 Military is the only importer. Q7 original uploads are kept
+    forever in Bunny. Q8 identical bytes replay first. Q9 source is `client_sheet` for client-sheet creates/updates,
+    `admin` for admin-export ones.
 - 2026-10-27: backend Postgres owns all progress; UGS keeps no copy (no Cloud Save mirror, no UGS
   Economy). Firebase-OIDC link and webhooks only if a UGS service is adopted. See ARCHITECTURE.md.
+- 2026-10-28 (user): a client-sheet import into an EMPTY module must also have unique, non-blank trimmed `file` names
+  (row error otherwise), same as the non-empty case, so later sheets can always match by file name. The real client
+  sheet (31 rows) still imports 31 items.
+- 2026-10-28: an admin edit of a retired item leaves it retired (only a client sheet listing it again returns it to
+  `approved`).
 
 ## Open questions for Josh
 
@@ -101,6 +133,36 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-29 (5.0 independent review + fixes): Opus review (read-only) reproduced a 2.7 KB xlsx (one cell at
+  `XFD1048576`) OOM-killing node, because `read-excel-file` densifies sparse sheets past the zip-bomb guard. Fixed with a
+  cell-reference scan before parsing (tests at XFD1048576 / ZZ100000, < 3 s, < 100 MB). Also fixed: admin exports could
+  blank or duplicate natural keys; 5 MB body read before auth; a dry run that the apply silently replayed (replay now
+  only for the module's latest import); Bunny refusals as 500; ids past the `mil-aNNNNNN` range; imports parking pooled
+  connections on the advisory lock (now try-lock, 409 `import_in_progress`). My run after both fix rounds: typecheck
+  clean, `npm test` 211/211, `npm run db:migrate` applied 0007, `npm run test:e2e` 201/201, `npm run build` OK. Local only;
+  UGS and Bunny never contacted.
+
+- 2026-10-28 (5.0 import semantics follow-up, Q1-Q9 + confirm-before-overwrite, implementer's run, not yet independently
+  reviewed): from PowerShell at `H:\Work\TheAviationArcade\Backend`: `npm run typecheck` clean, `npm test` 167/167
+  (11 files), `npm run db:migrate` applied 0005 to local Postgres, `npm run test:e2e` 152/152 (4 files),
+  `npm run build` OK. New coverage: first import, re-import unchanged, row inserted mid-sheet keeps ids, changed answer
+  -> diff + confirm required, stale/foreign confirm -> 409 `plan_changed`, retire + reappear, admin export never retires
+  and ignores `Status`, duplicate/missing file name errors, replay before confirm. The real client file re-planned
+  against its own first import is 31 unchanged (unit test, skipped if `../docs` is absent). Not verified: real Bunny,
+  a real staff token, behaviour on a database that already holds production-size content.
+
+- 2026-10-28 (5.0 Admin content store, implementer's run, before independent review): `npm run typecheck`
+  clean, `npm test` 149/149 (11 files), `npm run db:migrate` applied 0004 to local Postgres, `npm run test:e2e`
+  140/140 (4 files), `npm run build` OK. Real client file `../docs/Military Airplane Identifier v1.xlsx` parses
+  to 31 items (`mil-a1`..`mil-a31`, `mil-a5` = Boeing C-17), rows 35-36 skipped with a warning. A 60 MB-inflating
+  zip fixture is refused in well under 5 s. Library pins: `read-excel-file` 9.3.12 (not 9.3.10: its CHANGELOG
+  lists 9.3.12 as a fix for a crash on valid xlsx files whose `<sheetData/>` is not near the start of the sheet
+  XML; 9.3.11 was an incorrectly published release; 9.3.13 is 1 day old), `write-excel-file` 4.1.1,
+  `aws4fetch` 1.0.20, `fflate` 0.8.3 (what `read-excel-file` resolves), `express` 5.2.1 (what Nest resolves;
+  made a direct pin for the route-scoped raw parser). Not verified: any request to the real Bunny zone (never
+  contacted; `npm run bunny:check` not run), a real signed-in staff token (emulator tokens only), Excel/LibreOffice
+  opening the exported file by eye, a populated production-size sheet (5,000 rows). Local only.
 
 - 2026-10-28 (3.1 Miles ledger + hint bank): implemented by a Sonnet subagent; independent Opus review found
   no double debit/credit, race or leak (lock order player→round everywhere; replay checked before funds;

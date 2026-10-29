@@ -17,6 +17,8 @@ export type FirebaseIdentity = {
   principal: string;
   uid: string;
   emailVerified: boolean;
+  /** The token's email claim, only when it is a string of at most 320 chars. Used for the staff allowlist, never stored. */
+  email: string | undefined;
 };
 
 export type FirebaseTokenOptions = {
@@ -112,6 +114,7 @@ function validateIdentity(claims: JWTPayload, projectId: string): FirebaseIdenti
     principal: `firebase:${projectId}:${sub}`,
     uid: sub,
     emailVerified: claims.email_verified === true,
+    email: typeof claims.email === "string" && claims.email.length <= 320 ? claims.email : undefined,
   };
 }
 

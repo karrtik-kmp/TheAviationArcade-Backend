@@ -37,7 +37,7 @@ A repository class per table (services own their SQL; add a cross-aggregate serv
 case spans two) · a response envelope repeating the status, or non-HTTP codes (433/327) · our own JWT/
 password/OTP auth (Firebase owns credentials) · HMAC request signing (the secret ships in the app; use
 Firebase App Check later if genuine-app proof is needed) · runtime secret fetch from Infisical (secrets come
-from the host's environment/secret manager) · user uploads/multer · socket.io · nodemailer/Twilio/OTP
+from the host's environment/secret manager) · player uploads/multer (the one upload we do accept is a staff-only xlsx on `/v1/admin/content/:module/imports`: route-scoped raw body, 5 MB, nothing else changes) · socket.io · nodemailer/Twilio/OTP
 (Firebase handles email flows) · Stripe/PayPal (the product sells nothing on the web; digital goods go
 through the stores) · mongodump-style restore scripts (use the managed Postgres provider's backups / PITR)
 · `google-play-billing-validator` (stale; use the Play Developer API v3 directly).
@@ -53,6 +53,9 @@ src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGua
 src/rules/                pure, Unity-mirrored logic (+ products.ts catalog later)
 src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
 src/players/, src/rounds/ feature modules: controller (HTTP) + service (transactions, domain outcomes)
+src/storage/              BlobStore (Bunny / memory / none), key validation
+src/content/              staff xlsx import/export: module mappings, pure import planner, service, controller
+src/admin/                GET /v1/admin/me (staff check for the website)
 ```
 
 Concurrency rule: every balance change runs in `DatabaseService.withTransaction` (explicit client,
@@ -69,13 +72,67 @@ Storage** through its S3-compatible API, the same provider as the website (`../w
 Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only keys/metadata.
 
 - Website zone: `aviation-arcade-website`, Frankfurt `de`, endpoint `https://de-s3.storage.bunnycdn.com`,
-  S3 compatibility on (it can only be enabled when a zone is created). Whether the backend shares that
-  zone (under its own key prefix) or gets its own zone is decided with the first slice that stores files.
+  S3 compatibility on (it can only be enabled when a zone is created). **Decided 2026-10-28 (user): the backend
+  shares that zone** under the key prefix `backend/` (`BUNNY_STORAGE_PREFIX`), so it never touches the website's
+  objects. The first files stored are staff xlsx imports at `backend/imports/<module>/<sha256>.xlsx`. Built and
+  tested against an in-memory fake and a stubbed signer; the real zone is probed only with the user's sign-off
+  (`npm run bunny:check`).
 - Private by default: no public pull zone for originals; serve through authenticated routes or
   short-lived signed URLs. A public CDN pull zone only for content that is meant to be public.
 - The read-write Storage Zone Password (S3 secret) comes from the host environment, never the repo or
   logs; not the Bunny account API key. No zone creation or other Bunny account change without user sign-off.
 - Verify with a probe like the website's `npm run bunny:check` (upload one random object, compare bytes, delete).
+
+## Admin content store (Phase 5.0, decided 2026-10-28, user)
+
+- **Authority.** Backend Postgres is the source of truth for admin-curated content (`content_items`, one row per
+  module + id; payload in `data` jsonb, validated by the module mapping before every write). The website admin
+  and Unity consume it in follow-ups; there is no player-facing content route and no release yet, so nothing
+  reaches players.
+- **Staff.** Token `email_verified === true` AND the lowercased `email` in the server-only `STAFF_EMAILS`
+  allowlist (the website's rule). `@StaffOnly()` + `StaffGuard` run after the auth and rate-limit guards (401
+  first, then 403 `forbidden`). A client-chosen role, header or query never grants anything. A staff caller needs
+  no player row. No email is stored anywhere: rows carry the principal only.
+- **Import (`POST /v1/admin/content/:module/imports`).** Raw xlsx, 5 MB. Unzip-bomb guard before parsing
+  (`fflate` streaming count of real output: 25 MB / 100 entries; the xlsx libraries have none), plus 5,000 rows
+  and 50 columns checked on the cell references in every worksheet's XML before `read-excel-file` runs (it
+  allocates a dense grid up to the furthest cell, so one cell at `XFD1048576` in a 3 KB file would exhaust memory).
+  The upload middleware verifies the token and the staff rule before reading the body. The pure planner (`planImport`) treats two kinds of file differently (user, 2026-10-28):
+  - *Client sheet* (no `Id` column) is authoritative. Rows match stored items by natural key (Military: the
+    trimmed `file`, exact). Unmatched rows get the next free id (`mil-a<max suffix + 1>`, sheet order; into an empty
+    module that is row order, so `mil-a1`…). A matched row with different rank/data is an update (version + 1,
+    source `client_sheet`, `updated_by`) and the dry run returns a field-level diff `{ field, from, to }`. Stored
+    approved items the file omits are retired (status `retired`, version + 1); a retired item listed again returns
+    to `approved` (version + 1). A blank or repeated natural key is a row error, into an empty module too (user, 2026-10-28), so later
+    sheets can always match by it; we never guess. Re-importing the original sheet is all `unchanged`.
+  - *Admin export* (has `Id`) keeps the Version check: no `Version` → create / unchanged / conflict; with
+    `Version` → update / unchanged / conflict (source `admin`). It never retires, and its `Status` column is
+    ignored on import. The resulting module (retired items included) must keep natural keys non-blank and
+    unique, and new ids may not exceed the highest existing number plus the file's row count.
+  - Gaps (empty `Photographer`/`file`) import as `approved` with warnings. Duplicate ids and unknown levels are errors.
+  - *Confirm before overwrite.* The dry run returns `planHash` (sha256 of the canonical plan: actions, ids, content,
+    diffs, retirements, against the stored versions). A client-sheet apply that would update or retire anything
+    needs `?confirm=<planHash>`: missing → 422 `import_invalid` ("dry run first"); mismatch with the re-plan made
+    under the lock (data changed since the dry run) → 409 `plan_changed`, nothing written. Creates-only applies and
+    admin-export applies need none.
+  - Any error or conflict → 422 `import_invalid` + report; nothing written. Apply: replay check first — identical
+    bytes replay only while their receipt is the module's latest import (a dry run reports `replay: true`), so a
+    retry is safe but re-applying an older file is planned normally; then store the original (content-addressed,
+    so an orphan after a failed commit is harmless; **originals are kept forever**), then one transaction under
+    `pg_try_advisory_xact_lock` per module (busy → 409 `import_in_progress`, never a pooled connection parked on the
+    lock) that repeats the replay check, re-plans against the locked rows, checks the confirm hash against that
+    re-plan, and writes receipt, items, retirements and an append-only `admin_audit` row (with the updated and
+    retired ids). Re-applying older bytes refreshes their existing receipt (UNIQUE module + sha256). Storage down or
+    refusing → 503 `storage_unavailable` (Retry-After only when transient).
+  - Military is the only importer for now; other modules need their own mapping.
+- **Export.** `.xlsx` with `Id, Version, Level, Correct Answer, Wrong Answer 1-3, file, Photographer, Status`, retired
+  rows included (`Status` is informational and ignored on import); editing it and re-importing is the edit path (no
+  in-place edit endpoints yet).
+- **Callers.** The website reaches this API server-to-server through its Worker; browsers never call it, so there is
+  no CORS configuration (none is added).
+- **Not built (follow-ups).** Releases and versioned packages, player content delivery, server answer checks,
+  photo upload and serving, edit-in-place endpoints, importers for the other seven modules, Field
+  Awards (Unity owns that catalog), website integration.
 
 ## Purchases (design for the purchases slice)
 

@@ -6,6 +6,9 @@ declare module "express-serve-static-core" {
     requestId?: string;
     /** Set by FirebaseAuthGuard from a verified token only. */
     principal?: string;
+    /** The verified token's email claim (if any) and whether Firebase verified it. For the staff check only; never stored or logged. */
+    email?: string;
+    emailVerified?: boolean;
   }
 }
 

@@ -5,8 +5,9 @@ progress. A standalone Node server — **NestJS + PostgreSQL (Drizzle)** — ver
 the same Firebase project the website (`../website`) uses, so a player is one principal across app,
 website and backend. Deployed separately from the website. Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-This slice covers **player identity and progress** only. Content delivery, purchases, Flight Segment
-bonuses, leaderboards and the community forum are later slices — see [docs/TASKS.md](docs/TASKS.md).
+This slice covers **player identity and progress**, plus a **staff-only admin content store** (Phase 5.0:
+import and export of question spreadsheets; nothing reaches players yet). Content delivery to players,
+purchases, Flight Segment bonuses, leaderboards and the community forum are later slices — see [docs/TASKS.md](docs/TASKS.md).
 
 ## Setup
 
@@ -30,6 +31,7 @@ npm run typecheck             # tsc --noEmit
 npm test                      # unit tests: rules + token verification (no database)
 npm run test:e2e              # API tests against airplane_games_test (refuses any db not ending _test)
 npm run db:generate           # new migration from src/db/schema.ts (never edit an applied one)
+npm run bunny:check           # builds, then probes Bunny Storage (upload/read/delete one object). Needs real credentials: only with the owner's sign-off
 ```
 
 `.env` points at `demo-airplane-games` and accepts unsigned Firebase Auth Emulator tokens. Start the
@@ -59,6 +61,10 @@ keys. Players created this way live in your local database only.
 | `RATE_LIMIT_AUTH_PER_MIN` / `RATE_LIMIT_PUBLIC_PER_MIN` | Defaults 120 / 60 per sliding 60 s window; excess requests are refused only while over the limit (no lockout). Authenticated routes share one budget per principal; public routes are per IP. Health routes exempt. In memory, so per instance |
 | `MIN_CLIENT_BUILD` | Optional, 1–999999999. When set, requests need `X-Client-Version: <build>` at or above it, else 426. Health routes and `DELETE /v1/me` exempt. Unset = gate off (build scheme undecided) |
 | `SHUTDOWN_DRAIN_MS` | Default 10000. On SIGTERM/SIGINT: `/v1/health/ready` turns 503, then the server stops accepting, finishes in-flight requests (answering `Connection: close`), closes the pool and exits 0; exit 1 past the deadline; a second signal exits at once |
+| `STAFF_EMAILS` | Optional, comma-separated. Emails (trimmed, case-insensitive) allowed to call `/v1/admin/*`, and only with a Firebase-verified token email. Server-only: a client-chosen role never grants access. Unset = nobody is staff. Never logged |
+| `BLOB_STORE` | `none` / `memory` / `bunny`. Where staff-uploaded files go. Default `memory` locally and in tests (lost on restart), `none` in production (uploads answer 503 `storage_unavailable`); production refuses `memory` |
+| `BUNNY_STORAGE_ZONE` / `BUNNY_STORAGE_PASSWORD` | Required when `BLOB_STORE=bunny`. Zone `aviation-arcade-website` (shared with the website) and its read-write zone password, used exactly as given (not trimmed); a secret, never logged or echoed in config errors. Any `BUNNY_STORAGE_*` set while `BLOB_STORE` is not `bunny` fails at startup |
+| `BUNNY_STORAGE_REGION` / `BUNNY_STORAGE_PREFIX` | Default `de` (endpoint `https://de-s3.storage.bunnycdn.com`) and `backend/`. The prefix keeps this backend's objects apart from the website's: lowercase `[a-z0-9_-]` segments, ending in `/`, no leading `/` or `..` |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
 The server runs locally only for now; hosting is not chosen.
@@ -91,6 +97,10 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction }`. Scores and banks it |
 | POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
+| GET | `/v1/admin/me` | Staff only. `{ principal, staff: true }`; 403 `forbidden` for anyone else |
+| POST | `/v1/admin/content/:module/imports` | Staff only. Raw `.xlsx` body (≤ 5 MB), optional `X-File-Name`, `?dryRun=true` (plan + field diffs + `planHash`), `?confirm=<planHash>`. 201 imported, 200 plan or `replayed: true`, 422 `import_invalid` (row report, or "dry run first"), 409 `plan_changed` or `import_in_progress`, 503 `storage_unavailable` |
+| GET | `/v1/admin/content/:module/items` | Staff only. Items in natural id order, retired ones included (`status`) |
+| GET | `/v1/admin/content/:module/export` | Staff only. `.xlsx` in the client's columns plus `Id`, `Version`, `Status` (retired rows included) |
 
 Result status codes: 200 banked (or `replayed: true` for a Round already banked — safe to retry),
 404 not this player's Round, 410 expired or abandoned, 429 submitted too soon after issue (retry after
@@ -108,6 +118,36 @@ returns 201.
 Ranks and module IDs on the wire are kebab-case: `trainee`, `first-officer`, `captain`, `check-airman`,
 `chief-pilot`; modules are the Unity `ModuleRegistry` BackendIds (`atc-match`, `identifier`,
 `aircraft-identifier-military`, …) — see `src/rules/`.
+
+## Admin content
+
+The backend Postgres is the source of truth for admin-curated question content (the website admin and Unity
+consume it in later slices). Staff = a Firebase-verified token email that is on the server's `STAFF_EMAILS`
+list; nothing the client sends can grant it. Admin routes sit behind the normal auth and rate-limit guards and
+are exempt from the app's client version gate. Today only `aircraft-identifier-military` has a mapping (the
+client's `Military Airplane Identifier v1.xlsx`: 31 rows → `mil-a1`…`mil-a31`, imported as `approved`); any other
+module is 404. Importing is all-or-nothing (any row error → 422, nothing written) and a retry is safe: identical
+bytes replay while that upload is still the module's latest import (a dry run says `replay: true`); bytes of an older
+import are planned again like any file. One import per module at a time (409 `import_in_progress`, retry after 2 s).
+The token and the staff rule are checked before the upload body is read. Sheets are limited to 5,000 rows and 50
+columns, judged by every cell reference (so a near-empty sheet with one far-off cell is refused, 400). Two kinds
+of file (ruled 2026-10-28):
+
+- **Client sheet** (no `Id` column; the client's own spreadsheet) is authoritative. Rows are matched to stored
+  items by the trimmed `file` value, so inserting a row mid-sheet keeps every id; unmatched rows get the next free
+  id (`mil-a<highest + 1>`); a changed row is an update (version + 1, source `client_sheet`); stored rows the file
+  no longer lists are **retired** (status `retired`, kept, version + 1) and come back as `approved` if listed again.
+  A missing or repeated `file` value is a row error, into an empty module too (ruled 2026-10-28, so later sheets can
+  always match by file name). Anything that updates or retires
+  needs `?confirm=<planHash>` from a dry run of the same file (otherwise 422; if data changed since, 409
+  `plan_changed`). Creates-only imports need no confirm.
+- **Admin export** (has an `Id` column; our export, edited) is versioned: an edit applies to exactly the `Version` it
+  was exported at, a stale one is a conflict. It never retires anything and its `Status` column is ignored on import.
+  It must keep `file` names non-blank and unique across the module (retired items included), and new ids must
+  continue the sequence (at most the highest existing number plus the file's row count).
+
+The original upload is kept forever in Bunny Storage under `backend/imports/<module>/<sha256>.xlsx`. No email is
+stored: receipts and the append-only audit log carry the staff principal. Details: ARCHITECTURE.md "Admin content store".
 
 ## Design rules
 
@@ -152,3 +192,8 @@ Asserted in code and tests until ruled:
 7. Deleting the account and signing up again re-grants the 5 starter hints (full erasure keeps no
    record of the grant). Acceptable, or keep a minimal tombstone?
 8. Trip-completion and 7-day-streak hint grants (Unity `HintBank`) need a server Trip concept; not built.
+9. Settled 2026-10-29 after review: identical bytes replay only while they are the module's latest import (a safe
+   retry); re-applying an older file's bytes is planned normally, so it conflicts or needs a fresh confirm instead
+   of silently doing nothing.
+10. Client sheet rows with an empty `file` or `Photographer` import with a warning, not an error. Should a row with
+    no photo file be blocked?

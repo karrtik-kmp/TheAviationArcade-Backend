@@ -19,6 +19,10 @@ info:
       `X-Client-Version` is 426 `client_update_required` (checked before the token). Health routes and `DELETE /v1/me` (account deletion
       must work for outdated clients) are exempt.
     - Retry guidance: 503 and 429 carry `Retry-After` (seconds). Never retry any other 4xx unchanged.
+    - Admin routes (`/v1/admin/*`, tag `admin`) are for staff only and are called by the website admin, not the
+      app: the verified token email must be on the server allowlist (403 `forbidden` otherwise), and they are
+      exempt from the client version gate. The staff import takes the raw `.xlsx` as the body (at most 5 MB),
+      not JSON.
 servers:
   - url: http://127.0.0.1:3000
     description: Local only. Hosting is not chosen yet.
@@ -29,6 +33,7 @@ tags:
   - name: player
   - name: rounds
   - name: shop
+  - name: admin
 
 paths:
   /v1/health:
@@ -393,6 +398,232 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/admin/me:
+    get:
+      tags: [admin]
+      operationId: getAdminMe
+      summary: Am I staff?
+      description: |
+        Staff only. Lets the website check access: 200 `{ principal, staff: true }` for a verified token whose
+        email is on the server allowlist, 403 `forbidden` for any other signed-in caller. A staff caller needs
+        no player row. Exempt from the client version gate.
+      responses:
+        "200":
+          description: The caller is staff.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminMe" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/imports:
+    post:
+      tags: [admin]
+      operationId: importContent
+      summary: Import a content spreadsheet
+      description: |
+        Staff only. The body is the raw `.xlsx` (Content-Type
+        `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; also bounded when
+        unpacked). The first worksheet is read. Only modules with a mapping can be imported (today
+        `aircraft-identifier-military`); any other module is 404 `not_found`.
+
+        Two kinds of file. A **client sheet** has no `Id` column (the client's own spreadsheet) and is
+        authoritative: each row is matched to a stored item by its natural key (Military: the trimmed `file`
+        value, exact match); unmatched rows are created with the next free id (`mil-a<highest + 1>`, in sheet
+        order; into an empty module that is simply row order, `mil-a1`...); a matched row whose rank or data
+        differ is updated (version + 1, source `client_sheet`); stored items the file no longer lists are
+        retired (status `retired`, version + 1); a retired item listed again comes back as `approved`. A missing
+        or repeated `file` value is a row error, into an empty module too (never guessed). An **admin
+        export** has an `Id` column (our export, edited): the id is the identity; without a `Version` a new
+        id is created, identical content is unchanged and different content is a conflict; with a `Version`
+        the id must exist at exactly that version, then it is updated (version + 1, source `admin`) or
+        unchanged. It never retires anything, and its `Status` column is ignored. Any row error or conflict is
+        422 `import_invalid` with a row `report`, and nothing is written.
+
+        `dryRun=true` returns the plan (200: counts, per-row actions, a field-level `diff` for each updated
+        row, the retirements, and a `planHash`) and writes and stores nothing. A client-sheet import that
+        would update or retire anything must be applied with `confirm=<planHash>` from a dry run of the same
+        file: without it the answer is 422 `import_invalid` (do a dry run first); if stored content changed
+        since the dry run it is 409 `plan_changed` and nothing is written. Creates-only imports and
+        admin-export imports need no confirm. Otherwise the original file is stored in file storage
+        (content-addressed by sha256, kept) and the rows are written in one transaction: 201 with the
+        receipt. Identical bytes replay the earlier receipt first, but only while that receipt is
+        the module's latest import: 200 with `replayed: true` and no writes, so a retry is safe. Once a later
+        import exists the same bytes are planned like any other file (a stale export is a conflict). A dry run
+        of bytes that would replay answers `replay: true` with the receipt only. File storage down is 503 `storage_unavailable`
+        (nothing written). Imported rows are `approved`; nothing reaches players.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - name: dryRun
+          in: query
+          required: false
+          schema: { type: string, enum: ["true", "false"], default: "false" }
+        - name: confirm
+          in: query
+          required: false
+          description: |
+            The `planHash` of a dry run of the same file. Required to apply a client sheet that would update or
+            retire stored items; not accepted together with `dryRun=true`.
+          schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+        - name: X-File-Name
+          in: header
+          required: false
+          description: Original file name for the receipt. Sanitised and cut to 200 characters; never used as a path.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: A dry-run plan, a dry run that would replay the latest import, or a replay of it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/ImportDryRun" }
+                  - { $ref: "#/components/schemas/ImportDryRunReplay" }
+                  - { $ref: "#/components/schemas/ImportReplayed" }
+        "201":
+          description: Imported.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportApplied" }
+        "400":
+          description: |
+            Not an `.xlsx` (wrong content type, unreadable, no header row), a bad `dryRun` or `confirm`, or too
+            large once unpacked or too many rows or columns.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `plan_changed`: the `confirm` hash no longer matches the plan, because stored content changed since
+            the dry run. Nothing was written; run a new dry run. `import_in_progress`: another import for this
+            module is running right now; nothing was written, retry after `Retry-After` seconds (that response
+            only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [plan_changed, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: Upload over 5 MB.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: |
+            At least one row has an error or a conflict (with a `report`), or a client sheet that would update
+            or retire stored items was applied without `confirm` (no report; do a dry run first). Nothing was
+            written. Also returned by `dryRun`.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [import_invalid]
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/ImportInvalid" }
+                  - { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: |
+            `storage_unavailable`: file storage is down, not configured, or refused the upload (nothing
+            written). Also `auth_unavailable` and `service_unavailable`. All carry `Retry-After` except a
+            storage refusal that a retry will not fix (bad credentials), which has none.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [auth_unavailable, service_unavailable, storage_unavailable]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/admin/content/{module}/items:
+    get:
+      tags: [admin]
+      operationId: listContentItems
+      summary: List content items
+      description: |
+        Staff only. All items of the module in natural id order (`mil-a2` before `mil-a10`), retired ones
+        included (see `status`).
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+      responses:
+        "200":
+          description: Items.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentItemList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/export:
+    get:
+      tags: [admin]
+      operationId: exportContent
+      summary: Export content as a spreadsheet
+      description: |
+        Staff only. An `.xlsx` with columns `Id, Version, Level, Correct Answer, Wrong Answer 1, Wrong Answer 2,
+        Wrong Answer 3, file, Photographer, Status` (Level in the client wording), natural id order, retired
+        items included (`Status` is `approved` or `retired`). Edit it and import it again: the `Version`
+        column makes the import an edit of exactly that version. The `Status` column is informational and is
+        ignored on import; an export never retires anything.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+      responses:
+        "200":
+          description: The spreadsheet.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Content-Disposition:
+              description: '`attachment; filename="<module>-<YYYY-MM-DD>.xlsx"`.'
+              schema: { type: string }
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
 components:
   securitySchemes:
     firebaseBearer:
@@ -412,6 +643,13 @@ components:
         App build number, a positive integer of at most 9 digits. Required in practice once the server sets a
         minimum build (otherwise 426).
       schema: { type: string, pattern: "^[1-9][0-9]{0,8}$" }
+
+    ContentModule:
+      name: module
+      in: path
+      required: true
+      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`); others are 404.
+      schema: { $ref: "#/components/schemas/ModuleId" }
 
   headers:
     XRequestId:
@@ -462,6 +700,15 @@ components:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
       x-error-codes: [player_not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Signed in, but not staff (the verified token email is not on the server allowlist).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [forbidden]
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -563,6 +810,7 @@ components:
               description: Stable. Switch on this.
               enum:
                 - unauthorized
+                - forbidden
                 - auth_unavailable
                 - invalid_request
                 - player_not_found
@@ -576,6 +824,10 @@ components:
                 - not_found
                 - rate_limited
                 - client_update_required
+                - import_invalid
+                - plan_changed
+                - import_in_progress
+                - storage_unavailable
                 - service_unavailable
                 - internal_error
             message:
@@ -584,6 +836,157 @@ components:
             requestId:
               type: string
               description: Same value as the `X-Request-Id` header.
+    AdminMe:
+      type: object
+      additionalProperties: false
+      required: [principal, staff]
+      properties:
+        principal: { type: string, description: "firebase:<projectId>:<uid>" }
+        staff: { type: boolean, const: true }
+    ContentItem:
+      type: object
+      additionalProperties: false
+      required: [id, rank, status, source, version, data, updatedAt]
+      properties:
+        id: { type: string, description: "Stable item id, e.g. mil-a5." }
+        rank: { $ref: "#/components/schemas/Rank" }
+        status: { type: string, enum: [approved, retired] }
+        source: { type: string, enum: [client_sheet, admin] }
+        version: { type: integer, minimum: 1, description: Bumped by every edit. }
+        data:
+          type: object
+          description: Module payload. Military Aircraft Identifier is `{ answer, wrong[3], sourceFile, photographer }`.
+        updatedAt: { type: string, format: date-time }
+    ContentItemList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ContentItem" }
+    ImportIssue:
+      type: object
+      additionalProperties: false
+      required: [row, level, message]
+      properties:
+        row: { type: integer, minimum: 1, description: 1-based sheet row. }
+        id: { type: string }
+        level: { type: string, enum: [error, conflict, warning] }
+        message: { type: string }
+    ImportCounts:
+      type: object
+      additionalProperties: false
+      required: [created, updated, unchanged, retired]
+      properties:
+        created: { type: integer, minimum: 0 }
+        updated: { type: integer, minimum: 0 }
+        unchanged: { type: integer, minimum: 0 }
+        retired: { type: integer, minimum: 0, description: Stored items a client sheet no longer lists. }
+    ImportSummary:
+      type: object
+      additionalProperties: false
+      required: [id, module, fileName, sha256, byteSize, created, updated, unchanged, retired, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        module: { $ref: "#/components/schemas/ModuleId" }
+        fileName: { type: string }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        byteSize: { type: integer, minimum: 1 }
+        created: { type: integer, minimum: 0 }
+        updated: { type: integer, minimum: 0 }
+        unchanged: { type: integer, minimum: 0 }
+        retired: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+    ImportDryRun:
+      type: object
+      additionalProperties: false
+      required: [dryRun, replay, kind, counts, planHash, requiresConfirm, rows, retirements, warnings]
+      properties:
+        dryRun: { type: boolean, const: true }
+        replay: { type: boolean, const: false, description: A real import of these bytes would be planned and applied, not replayed. }
+        kind:
+          type: string
+          enum: [client_sheet, admin_export]
+          description: A file without an Id column is a client sheet (authoritative); with one it is an admin export.
+        counts: { $ref: "#/components/schemas/ImportCounts" }
+        planHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: sha256 of the canonical plan. Pass it as `confirm` to apply a plan that has `requiresConfirm`.
+        requiresConfirm:
+          type: boolean
+          description: True for a client sheet that would update or retire stored items.
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [row, id, action]
+            properties:
+              row: { type: integer, minimum: 1 }
+              id: { type: string }
+              action: { type: string, enum: [create, update, unchanged] }
+              diff:
+                type: array
+                description: For an update, each changed field. A retired item coming back shows `status` retired to approved.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [field, from, to]
+                  properties:
+                    field: { type: string, description: "e.g. answer, wrong[1], rank, status" }
+                    from: {}
+                    to: {}
+        retirements:
+          type: array
+          description: Stored items the apply would retire (client sheets only).
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, naturalKey]
+            properties:
+              id: { type: string }
+              naturalKey: { type: string, description: "Military: the file name." }
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/ImportIssue" }
+    ImportDryRunReplay:
+      type: object
+      additionalProperties: false
+      required: [dryRun, replay, import]
+      description: A real import of these bytes would replay this receipt (it is the module's latest import).
+      properties:
+        dryRun: { type: boolean, const: true }
+        replay: { type: boolean, const: true }
+        import: { $ref: "#/components/schemas/ImportSummary" }
+    ImportApplied:
+      type: object
+      additionalProperties: false
+      required: [replayed, import, warnings]
+      properties:
+        replayed: { type: boolean, const: false }
+        import: { $ref: "#/components/schemas/ImportSummary" }
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/ImportIssue" }
+    ImportReplayed:
+      type: object
+      additionalProperties: false
+      required: [replayed, import]
+      properties:
+        replayed: { type: boolean, const: true }
+        import: { $ref: "#/components/schemas/ImportSummary" }
+    ImportInvalid:
+      type: object
+      additionalProperties: false
+      required: [error, report]
+      properties:
+        error: { $ref: "#/components/schemas/Error/properties/error" }
+        report:
+          type: array
+          description: Every problem found, in row order, including warnings. At least one is an error or conflict.
+          items: { $ref: "#/components/schemas/ImportIssue" }
     NextRank:
       type: object
       additionalProperties: false

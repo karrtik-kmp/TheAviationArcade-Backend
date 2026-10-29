@@ -2,7 +2,7 @@ import { Reflector } from "@nestjs/core";
 import type { ArgumentsHost, ExecutionContext } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { ApiExceptionFilter } from "../src/common/api-exception.filter.js";
-import type { ApiError } from "../src/common/errors.js";
+import { ApiError } from "../src/common/errors.js";
 import type { AppConfig } from "../src/config/config.module.js";
 
 // Replace only the verifier; keep the real error classes so instanceof checks line up.
@@ -76,5 +76,13 @@ describe("ApiExceptionFilter", () => {
     expect(sent.headers["Retry-After"]).toBe("5");
     expect(sent.body.error.code).toBe("service_unavailable");
     expect(JSON.stringify(sent.body)).not.toContain("secret-param");
+  });
+
+  it("extra body fields can never replace the error object", () => {
+    const { sent, host } = hostFor();
+    const error = new ApiError(422, "import_invalid", "x", {}, { report: [], error: "overridden" });
+    new ApiExceptionFilter().catch(error, host);
+    expect(sent.body.report).toEqual([]);
+    expect(sent.body.error).toMatchObject({ code: "import_invalid", requestId: "rid-12345678" });
   });
 });

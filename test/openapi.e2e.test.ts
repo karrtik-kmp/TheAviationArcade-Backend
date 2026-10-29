@@ -12,6 +12,8 @@ import { configureApp } from "../src/app.setup.js";
 import { ERROR_CODES } from "../src/common/errors.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
+import { XLSX_MIME } from "../src/content/xlsx.js";
+import { clientSheet } from "./fixtures.js";
 import { emulatorToken } from "./tokens.js";
 
 // docs/openapi.yaml is the client contract. These tests fail when it and the code drift.
@@ -205,6 +207,55 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", unknown.body);
 
     expect((await request(server).delete("/v1/me").set(auth)).status).toBe(204);
+  });
+
+  it("admin routes: staff responses and errors validate against the spec", async () => {
+    const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
+    const module = "aircraft-identifier-military";
+    await sql.query("DELETE FROM content_items");
+    await sql.query("DELETE FROM content_imports");
+    await sql.query("DELETE FROM admin_audit");
+    const upload = (bytes: Buffer, query = "") =>
+      request(server).post(`/v1/admin/content/${module}/imports${query}`).set(staff).set("Content-Type", XLSX_MIME).send(bytes);
+
+    const me = await request(server).get("/v1/admin/me").set(staff);
+    expect(me.status).toBe(200);
+    check("AdminMe", me.body);
+    const notStaff = await request(server).get("/v1/admin/me").set(auth);
+    expect(notStaff.status).toBe(403);
+    check("Error", notStaff.body);
+    expect(notStaff.body.error.code).toBe("forbidden");
+
+    const bytes = await clientSheet(6);
+    const dry = await upload(bytes, "?dryRun=true");
+    expect(dry.status).toBe(200);
+    check("ImportDryRun", dry.body);
+    const applied = await upload(bytes);
+    expect(applied.status).toBe(201);
+    check("ImportApplied", applied.body);
+    const replayed = await upload(bytes);
+    expect(replayed.status).toBe(200);
+    check("ImportReplayed", replayed.body);
+
+    const items = await request(server).get(`/v1/admin/content/${module}/items`).set(staff);
+    check("ContentItemList", items.body);
+    expect(items.body.items).toHaveLength(6);
+    const exported = await request(server).get(`/v1/admin/content/${module}/export`).set(staff);
+    expect(exported.status).toBe(200);
+    expect(exported.headers["content-type"]).toContain(XLSX_MIME);
+
+    const invalid = await upload(await clientSheet(2, (rows) => { rows[3] = ["Admiral", "A", "B", "C", "D", "x.jpg", "P"]; }));
+    expect(invalid.status).toBe(422);
+    check("ImportInvalid", invalid.body);
+    expect(invalid.body.error.code).toBe("import_invalid");
+    const garbage = await upload(Buffer.from("nope"));
+    expect(garbage.status).toBe(400);
+    check("Error", garbage.body);
+    const unknownModule = await request(server).get("/v1/admin/content/atc-match/items").set(staff);
+    expect(unknownModule.status).toBe(404);
+    check("Error", unknownModule.body);
+    rejects("ImportInvalid", { error: invalid.body.error });
+    rejects("AdminMe", { principal: "x", staff: false });
   });
 
   it("request schemas accept and reject the same bodies as the server", async () => {

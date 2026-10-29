@@ -7,6 +7,8 @@ export function emulatorToken(
   uid: string,
   projectId = "demo-airplane-games",
   provider = "password",
+  /** email: null omits the claim; the default is `<uid>@sites.test`. */
+  options: { email?: string | null; emailVerified?: boolean } = {},
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "none", typ: "JWT" };
@@ -17,8 +19,8 @@ export function emulatorToken(
     iat: now - 10,
     exp: now + 3600,
     auth_time: now - 10,
-    email: `${uid}@sites.test`,
-    email_verified: true,
+    ...(options.email === null ? {} : { email: options.email ?? `${uid}@sites.test` }),
+    email_verified: options.emailVerified ?? true,
     firebase: { sign_in_provider: provider },
   };
   return `${base64url(header)}.${base64url(claims)}.`;

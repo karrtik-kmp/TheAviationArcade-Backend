@@ -29,6 +29,20 @@
       "when": 1793165256751,
       "tag": "0003_miles_and_hints_ledgers",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793187823600,
+      "tag": "0004_admin_content_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793189526227,
+      "tag": "0005_content_retire_and_confirm",
+      "breakpoints": true
     }
   ]
 }

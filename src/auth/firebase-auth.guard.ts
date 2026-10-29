@@ -38,6 +38,8 @@ export class FirebaseAuthGuard implements CanActivate {
         emulator: this.config.emulatorTokens,
       });
       req.principal = identity.principal;
+      req.email = identity.email;
+      req.emailVerified = identity.emailVerified;
     } catch (error) {
       // Google's keys being unreachable is our outage, not a bad token: tell the client to retry.
       if (error instanceof AuthUnavailableError) {

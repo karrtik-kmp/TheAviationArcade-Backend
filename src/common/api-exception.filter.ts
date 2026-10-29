@@ -6,7 +6,13 @@ import { ApiError } from "./errors.js";
 import type { ErrorCode } from "./errors.js";
 import { isDatabaseUnavailable, rootCause } from "../database/database-errors.js";
 
-type Shaped = { status: number; code: ErrorCode; message: string; headers: Readonly<Record<string, string>> };
+type Shaped = {
+  status: number;
+  code: ErrorCode;
+  message: string;
+  headers: Readonly<Record<string, string>>;
+  extra?: Readonly<Record<string, unknown>>;
+};
 
 const UNREADABLE = "Request could not be read.";
 
@@ -22,7 +28,7 @@ function isHttpError(error: unknown): error is { status: number } {
 
 function shape(error: unknown): Shaped | null {
   if (error instanceof ApiError) {
-    return { status: error.status, code: error.code, message: error.message, headers: error.headers };
+    return { status: error.status, code: error.code, message: error.message, headers: error.headers, extra: error.extra };
   }
   if (error instanceof HttpException && error.getStatus() === 404) {
     return { status: 404, code: "not_found", message: "No such endpoint.", headers: {} };
@@ -78,6 +84,6 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
     for (const [name, value] of Object.entries(shaped.headers)) res.setHeader(name, value);
     if (!res.hasHeader("X-Request-Id")) res.setHeader("X-Request-Id", requestId);
-    res.status(shaped.status).json({ error: { code: shaped.code, message: shaped.message, requestId } });
+    res.status(shaped.status).json({ ...shaped.extra, error: { code: shaped.code, message: shaped.message, requestId } });
   }
 }

@@ -1,6 +1,7 @@
 /** Stable error codes. The Unity client switches on these; never repurpose one. */
 export const ERROR_CODES = [
   "unauthorized",
+  "forbidden",
   "auth_unavailable",
   "invalid_request",
   "player_not_found",
@@ -14,6 +15,10 @@ export const ERROR_CODES = [
   "not_found",
   "rate_limited",
   "client_update_required",
+  "import_invalid",
+  "plan_changed",
+  "import_in_progress",
+  "storage_unavailable",
   "service_unavailable",
   "internal_error",
 ] as const;
@@ -27,6 +32,8 @@ export class ApiError extends Error {
     message: string,
     /** Extra response headers, e.g. Retry-After. */
     readonly headers: Readonly<Record<string, string>> = {},
+    /** Extra top-level body fields next to `error` (e.g. an import's row report). Never secrets. */
+    readonly extra: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
     this.name = "ApiError";
