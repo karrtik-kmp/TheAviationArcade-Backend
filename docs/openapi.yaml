@@ -1,20 +1,27 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Trip completion (slice T3, built 2026-10-29, version 0.5.0) adds a route and changes one behaviour.** `POST /v1/trips/{tripId}/complete`
+    (after the 10th banked Round) returns the segment's outcome, the Field Awards it earned, the Clipper Cards it
+    collected and the Trip hint grant; replaying it returns the same lists and pays nothing twice. New error code
+    `trip_incomplete`. **Behaviour change Unity must handle:** `POST /v1/trips` no longer returns 409 `trip_full` (0.4.0 did).
+    A full open segment is completed first (its Cards, counters, awards and hint are recorded, `complete` then replays
+    them), and the new segment opens. `POST /v1/rounds` still answers 409 `trip_full` for a full segment, and a full
+    segment still cannot be abandoned.
 
     **Flight Segments (slice T2, built 2026-10-29) are a BREAKING CHANGE to the Round routes.** `POST /v1/trips` opens a
     Flight Segment (Unity Trip) and `POST /v1/trips/{tripId}/abandon` closes it; `POST /v1/rounds` now takes
     `{ tripId }` instead of `{ module }` (module and rank come from the segment), and `POST /v1/rounds/{roundId}/result`
     requires the Flight facts `aircraftKey`, `answerMs` and `attempts`. An app built against 0.3.0 gets 400
     `invalid_request` from both Round routes until it adopts this. Unity changes: open a segment per Trip with a fresh
-    `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts. Completion
-    (`POST /v1/trips/{tripId}/complete`) is slice T3.
+    `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts, call `complete` after the 10th Round.
 
-    **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (Trip completion, the
+    **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (the
     Logbook, the content manifest and its data documents) are the agreed next contract, recorded here so Unity can build
     against it. They are NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
@@ -55,7 +62,7 @@ tags:
   - name: shop
   - name: admin
   - name: trips
-    description: Flight Segments (Unity Trips) of ten Rounds (Unity Flights). Open and abandon are built; complete is planned (T3).
+    description: Flight Segments (Unity Trips) of ten Rounds (Unity Flights). Open, complete and abandon are built.
   - name: content
     description: Planned. The content manifest and the versioned data documents it points to.
 
@@ -377,7 +384,7 @@ paths:
         minutes after issue; issuing also restarts the segment's own 30 minute clock.
 
         Errors: 404 `trip_not_found` (unknown, another player's, or `tripId` is not a UUID), 409 `trip_full` (all ten
-        Rounds are banked: complete the segment), 410 `trip_expired` (30 minutes without activity; the segment is then
+        Rounds are banked: call `POST /v1/trips/{tripId}/complete`), 410 `trip_expired` (30 minutes without activity; the segment is then
         closed and the Perfect Streak is 0) or `trip_closed` (completed or abandoned).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
@@ -444,7 +451,7 @@ paths:
         the player's day streak (local day = server time of the result + the segment's `utcOffsetMinutes`); every 7th
         consecutive day grants one hint (Unity `HintBank`), returned in `hintGrants` and ledgered as `day_streak_grant`.
         `trip` says where the segment stands after this Round (on a replay: where it stands now). Cards, Field Awards
-        and the Trip hint grant are NOT decided here; they are decided once, by `POST /v1/trips/{tripId}/complete` (T3).
+        and the Trip hint grant are NOT decided here; they are decided once, by `POST /v1/trips/{tripId}/complete`.
         A Round whose own 30 minutes passed stays `round_expired` on every retry, even after its segment was marked
         expired or a newer segment replaced it. `trip_expired` on this route is defensive: it answers a Round that is
         still inside its own window although its segment ran out (the two clocks share a start, so this is not a normal
@@ -593,10 +600,11 @@ paths:
         Opening one abandons the player's open segment and its open Round and starts the new segment's Perfect Streak at
         0 (D-3), so `progress.perfectStreak` is 0 afterwards.
 
-        **Interim behaviour until slice T3.** The design completes a segment whose ten Rounds are all banked when a newer
-        one is opened. `complete` does not exist yet, and abandoning a full segment would throw away its Cards, counters
-        and awards, so for now opening while the open segment is full answers 409 `trip_full` (body carries the full
-        segment's `tripId`) and changes nothing. T3 replaces this with "complete it first, then open".
+        **A full open segment is completed first.** When the open segment has all ten Rounds banked, opening a newer one
+        completes it in the same transaction (its Clipper Cards, Award counters, Field Awards and Trip hint are recorded,
+        exactly as `POST /v1/trips/{tripId}/complete` would) and then opens the new segment. The response here carries only
+        the new segment; the app reads the completed one's lists by calling `complete` on its `tripId`, which replays the
+        stored answer (`replayed: true`). A segment with fewer than ten banked Rounds is abandoned as before.
 
         `localDate` must be the calendar date of server time plus `utcOffsetMinutes` (within 15 minutes either side,
         so a request that straddles midnight passes); otherwise 422 `local_date_mismatch`. The server records the
@@ -640,15 +648,6 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/PlayerNotFound" }
-        "409":
-          description: "Interim (T2): the player's open segment has all ten Rounds banked; complete it first (T3). Extra field `tripId`."
-          headers:
-            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
-            Cache-Control: { $ref: "#/components/headers/NoStore" }
-          x-error-codes: [trip_full]
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
@@ -666,22 +665,24 @@ paths:
 
   /v1/trips/{tripId}/complete:
     post:
-      x-planned: true
-      x-planned-note: Not built. Slice T3 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
       tags: [trips]
       operationId: completeFlightSegment
-      summary: Complete a Flight Segment (planned)
+      summary: Complete a Flight Segment
       description: |
-        PLANNED, NOT BUILT. Call after the 10th Round is banked. In one player-locked transaction the server derives
+        Call after the 10th Round is banked. In one player-locked transaction the server derives
         the outcome (all correct or not, hint use, Go Around against the previous completed segment, the Red-Eye
         window), collects Clipper Cards from the correct Rounds, updates the Field Award counters, evaluates all 28
         Field Awards against the catalog in force, and grants the Trip hint (+1 on every 4th completed segment, Unity
         `HintBank`). Field Awards pay no Miles or Status Points. The Rounds were already paid when they were banked.
 
-        Idempotent: a repeat returns the stored outcome, the same `fieldAwards`, `clipperCards` and `hintGrants`,
-        with `replayed: true`, and changes nothing. `progress` is the current balance, also on a replay. A segment
+        The first call answers `replayed: false`. Idempotent: a repeat returns the stored outcome, the same `fieldAwards`,
+        `clipperCards` and `hintGrants` (read back from what the first call stored), with `replayed: true`, and pays and
+        changes nothing; concurrent calls complete it exactly once. The Perfect Streak returns to 0 and the UGS copy is
+        republished at once. `progress` is the current balance, also on a replay. A segment
         with all ten Rounds banked can be completed at any time, even after `expiresAt` (an app outbox may retry
-        after a restart). No request body. A `tripId` that is not a UUID is 404 `trip_not_found`.
+        after a restart). No request body. A `tripId` that is not a UUID is 404 `trip_not_found`. Fewer than ten Rounds
+        banked is 409 `trip_incomplete`, except that an open segment past `expiresAt` is 410 `trip_expired` (and is
+        marked abandoned); an abandoned segment is 410 `trip_closed`.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
         - $ref: "#/components/parameters/TripId"
@@ -1396,7 +1397,6 @@ components:
                 - trip_full
                 - local_date_mismatch
                 - idempotency_key_reused
-              x-planned-enum:
                 - trip_incomplete
             message:
               type: string
@@ -1775,7 +1775,7 @@ components:
         progress: { $ref: "#/components/schemas/Progress" }
 
     # ---------------------------------------------------------------------------------------------------------
-    # Flight Segment schemas: built in slice T2. Below them, PLANNED schemas (x-planned: true), designed 2026-10-29,
+    # Flight Segment schemas: built in slices T2 and T3. Below them, PLANNED schemas (x-planned: true), designed 2026-10-29,
     # not built. docs/design/trips-awards-logbook.md.
     # ---------------------------------------------------------------------------------------------------------
 
@@ -1792,7 +1792,6 @@ components:
       enum: [open, completed, abandoned]
       description: An expired segment reads `abandoned` (unless all ten Rounds were banked, then it can still be completed).
     FlightSegmentOutcome:
-      x-planned: true
       type: string
       enum: [all_correct, not_all_correct]
       description: Unity `TripOutcome`. `all_correct` = every Round finished (answered correctly; a hint or a second try still counts).
@@ -1918,12 +1917,11 @@ components:
         kind:
           type: string
           enum: [trip_grant, day_streak_grant]
-          description: "`trip_grant`: every 4th completed Flight Segment (ref = tripId; slice T3, not emitted yet). `day_streak_grant`: every 7th consecutive local day with a banked Round (ref = that local date; built in T2)."
+          description: "`trip_grant`: every 4th completed Flight Segment (ref = tripId; emitted by `complete`). `day_streak_grant`: every 7th consecutive local day with a banked Round (ref = that local date; built in T2)."
         hints: { type: integer, minimum: 1 }
         ref: { type: string }
 
     FlightSegmentSummary:
-      x-planned: true
       type: object
       additionalProperties: false
       description: A completed Flight Segment, as the debrief and the Logbook row show it.
@@ -1948,7 +1946,6 @@ components:
         completedAt: { type: string, format: date-time }
         catalogVersion: { type: integer, minimum: 1, description: The Field Award catalog version it was judged against. }
     FieldAwardEarned:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [id, earnedAt]
@@ -1956,7 +1953,6 @@ components:
         id: { $ref: "#/components/schemas/FieldAwardId" }
         earnedAt: { type: string, format: date-time }
     ClipperCardCollected:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [key, module, firstCollectedAt]
@@ -1965,7 +1961,6 @@ components:
         module: { $ref: "#/components/schemas/ModuleId" }
         firstCollectedAt: { type: string, format: date-time }
     FlightSegmentCompletion:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [trip, fieldAwards, clipperCards, hintGrants, replayed, progress]
@@ -1986,7 +1981,6 @@ components:
         progress: { $ref: "#/components/schemas/Progress" }
 
     FieldAwardId:
-      x-planned: true
       type: string
       description: |
         The 28 Field Award ids. These are the Unity code ids (`Achievements.cs` `AchievementCatalog.Starter`), so

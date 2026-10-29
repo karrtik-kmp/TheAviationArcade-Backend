@@ -313,6 +313,51 @@ describe("openapi contract: real responses validate against the spec", () => {
     expect((await request(server).delete("/v1/me").set(auth)).status).toBe(204);
   });
 
+  it("complete: the completion, its replay and trip_incomplete validate against the spec", async () => {
+    const player = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    expect((await request(server).put("/v1/me").set(player)).status).toBe(201);
+    const opened = await request(server).post("/v1/trips").set(player).set("Idempotency-Key", newKey()).send(openBody("identifier"));
+    expect(opened.status).toBe(201);
+    const tripId = opened.body.trip.tripId as string;
+    const bankOne = async () => {
+      const issued = await request(server).post("/v1/rounds").set(player).send({ tripId });
+      const roundId = issued.body.round.roundId as string;
+      await sql.query("UPDATE rounds SET issued_at = issued_at - interval '10 seconds' WHERE id = $1", [roundId]);
+      const res = await request(server)
+        .post(`/v1/rounds/${roundId}/result`)
+        .set(player)
+        .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier", { aircraftKey: "747" }) });
+      expect(res.status).toBe(200);
+    };
+    await bankOne();
+    const early = await request(server).post(`/v1/trips/${tripId}/complete`).set(player);
+    expect(early.status).toBe(409);
+    check("Error", early.body);
+    expect(early.body.error.code).toBe("trip_incomplete");
+    for (let n = 2; n <= 10; n += 1) await bankOne();
+
+    const done = await request(server).post(`/v1/trips/${tripId}/complete`).set(player);
+    expect(done.status).toBe(200);
+    check("FlightSegmentCompletion", done.body);
+    expect(done.body.replayed).toBe(false);
+    expect(done.body.clipperCards).toMatchObject([{ key: "747", module: "identifier" }]);
+    expect(done.body.fieldAwards.length).toBeGreaterThan(0);
+    const replay = await request(server).post(`/v1/trips/${tripId}/complete`).set(player);
+    check("FlightSegmentCompletion", replay.body);
+    expect(replay.body).toEqual({ ...done.body, replayed: true });
+    expect(done.headers["cache-control"]).toBe("no-store");
+    rejects("FlightSegmentCompletion", { ...done.body, extra: 1 });
+    rejects("FlightSegmentCompletion", { ...done.body, fieldAwards: [{ id: "made-up", earnedAt: "2026-10-29T12:00:00Z" }] });
+
+    const fourth = await request(server).post("/v1/trips").set(player).set("Idempotency-Key", newKey()).send(openBody("identifier"));
+    expect(fourth.status).toBe(201);
+    check("FlightSegmentEnvelope", fourth.body);
+    const gone = await request(server).post(`/v1/trips/${randomUUID()}/complete`).set(player);
+    expect(gone.status).toBe(404);
+    check("Error", gone.body);
+    expect((await request(server).delete("/v1/me").set(player)).status).toBe(204);
+  });
+
   it("admin routes: staff responses and errors validate against the spec", async () => {
     const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
     const module = "aircraft-identifier-military";

@@ -367,6 +367,26 @@ describe("minimum interval between copy writes (C3)", () => {
     expect(await outbox(player.principal)).toBeUndefined();
   });
 
+  it("completing a Flight Segment (the Trip end, mirrorNow) pulls the waiting copy write forward to now", async () => {
+    const player = await newPlayer();
+    expect((await player.link()).status).toBe(201);
+    const t = nextNow();
+    expect((await worker.tick(t)).written).toBe(1);
+    for (let n = 1; n <= 10; n += 1) await bankRound(player); // ten Rounds of one segment, all inside the interval
+    const waiting = time((await outbox(player.principal)).due_at);
+    expect(waiting).toBe(t + INTERVAL_MS);
+
+    const tripId = (await sql.query("SELECT trip_id FROM rounds WHERE player_id = $1 LIMIT 1", [player.principal])).rows[0].trip_id as string;
+    const done = await request(server).post(`/v1/trips/${tripId}/complete`).set(player.auth);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    const row = await outbox(player.principal);
+    expect(time(row.due_at)).toBeLessThanOrEqual(Date.now() + 5_000); // due now, not at t + interval
+    calls.length = 0;
+    expect((await worker.tick(nextNow())).written).toBe(1);
+    expect(writes()[0]?.body.value.version).toBe(done.body.progress.version);
+    expect(writes()[0]?.body.value.perfectStreak).toBe(0);
+  });
+
   it("the first write after a link, a re-link to another UGS player, and a link move are immediate, even inside the interval", async () => {
     const player = await newPlayer();
     expect((await player.link()).status).toBe(201);

@@ -69,7 +69,7 @@ export const players = pgTable(
  * A server-issued Flight Segment (Unity "Trip"): ten Rounds of one module. Module, Active Rank and Pleasure Cruise are
  * snapshotted at open for the whole segment. One open segment per player. `idempotency_key` is the open request's
  * Idempotency-Key (U14): the same key replays the segment it opened. The result columns (outcome ... catalog_version)
- * are written by slice T3 at completion. Written only inside PlayerBalance.update (lock order: player, trip, Round).
+ * are written at completion (slice T3, trip-completion.ts). Written only inside PlayerBalance.update (lock order: player, trip, Round).
  */
 export const trips = pgTable(
   "trips",
@@ -367,8 +367,7 @@ export const ugsLinks = pgTable(
 
 /**
  * One row per player: the day log (T2) and the Field Award counters (T3), a cache of what stored segments and Rounds
- * already say. T2 writes only the day fields (last_played_date ... best_day_streak), inside the Round result
- * transaction; the rest stay 0 until T3. Written only inside PlayerBalance.update.
+ * already say. The Round result writes the day fields (last_played_date ... best_day_streak); `complete` (T3) writes the rest. Written only inside PlayerBalance.update.
  */
 export const playerCounters = pgTable(
   "player_counters",
@@ -410,6 +409,60 @@ export const playerCounters = pgTable(
       "player_counters_previous_outcome_check",
       sql`${t.previousTripOutcome} IS NULL OR ${t.previousTripOutcome} IN ('all_correct', 'not_all_correct')`,
     ),
+  ],
+);
+
+/**
+ * Clipper Card progress (design 3.5): one row per player and Card key, written at `complete` only (A7). `first_trip_id`
+ * names the segment that collected it, so a replay of `complete` reports the same list. No foreign key on it: the row
+ * belongs to the player (cascade), not to the segment. Written only inside PlayerBalance.update.
+ */
+export const playerClipperCards = pgTable(
+  "player_clipper_cards",
+  {
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    cardKey: text("card_key").notNull(),
+    module: text("module").notNull(),
+    firstCollectedAt: timestamp("first_collected_at", { withTimezone: true }).notNull(),
+    firstTripId: uuid("first_trip_id").notNull(),
+    timesIdentified: integer("times_identified").notNull(),
+    everPerfect: boolean("ever_perfect").notNull(),
+    everHintFree: boolean("ever_hint_free").notNull(),
+    fastestCorrectMs: integer("fastest_correct_ms"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.playerId, t.cardKey] }),
+    index("player_clipper_cards_first_trip").on(t.playerId, t.firstTripId),
+    check("player_clipper_cards_module_check", sql`${t.module} IN ('identifier', 'aircraft-identifier-military')`),
+    check("player_clipper_cards_key_check", sql`length(${t.cardKey}) BETWEEN 1 AND 512`),
+    check("player_clipper_cards_times_check", sql`${t.timesIdentified} >= 1`),
+    check("player_clipper_cards_fastest_check", sql`${t.fastestCorrectMs} IS NULL OR ${t.fastestCorrectMs} BETWEEN 0 AND 1800000`),
+  ],
+);
+
+/**
+ * Earned Field Awards (design 3.6): a row is never removed (an award never un-earns). Inserted by the `complete` that
+ * earned it; `trip_id` and `catalog_version` record which segment and which catalog. Written only inside
+ * PlayerBalance.update.
+ */
+export const playerFieldAwards = pgTable(
+  "player_field_awards",
+  {
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    awardId: text("award_id").notNull(),
+    earnedAt: timestamp("earned_at", { withTimezone: true }).notNull(),
+    tripId: uuid("trip_id").notNull(),
+    catalogVersion: integer("catalog_version").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.playerId, t.awardId] }),
+    index("player_field_awards_trip").on(t.playerId, t.tripId),
+    check("player_field_awards_award_id_check", sql`${t.awardId} IN ('first-flight', 'frequent-flyer', 'century', 'sharp-eyes', 'flawless-five', 'five-in-a-row', 'week-on-the-line', 'regular', 'first-card', 'collector', 'textbook', 'high-flyer', 'coast-to-coast', 'no-instrument-flight', 'red-eye-special', 'fleet-admiral', 'centennial-streak', 'go-around', 'globe-trotter', 'quad-engine-royalty', 'the-great-rivalry', 'heavy-metal', 'regional', 'bogey-identified', 'top-gun-ace', 'rotorhead', 'vertical-horizon', 'executive-platinum')`),
+    check("player_field_awards_catalog_version_check", sql`${t.catalogVersion} >= 1`),
   ],
 );
 
@@ -509,5 +562,7 @@ export type PlayerRow = typeof players.$inferSelect;
 export type RoundRow = typeof rounds.$inferSelect;
 export type TripRow = typeof trips.$inferSelect;
 export type PlayerCountersRow = typeof playerCounters.$inferSelect;
+export type ClipperCardRow = typeof playerClipperCards.$inferSelect;
+export type FieldAwardRow = typeof playerFieldAwards.$inferSelect;
 export type ContentItemRow = typeof contentItems.$inferSelect;
 export type ContentImportRow = typeof contentImports.$inferSelect;

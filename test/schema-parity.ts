@@ -10,6 +10,8 @@ import {
   TRIP_STATUSES,
 } from "../src/db/enums.js";
 import * as schema from "../src/db/schema.js";
+import { CARD_MODULES } from "../src/rules/clipper-cards.js";
+import { FIELD_AWARD_IDS } from "../src/rules/field-awards.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
 
@@ -35,6 +37,8 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "trips.trips_status_check": TRIP_STATUSES,
   "trips.trips_outcome_check": TRIP_OUTCOMES,
   "player_counters.player_counters_previous_outcome_check": TRIP_OUTCOMES,
+  "player_clipper_cards.player_clipper_cards_module_check": CARD_MODULES,
+  "player_field_awards.player_field_awards_award_id_check": FIELD_AWARD_IDS,
 };
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

@@ -49,7 +49,7 @@ export type Step<T> = {
   /** Queue a mirror write at the current version without changing anything. */
   republish?: true;
   /**
-   * Hook for the "write at Trip end" trigger (server Trips come later; nothing sets it yet): the queued copy write
+   * The "write at Trip end" trigger (set by completing a Flight Segment, slice T3): the queued copy write
    * is due now even inside UGS_MIRROR_MIN_INTERVAL_SEC (C3). Applies only when the step enqueues (a `change`, a
    * changed `profile`, or `republish`); a step that does none of those queues nothing and this is ignored.
    */

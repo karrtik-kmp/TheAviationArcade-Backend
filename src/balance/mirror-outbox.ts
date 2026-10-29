@@ -11,10 +11,10 @@ export type EnqueueOptions = {
   /** UGS_MIRROR_MIN_INTERVAL_SEC (C3): the least time between two copy writes for one player; 0 = no delay. */
   minIntervalSec: number;
   /**
-   * The hook for a write that must not wait (the "write at Trip end" trigger, with server Trips later): the row is due
+   * The hook for a write that must not wait (the "write at Trip end" trigger, set by completing a Flight Segment): the row is due
    * at `now` even inside the interval. A waiting row (not claimed, not backing off) is pulled forward to `now`; a
    * claimed row cannot be (due_at is its lease), so the request is kept in `urgent` and the worker's "changed while
-   * writing" reset makes it due now. Nothing sets it yet.
+   * writing" reset makes it due now.
    */
   dueNow?: boolean;
 };

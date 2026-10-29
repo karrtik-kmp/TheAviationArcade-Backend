@@ -87,8 +87,8 @@ timeout; see `src/platform/server-timeouts.ts`.
 
 The contract is [docs/openapi.yaml](docs/openapi.yaml), kept in step with the code by a parity test.
 The table lists only what is built. Flight Segments (Unity Trips: open, abandon, Rounds inside a segment) are built
-(slice T2). The rest of the next contract (Trip completion, Field Awards, Clipper Cards, the Logbook and the content
-manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
+(slice T2), and so is completing one (slice T3, API 0.5.0: outcome, Field Awards, Clipper Cards, the Trip hint). The rest
+of the next contract (the Logbook and the content manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
 [docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md); those routes answer 404 today.
 
 > **Breaking change for the Unity app (API 0.4.0, slice T2, 2026-10-29).** The Round routes changed shape:
@@ -98,9 +98,11 @@ manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml
 > utcOffsetMinutes, contentVersion }` (module and rank are fixed for the whole segment, rank is the player's Active
 > Rank); (2) `POST /v1/rounds { tripId }` per Flight; (3) `POST /v1/rounds/:id/result` with the old four fields plus
 > `aircraftKey` (Identifier: the aircraft family, e.g. `787`, which must be a seeded Card family; Military: the
-> question id `mil-aN`; every other module: `null`), `answerMs` and `attempts`. Until slice T3 a segment with ten
-> banked Rounds can be neither completed nor replaced: `POST /v1/trips` answers 409 `trip_full`. Vocabulary: a backend
-> Round is a Unity Flight, a Flight Segment is a Unity Trip.
+> question id `mil-aN`; every other module: `null`), `answerMs` and `attempts`; (4) after the tenth banked Round,
+> `POST /v1/trips/:id/complete` (API 0.5.0, slice T3: a new route plus one behaviour change). Opening the next segment while a
+> full one is still open completes the full one first, so `POST /v1/trips` no longer returns 409 `trip_full` (0.4.0 did); Unity must
+> not treat that code as expected there any more. Vocabulary: a backend Round is a
+> Unity Flight, a Flight Segment is a Unity Trip.
 All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Errors are
 `{ "error": { "code", "message", "requestId" } }`; every response carries `X-Request-Id`.
 
@@ -112,7 +114,8 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | GET | `/v1/me/progress` | Progress, including `version` (it goes up by one with every change visible in the progress or the UGS copy). 404 `player_not_found` until `PUT /v1/me` |
 | PUT | `/v1/me/active-rank` | `{ rank }`. Dial Active Rank down (Pleasure Cruise) or back to Certified. A changed value bumps `version`; the value already in force changes nothing. 403 above Certified |
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
-| POST | `/v1/trips` | `{ module, flightCount: 10, localDate, utcOffsetMinutes, contentVersion }` and a required `Idempotency-Key`. Opens a Flight Segment at Active Rank (abandons the player's open one; its Perfect Streak starts at 0). 201 opened, 200 replay of a key already used, 422 `local_date_mismatch` (beyond 15 minutes of server time plus the offset), 409 `trip_full` (interim, see above) |
+| POST | `/v1/trips` | `{ module, flightCount: 10, localDate, utcOffsetMinutes, contentVersion }` and a required `Idempotency-Key`. Opens a Flight Segment at Active Rank (abandons the player's open one; its Perfect Streak starts at 0). 201 opened, 200 replay of a key already used, 422 `local_date_mismatch` (beyond 15 minutes of server time plus the offset). A full open segment is completed first (same transaction), not abandoned |
+| POST | `/v1/trips/:id/complete` | No body, after the 10th banked Round. In one player-locked transaction: the outcome, the Award counters (Go Around, Red-Eye ...), Clipper Cards, all 28 Field Awards, the Trip hint (`trip_grant`, +1 on every 4th completed segment), Perfect Streak back to 0, and the UGS copy republished at once. Returns `{ trip, fieldAwards, clipperCards, hintGrants, replayed, progress }`. Idempotent: a repeat returns the identical lists with `replayed: true` and pays nothing twice. 404 `trip_not_found`, 409 `trip_incomplete` (fewer than 10 banked), 410 `trip_expired` (partial and past expiry) / `trip_closed` (abandoned) |
 | POST | `/v1/trips/:id/abandon` | No body. Closes the segment and its open Round; 200, `replayed: true` when it was already closed or expired. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_closed` |
 | POST | `/v1/rounds` | `{ tripId }`. Issues the segment's next single-use Round (flight number banked + 1; a re-issue keeps the number); abandons any other open Round. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_expired` / `trip_closed` |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
@@ -260,7 +263,7 @@ Asserted in code and tests until ruled:
    consolidated table yet.
 7. Deleting the account and signing up again re-grants the 5 starter hints (full erasure keeps no
    record of the grant). Acceptable, or keep a minimal tombstone?
-8. The 7-day-streak hint grant (Unity `HintBank`) is built (T2, `day_streak_grant`); the Trip-completion grant (+1 per 4 completed Trips) comes with slice T3.
+8. The 7-day-streak hint grant (Unity `HintBank`) is built (T2, `day_streak_grant`), and so is the Trip-completion grant (+1 per 4 completed Trips, `trip_grant`, T3).
 9. Settled 2026-10-29 after review: identical bytes replay only while they are the module's latest import (a safe
    retry); re-applying an older file's bytes is planned normally, so it conflicts or needs a fresh confirm instead
    of silently doing nothing.

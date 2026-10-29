@@ -71,6 +71,13 @@
       "when": 1793267687207,
       "tag": "0009_trips_and_segments",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793272990078,
+      "tag": "0010_trip_completion",
+      "breakpoints": true
     }
   ]
 }

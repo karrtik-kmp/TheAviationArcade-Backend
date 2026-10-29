@@ -6,7 +6,7 @@ import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import type { Posting } from "../balance/player-balance.js";
 import { contentItems, playerCounters, rounds, trips } from "../db/schema.js";
-import type { PlayerCountersRow, PlayerRow, RoundRow } from "../db/schema.js";
+import type { PlayerRow, RoundRow } from "../db/schema.js";
 import { militaryCardKey } from "../rules/clipper-cards.js";
 import { checkFlightFacts } from "../rules/flight-facts.js";
 import type { ModuleId } from "../rules/modules.js";
@@ -15,7 +15,7 @@ import { bankRound } from "../rules/banking.js";
 import type { Rank } from "../rules/ranks.js";
 import type { Completion, RoundAward } from "../rules/scoring.js";
 import { EMPTY_COUNTERS, localDateTimeOf, recordPlayedDay } from "../rules/trips.js";
-import type { PlayerCounters } from "../rules/trips.js";
+import { toCounters } from "../trips/counters-store.js";
 import {
   abandonOpenRounds,
   abandonTrip,
@@ -107,29 +107,6 @@ function storedAward(round: RoundRow): CompletedRound["award"] {
     miles: round.milesAwarded ?? 0,
     firstClassPass: round.firstClassPass === true,
     pleasureCruise: round.pleasureCruise,
-  };
-}
-
-function toCounters(row: PlayerCountersRow): PlayerCounters {
-  return {
-    tripsCompleted: row.tripsCompleted,
-    flightsCompleted: row.flightsCompleted,
-    correctFlights: row.correctFlights,
-    allCorrectTrips: row.allCorrectTrips,
-    milesEarned: row.milesEarned,
-    bestTripStreak: row.bestTripStreak,
-    identifierFullTrips: row.identifierFullTrips,
-    perfectFlightStreak: row.perfectFlightStreak,
-    bestPerfectFlightStreak: row.bestPerfectFlightStreak,
-    hintFreeTripStreak: row.hintFreeTripStreak,
-    bestHintFreeTripStreak: row.bestHintFreeTripStreak,
-    nightTrips: row.nightTrips,
-    goArounds: row.goArounds,
-    previousTripOutcome: row.previousTripOutcome,
-    lastPlayedDate: row.lastPlayedDate,
-    flightsOnLastPlayedDate: row.flightsOnLastPlayedDate,
-    dayStreak: row.dayStreak,
-    bestDayStreak: row.bestDayStreak,
   };
 }
 

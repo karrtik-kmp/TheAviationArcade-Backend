@@ -1,7 +1,7 @@
 # Trips, Field Awards, Clipper Cards, Logbook and the content manifest
 
-**Status:** designed 2026-10-29; slice T1 (pure rules) and T2 (segments and Rounds) built 2026-10-29, T3-T6 not built. Contract: the `x-planned` operations and schemas in
-[`../openapi.yaml`](../openapi.yaml) (the parity test asserts they answer 404 today). Owner: this session (backend repo).
+**Status:** designed 2026-10-29; slices T1 (pure rules), T2 (segments and Rounds) and T3 (complete) built 2026-10-29, T4-T6 not built. Contract: the `x-planned` operations and schemas in
+[`../openapi.yaml`](../openapi.yaml) (the parity test asserts they answer 404 today); the built ones are served. Owner: this session (backend repo).
 
 Binding inputs: `docs/TASKS.md` Decisions 2026-10-29 "contract round 1" and "contract round 2", D-1, D-3, D-5, C5, C12.
 Everything below that is not one of those rulings is a proposal; the open points are numbered at the end (U = user
@@ -463,7 +463,7 @@ reading) · A20 Military Card keys carry a `mil:` prefix so they can never colli
 table is keyed the same way. Also tested as ASSUMPTION (J-items): J10 the Miles awards count Miles earned in COMPLETED
 segments only (Globe Trotter's "lifetime Miles earned" could include abandoned-segment Rounds); A10 both Identifiers share
 the Ace streak and the full-Trip count; A2 and A13-"completed only" have placeholder unit tests that the T2/T3 e2e tests
-replace. A13-A20 are named `ASSUMPTION` tests in `test/trips.test.ts` and `test/field-awards.test.ts`.
+replace. A13-A20 are named `ASSUMPTION` tests in `test/trips.test.ts` and `test/field-awards.test.ts`. T3 adds A21-A24 (e2e, `test/trips.e2e.test.ts`): A21 a PARTIAL open segment past its expiry answers `complete` with 410 `trip_expired` (and is marked abandoned), not 409 `trip_incomplete` · A22 the summary's `localDate` is the LOCAL DAY OF COMPLETION (server time of the 10th banked Round + the segment's offset), not the opening day (the two differ across midnight) · A23 `clipperCards` are listed by Card key (code point order) and `fieldAwards` in catalog (sheet) order, on the first answer and on every replay · A24 the Trip hint of a segment completed implicitly by `POST /v1/trips` is paid at that open and is in the open response's `progress.hints`. The expected-value notes of A13 (abandoned segment between the pair), A18 (hinted-but-correct Trips are green) and A2 now also have HTTP tests.
 
 **Known limitation (A3, DST).** A segment reports one `utcOffsetMinutes` at open and the server applies it to every
 Round and to the completion time. A segment that spans a daylight-saving change, or a player who travels across zones
@@ -476,7 +476,7 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 |---|---|---|---|---|
 | T1 | Pure rules | S | `src/rules/trips.ts` (day-streak step, `withTrip` counters, outcome, Go Around, night window, hint cadence), `src/rules/field-awards.ts` (28 ids, metric evaluation, Card key normalisation); test names aligned with Unity EditMode tests (`FieldAwardsTests`, `AchievementBoardTests`, `HintBankTests`, `DailyFlightLogTests`, `LifetimeFlightStatsTests`, `LogbookCollectionTests`); ASSUMPTION tests | `npm test`. **Built 2026-10-29** (see "T1 as built" below) |
 | T2 | Segments and Rounds | M | **Built 2026-10-29** (see "T2 as built" below). migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
-| T3 | Complete | M | migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
+| T3 | Complete | M | **Built 2026-10-29** (see "T3 as built" below). migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
 | T4 | Content documents and manifest | M | migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
 | T5 | Logbook | S | `GET /v1/me/logbook` | e2e against a seeded history; schema parity |
 | T6 | Admin edit and publish (C12) | M | staff routes, version checks, publish, audit; after U7/U10 | e2e: an edit reaches the manifest; Unity pulls it (cross-repo gate in ADR-0008 S2) |
@@ -484,6 +484,55 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 Order (user, 2026-10-29): interleaved with the dealer slices from the brief, one at a time: T2 → B1 → B2 → T3 → B3 →
 B4 → B5 → T4 → T5 → T6, then server answer checks and dealing with releases (§10). Each slice: focused commit,
 independent review for T2–T4 and T6, verification recorded in `docs/TASKS.md`.
+
+### T3 as built (2026-10-29)
+
+Migration `0010_trip_completion` (generated; 0000-0009 untouched, a second `db:generate` reports no changes): tables
+`player_clipper_cards` (PK (player, card_key), CHECKs on module and `times_identified`) and `player_field_awards` (PK (player,
+award_id), `award_id` CHECK = the 28 literals, parity-tested against `FIELD_AWARD_IDS`), both `ON DELETE CASCADE` from `players`,
+each with an index on (player, trip) for the replay. Nothing else: `hint_ledger_kind_check` already holds `trip_grant` (0009) and the
+`trips` result columns, the `trips_completed_check` and all of `player_counters` came with 0009. Design section 4 listed these two
+tables as 0010 and `content_documents` as 0011; that numbering holds.
+
+Code: `src/trips/trip-completion.ts` (`completeFullTrip`, `storedCompletion`, `summaryOf`, `completionChange`), `src/trips/catalog-in-force.ts`
+(the code-constant catalog T4 replaces), `src/trips/counters-store.ts` (`toCounters`, shared with `RoundsService`),
+`TripsService.completeTrip`, `POST /v1/trips/:id/complete` in `TripsController`, error code `trip_incomplete`.
+
+Behaviour as built:
+1. **One transaction, one pass.** Inside `PlayerBalance.update`: lock the segment, lock its ten banked Rounds in flight order, fold
+   them through `applyCompletedTrip`, upsert `player_counters`, upsert the Card of every FINISHED Round with a stored `card_key`
+   (`recordSighting`: first sighting inserts with `first_trip_id`, later ones update the counts and latches), evaluate all 28 awards
+   (`evaluateFieldAwards` on the counters, every Card and the tag table, with the earned ids as `alreadyEarned`), insert the new awards,
+   write the segment's result columns (`status = completed`, `closed_at = now`), and post the Trip hint. The Perfect Streak returns to 0.
+2. **Version.** `change` exists only when a `trip_grant` posts or the stored streak was not 0 (U2: earning an award does not bump). The
+   step is always `republish` + `mirrorNow`, so the UGS copy is queued at the current version, due now, even when nothing bumped.
+3. **Replay.** A completed segment answers from the tables: Cards with `first_trip_id = tripId`, awards with `trip_id = tripId`, the hint
+   from the `trip_grant` ledger row (`posted`). The first answer is produced by the same reader after the writes, so both are the same
+   lists. A replay writes nothing, enqueues nothing and bumps nothing. Concurrent calls serialise on the player lock: one completes,
+   the rest replay (`replayed: true`).
+4. **Complete-then-open (T2 item 1 replaced).** `POST /v1/trips` with a full open segment runs `completeFullTrip` in the same
+   transaction as the open (change = hint posting + streak 0, `republish` + `mirrorNow`) and then opens the new segment. The 409 `trip_full`
+   on that route is gone. `POST /v1/rounds` on a full segment is still 409 `trip_full`, and abandoning a full segment is still 409
+   `trip_full` (it would throw away its Cards, counters and awards).
+5. **Errors.** Unknown or foreign segment 404 `trip_not_found`; fewer than ten banked 409 `trip_incomplete`; an abandoned segment
+   410 `trip_closed`; a partial segment past its expiry 410 `trip_expired` (marked abandoned, streak released; A21). A full segment
+   completes at any time, also after `expiresAt`.
+6. **Counters are a cache.** `test/trips.e2e.test.ts` "the stored counters equal a re-derivation" rebuilds `player_counters` from stored
+   Rounds and segments with `deriveDayLog` + `deriveTripCounters`, the Cards with `recordSighting`, and the earned award set with
+   `evaluateFieldAwards`, over a history with an abandoned segment, a night trip, hints, a miss, Military and the 4th-segment hint.
+7. **Write allowlists.** The balance guard gets a new rule and allowlist (`AWARD_WRITERS`: only `trip-completion.ts` may write
+   `player_clipper_cards` / `player_field_awards`) and `trip-completion.ts` joins `TRIP_WRITERS`; both allowlists have stale-entry tests.
+
+Not done in T3 (by design): the Logbook route (T5), reading the catalog and tags from `content_documents` (T4: `catalogInForce()` is
+the seam), the manifest. The catalog version recorded on segments and awards is the constant `1`.
+
+Choices that want the user's ruling (none blocks T3, each is A-marked above):
+- **C1.** `POST /v1/trips`' response does not carry the lists of the segment it completed implicitly; the app reads them by calling
+  `complete` on that `tripId` (a replay). Alternative: add an optional `completed` field to the open response (a contract change).
+- **C2.** A21: partial + expired is 410 `trip_expired`, not 409 `trip_incomplete`.
+- **C3.** A22: the summary's `localDate` is the completion day, not the opening day.
+- **C4.** `player_clipper_cards.first_trip_id` and `player_field_awards.trip_id` carry no foreign key to `trips` (the rows belong to the player;
+  a cascade from a segment must never delete a Card). Account deletion still removes them through `players`.
 
 ### T2 as built (2026-10-29)
 
@@ -496,7 +545,7 @@ index) and `player_counters` (T2 writes only the day fields); `rounds` gains `tr
 Deviations from the plan above, all deliberate:
 1. **A full open segment blocks `POST /v1/trips`** with 409 `trip_full` (body carries `tripId`). Section 2 rule 4 ("opening a
    new segment while a full one is open completes it first") needs `complete`, which is T3, and abandoning a full segment
-   would throw away its Cards, counters and awards. Interim only; T3 replaces it with complete-then-open. A full segment can be
+   would throw away its Cards, counters and awards. Interim only; REPLACED in T3 by complete-then-open (see "T3 as built"). A full segment can be
    neither abandoned (409 `trip_full`) nor reissued (409 `trip_full`) until then, and a full segment never expires, so a dev
    player who banks ten Rounds waits for T3 (tests close such a segment by hand with SQL).
 2. **Result on a segment that expired first** is 410 `trip_expired`. This is DEFENSIVE: the Round's and the segment's clocks start

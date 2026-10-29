@@ -233,8 +233,8 @@ describe("Go Around (a full green Trip right after one that was not)", () => {
     expect(mixed.goArounds).toBe(1);
   });
 
-  // PLACEHOLDER for the T2/T3 e2e test (open, abandon, complete over HTTP). Here it only pins the one pure fact the
-  // e2e relies on: applyCompletedTrip is the sole writer of previousTripOutcome.
+  // The HTTP twin is trips.e2e.test.ts "Go Around sequence" (open, abandon, complete). Here it only pins the one pure
+  // fact that e2e relies on: applyCompletedTrip is the sole writer of previousTripOutcome.
   it("ASSUMPTION A13 (placeholder for T2/T3 e2e): only COMPLETED Trips set the previous outcome; an abandoned segment never reaches here", () => {
     const afterMiss = withTrip(EMPTY_COUNTERS, notGreen());
     expect(afterMiss.previousTripOutcome).toBe("not_all_correct");
@@ -387,8 +387,8 @@ describe("Day log and the 7-day hint", () => {
     expect(deriveDayLog([a, b]).dayStreak).toBe(2);
   });
 
-  // PLACEHOLDER for the T2/T3 e2e test (an abandoned segment's banked Round moves the day streak). The pure function
-  // takes only a day, so it cannot see whether the segment later completes; the e2e must prove the caller calls it.
+  // The HTTP twin is trips.e2e.test.ts "ASSUMPTION A2" (an abandoned segment's banked Round moves the day streak). The
+  // pure function takes only a day, so it cannot see whether the segment later completes; the e2e proves the caller calls it.
   it("ASSUMPTION A2 (placeholder for T2/T3 e2e): a Round of an abandoned segment still counts as play (recordPlayedDay takes only a day)", () => {
     expect(recordPlayedDay(EMPTY_COUNTERS, "2026-10-01").counters.dayStreak).toBe(1);
   });

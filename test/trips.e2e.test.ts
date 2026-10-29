@@ -7,11 +7,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
-import { addDays } from "../src/rules/trips.js";
+import { recordSighting } from "../src/rules/clipper-cards.js";
+import type { CardRecord } from "../src/rules/clipper-cards.js";
+import { evaluateFieldAwards, FIELD_AWARD_IDS } from "../src/rules/field-awards.js";
+import type { FieldAwardId } from "../src/rules/field-awards.js";
+import { addDays, applyCompletedTrip, deriveDayLog, deriveTripCounters, flightFact, localDateTimeOf } from "../src/rules/trips.js";
+import type { CompletedTrip } from "../src/rules/trips.js";
+import { catalogInForce } from "../src/trips/catalog-in-force.js";
+import { toCounters } from "../src/trips/counters-store.js";
 import { emulatorToken } from "./tokens.js";
 import { ensureMilitaryItem, factsFor, newKey, openBody, utcToday } from "./trip-helpers.js";
 
-// Slice T2: Flight Segments (Unity Trips) and the Round routes that run inside them. The real Nest app against the real
+// Slices T2 and T3: Flight Segments (Unity Trips), the Round routes that run inside them, and completing a segment. The real Nest app against the real
 // test database. Pure rules have their own tests (trip-segments.test.ts); the contract twin is openapi.e2e.test.ts.
 
 const PREFIX = "firebase:demo-airplane-games:";
@@ -51,6 +58,7 @@ const open = (p: Player, module = "atc-match", key: string = newKey(), overrides
   request(server).post("/v1/trips").set(p.auth).set("Idempotency-Key", key).send(openBody(module, overrides));
 const issue = (p: Player, tripId: string) => request(server).post("/v1/rounds").set(p.auth).send({ tripId });
 const abandon = (p: Player, tripId: string) => request(server).post(`/v1/trips/${tripId}/abandon`).set(p.auth);
+const complete = (p: Player, tripId: string) => request(server).post(`/v1/trips/${tripId}/complete`).set(p.auth);
 const progress = async (p: Player) => (await request(server).get("/v1/me/progress").set(p.auth)).body.progress;
 const result = (p: Player, roundId: string, body: Record<string, unknown> = {}) =>
   request(server)
@@ -380,13 +388,11 @@ describe("abandon", () => {
     expect(notUuid.body.error.code).toBe("trip_not_found");
   });
 
-  it("a completed segment is 410 trip_closed (arranged: completion itself is slice T3)", async () => {
+  it("a completed segment is 410 trip_closed for abandon and for another Round", async () => {
     const p = await newPlayer();
     const tripId = await openTrip(p);
-    await sql.query(
-      "UPDATE trips SET status = 'completed', rounds_banked = 10, outcome = 'all_correct', closed_at = now() WHERE id = $1",
-      [tripId],
-    );
+    for (let n = 1; n <= 10; n += 1) await bank(p, tripId);
+    expect((await complete(p, tripId)).status).toBe(200);
     const res = await abandon(p, tripId);
     expect(res.status).toBe(410);
     expect(res.body.error.code).toBe("trip_closed");
@@ -440,7 +446,7 @@ describe("Rounds inside a segment", () => {
     expect((await request(server).post("/v1/rounds").set(p.auth).send({})).status).toBe(400);
   });
 
-  it("ASSUMPTION (interim until T3): a full segment refuses another Round and a newer segment, and cannot be abandoned", async () => {
+  it("ASSUMPTION: a full segment refuses another Round and cannot be abandoned (it can only be completed)", async () => {
     const p = await newPlayer();
     const tripId = await openTrip(p);
     for (let n = 1; n <= 10; n += 1) {
@@ -452,19 +458,33 @@ describe("Rounds inside a segment", () => {
     expect(full.body.error.code).toBe("trip_full");
 
     const before = await versionOf(p);
-    const opened = await open(p, "identifier");
-    expect(opened.status).toBe(409);
-    expect(opened.body.error.code).toBe("trip_full");
-    expect(opened.body.tripId).toBe(tripId);
-    expect((await tripRow(tripId)).status).toBe("open");
-    expect(await count("SELECT COUNT(*) AS n FROM trips WHERE player_id = $1", [p.principal])).toBe(1);
-
     const abandoned = await abandon(p, tripId);
     expect(abandoned.status).toBe(409);
     expect(abandoned.body.error.code).toBe("trip_full");
     expect(await versionOf(p)).toBe(before);
-    // 10 perfect Rounds in a row: the streak stays with the full segment until it is completed (T3).
+    // 10 perfect Rounds in a row: the streak stays with the full segment until it is completed.
     expect((await progress(p)).perfectStreak).toBe(10);
+    expect((await tripRow(tripId)).status).toBe("open");
+    await expectLedgersBalanced(p);
+  });
+
+  it("ASSUMPTION (U4): opening a newer segment while a full one is open completes the full one first (complete-then-open)", async () => {
+    const p = await newPlayer();
+    const tripId = await openTrip(p);
+    for (let n = 1; n <= 10; n += 1) await bank(p, tripId);
+    const opened = await open(p, "identifier");
+    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+    expect(opened.body.trip).toMatchObject({ status: "open", module: "identifier", roundsBanked: 0, perfectStreak: 0 });
+    const old = await tripRow(tripId);
+    expect(old).toMatchObject({ status: "completed", rounds_banked: 10, outcome: "all_correct" });
+    expect(await openTrips(p)).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM trips WHERE player_id = $1", [p.principal])).toBe(2);
+    // The app learns the lists by completing the old segment: a replay of what the open stored.
+    const replay = await complete(p, tripId);
+    expect(replay.status).toBe(200);
+    expect(replay.body.replayed).toBe(true);
+    expect(replay.body.fieldAwards.map((a: any) => a.id)).toContain("first-flight");
+    expect(await count("SELECT trips_completed AS n FROM player_counters WHERE player_id = $1", [p.principal])).toBe(1);
     await expectLedgersBalanced(p);
   });
 
@@ -477,6 +497,10 @@ describe("Rounds inside a segment", () => {
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("trip_full");
     expect((await tripRow(tripId)).status).toBe("open");
+    // ...and it can still be completed long after expiresAt (an outbox retry after a restart).
+    const done = await complete(p, tripId);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.replayed).toBe(false);
   });
 
   it("ASSUMPTION A2: a Round of an abandoned segment still counts for the day streak, and keeps its Miles", async () => {
@@ -1138,5 +1162,649 @@ describe("a re-issued Round keeps the Perfect Streak", () => {
     const res = await result(p, again.body.round.roundId);
     expect(res.body.award.streakMiles).toBe(5);
     expect(res.body.trip.perfectStreak).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slice T3: POST /v1/trips/{tripId}/complete. Outcome, counters, Clipper Cards, the 28 Field Awards, the Trip hint.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** An open-body override that puts the segment's local clock at `hour`:30 now (offset and matching localDate). */
+function localClock(hour: number) {
+  const now = new Date();
+  const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  let offset = hour * 60 + 30 - utcMinutes;
+  if (offset > 840) offset -= 1440;
+  if (offset < -720) offset += 1440;
+  return { utcOffsetMinutes: offset, localDate: new Date(now.getTime() + offset * 60_000).toISOString().slice(0, 10) };
+}
+
+const identifierFacts = (key: string, body: Record<string, unknown> = {}) => ({ ...factsFor("identifier", { aircraftKey: key }), ...body });
+const militaryFacts = (itemId: string, body: Record<string, unknown> = {}) =>
+  ({ ...factsFor("aircraft-identifier-military", { aircraftKey: itemId }), ...body });
+const MISS = { finished: false, errorCount: 1, attempts: 1 };
+
+/** Open a segment (local clock at `hour`, default midday) and bank one Round per body; returns the tripId. */
+async function play(p: Player, module: string, bodies: Record<string, unknown>[], hour = 12) {
+  const opened = await open(p, module, newKey(), localClock(hour));
+  expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+  const tripId = opened.body.trip.tripId as string;
+  for (const body of bodies) await bank(p, tripId, body);
+  return tripId;
+}
+const tenOf = (body: Record<string, unknown> = {}) => Array.from({ length: 10 }, () => body);
+
+async function completeOk(p: Player, tripId: string) {
+  const res = await complete(p, tripId);
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  return res.body;
+}
+const awardIds = (body: any) => (body.fieldAwards as { id: string }[]).map((a) => a.id);
+const counters = (p: Player) => row("SELECT * FROM player_counters WHERE player_id = $1", [p.principal]);
+const presetTrips = (p: Player, n: number) =>
+  sql.query(
+    "INSERT INTO player_counters (player_id, trips_completed, updated_at) VALUES ($1, $2, now()) ON CONFLICT (player_id) DO UPDATE SET trips_completed = $2",
+    [p.principal, n],
+  );
+
+async function useMilitaryItems(items: Record<string, string>) {
+  for (const [id, answer] of Object.entries(items)) {
+    await sql.query("DELETE FROM content_items WHERE module = 'aircraft-identifier-military' AND id = $1", [id]);
+    await ensureMilitaryItem(sql, id, answer);
+  }
+}
+
+describe("T3: complete a Flight Segment", () => {
+  it("before ten Rounds are banked it answers 409 trip_incomplete and changes nothing", async () => {
+    const p = await newPlayer();
+    const tripId = await play(p, "atc-match", [{}, {}, {}]);
+    const before = await versionOf(p);
+    const res = await complete(p, tripId);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("trip_incomplete");
+    expect(await versionOf(p)).toBe(before);
+    expect((await tripRow(tripId)).status).toBe("open");
+    expect(await counters(p)).toMatchObject({ trips_completed: 0, flights_completed: 0 });
+    for (let n = 4; n <= 10; n += 1) await bank(p, tripId);
+    expect((await complete(p, tripId)).status).toBe(200);
+  });
+
+  it("completes: outcome, counters, the first Field Award and a replay with the identical lists", async () => {
+    const p = await newPlayer();
+    const clock = localClock(12);
+    const tripId = (await open(p, "atc-match", newKey(), clock)).body.trip.tripId as string;
+    for (let n = 1; n <= 10; n += 1) await bank(p, tripId);
+    const before = await versionOf(p);
+    const hintsBefore = (await progress(p)).hints;
+
+    const first = await completeOk(p, tripId);
+    const sums = await row(
+      "SELECT SUM(miles_awarded)::int AS miles, SUM(sp_awarded)::int AS sp FROM rounds WHERE trip_id = $1 AND status = 'completed'",
+      [tripId],
+    );
+    expect(first.replayed).toBe(false);
+    expect(first.trip).toMatchObject({
+      tripId,
+      module: "atc-match",
+      rank: "trainee",
+      pleasureCruise: false,
+      flights: 10,
+      correct: 10,
+      outcome: "all_correct",
+      hintUsed: false,
+      goAround: false, // the first completed segment never counts
+      nightTrip: false,
+      bestStreak: 10,
+      miles: sums.miles,
+      statusPoints: sums.sp,
+      localDate: clock.localDate,
+      catalogVersion: 1,
+    });
+    expect(first.trip.completedAt).toBe((await tripRow(tripId)).closed_at.toISOString());
+    expect(awardIds(first)).toEqual(["first-flight"]);
+    expect(first.clipperCards).toEqual([]);
+    expect(first.hintGrants).toEqual([]);
+    // The streak went 10 -> 0: that is a visible change, so the version moved once.
+    expect(first.progress).toMatchObject({ perfectStreak: 0, hints: hintsBefore, version: before + 1 });
+
+    expect(await tripRow(tripId)).toMatchObject({ status: "completed", outcome: "all_correct", rounds_banked: 10, go_around: false, night_trip: false });
+    expect(await counters(p)).toMatchObject({
+      trips_completed: 1,
+      flights_completed: 10,
+      correct_flights: 10,
+      all_correct_trips: 1,
+      best_trip_streak: 10,
+      identifier_full_trips: 0, // atc-match
+      perfect_flight_streak: 0,
+      hint_free_trip_streak: 1,
+      best_hint_free_trip_streak: 1,
+      night_trips: 0,
+      go_arounds: 0,
+      previous_trip_outcome: "all_correct",
+    });
+    expect(Number((await counters(p)).miles_earned)).toBe(sums.miles);
+
+    const replay = await completeOk(p, tripId);
+    expect(replay.replayed).toBe(true);
+    const { replayed: _a, progress: _b, ...firstLists } = first;
+    const { replayed: _c, progress: _d, ...replayLists } = replay;
+    expect(replayLists).toEqual(firstLists);
+    expect(replay.progress).toEqual(first.progress);
+    expect(await versionOf(p)).toBe(before + 1);
+    expect(await count("SELECT COUNT(*) AS n FROM player_field_awards WHERE player_id = $1", [p.principal])).toBe(1);
+    await expectLedgersBalanced(p);
+  });
+
+  it("the 4th completed segment grants one trip_grant hint; replays and concurrent completes pay nothing twice", async () => {
+    const p = await newPlayer();
+    await presetTrips(p, 3);
+    const tripId = await play(p, "atc-match", tenOf());
+    const hintsBefore = (await progress(p)).hints;
+    const first = await completeOk(p, tripId);
+    expect(first.hintGrants).toEqual([{ kind: "trip_grant", hints: 1, ref: tripId }]);
+    expect(first.progress.hints).toBe(hintsBefore + 1);
+    const version = await versionOf(p);
+    const ledger = () =>
+      row("SELECT COUNT(*)::int AS n, COALESCE(SUM(delta), 0)::int AS hints FROM hint_ledger WHERE player_id = $1 AND kind = 'trip_grant'", [p.principal]);
+    expect(await ledger()).toEqual({ n: 1, hints: 1 });
+    const milesRows = () => count("SELECT COUNT(*) AS n FROM miles_ledger WHERE player_id = $1", [p.principal]);
+    const milesBefore = await milesRows();
+
+    for (let i = 0; i < 3; i += 1) {
+      const replay = await completeOk(p, tripId);
+      expect(replay.replayed).toBe(true);
+      expect(replay.hintGrants).toEqual(first.hintGrants);
+      expect(replay.fieldAwards).toEqual(first.fieldAwards);
+    }
+    const burst = await Promise.all(Array.from({ length: 6 }, () => complete(p, tripId)));
+    expect(burst.map((r) => r.status)).toEqual(Array(6).fill(200));
+    expect(await ledger()).toEqual({ n: 1, hints: 1 });
+    expect(await milesRows()).toBe(milesBefore);
+    expect(await versionOf(p)).toBe(version);
+    expect((await counters(p)).trips_completed).toBe(4);
+    expect(await count("SELECT COUNT(*) AS n FROM player_field_awards WHERE player_id = $1", [p.principal])).toBe(first.fieldAwards.length);
+    await expectLedgersBalanced(p);
+  });
+
+  it("no hint on the 1st, 2nd, 3rd or 5th completed segment", async () => {
+    const p = await newPlayer();
+    for (let n = 1; n <= 5; n += 1) {
+      const done = await completeOk(p, await play(p, "atc-match", tenOf()));
+      expect(done.hintGrants.length, `segment ${n}`).toBe(n === 4 ? 1 : 0);
+    }
+    expect(await count("SELECT COUNT(*) AS n FROM hint_ledger WHERE player_id = $1 AND kind = 'trip_grant'", [p.principal])).toBe(1);
+    await expectLedgersBalanced(p);
+  });
+
+  it("concurrent completes of one full segment: exactly one pays, the rest replay the same lists", async () => {
+    const p = await newPlayer();
+    const tripId = await play(p, "identifier", tenOf(identifierFacts("787")));
+    const results = await Promise.all(Array.from({ length: 8 }, () => complete(p, tripId)));
+    expect(results.map((r) => r.status)).toEqual(Array(8).fill(200));
+    expect(results.filter((r) => r.body.replayed === false)).toHaveLength(1);
+    const lists = results.map((r) => JSON.stringify([r.body.trip, r.body.fieldAwards, r.body.clipperCards, r.body.hintGrants]));
+    expect(new Set(lists).size).toBe(1);
+    expect((await counters(p)).trips_completed).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM player_clipper_cards WHERE player_id = $1", [p.principal])).toBe(1);
+    expect((await row("SELECT times_identified FROM player_clipper_cards WHERE player_id = $1", [p.principal])).times_identified).toBe(10);
+  });
+
+  it("complete racing a newer open ends consistent: the old segment completed once, one segment open", async () => {
+    const p = await newPlayer();
+    const tripId = await play(p, "atc-match", tenOf());
+    const [done, opened] = await Promise.all([complete(p, tripId), open(p, "identifier")]);
+    expect(done.status).toBe(200);
+    expect(opened.status).toBe(201);
+    expect((await tripRow(tripId)).status).toBe("completed");
+    expect(await openTrips(p)).toBe(1);
+    expect((await counters(p)).trips_completed).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM player_field_awards WHERE player_id = $1 AND award_id = 'first-flight'", [p.principal])).toBe(1);
+    await expectLedgersBalanced(p);
+  });
+
+  it("ASSUMPTION A24: complete-then-open pays the 4th segment hint at the open (in the open progress.hints) and the replay reports it", async () => {
+    const p = await newPlayer();
+    await presetTrips(p, 3);
+    const tripId = await play(p, "atc-match", tenOf());
+    const hintsBefore = (await progress(p)).hints;
+    const opened = await open(p, "atc-match");
+    expect(opened.status).toBe(201);
+    expect(opened.body.progress).toMatchObject({ hints: hintsBefore + 1, perfectStreak: 0 });
+    const replay = await completeOk(p, tripId);
+    expect(replay.replayed).toBe(true);
+    expect(replay.hintGrants).toEqual([{ kind: "trip_grant", hints: 1, ref: tripId }]);
+    await expectLedgersBalanced(p);
+  });
+
+  it("Go Around sequence: needs a completed not-all-correct segment before it; an abandoned one neither sets nor clears it", async () => {
+    const p = await newPlayer();
+    const t1 = await play(p, "atc-match", [...Array(9).fill({}), MISS]);
+    const c1 = await completeOk(p, t1);
+    expect(c1.trip).toMatchObject({ outcome: "not_all_correct", correct: 9, goAround: false });
+    expect(awardIds(c1)).toEqual(["first-flight"]);
+
+    // ASSUMPTION A13: an abandoned segment between the two is not a "previous Trip".
+    const stray = await play(p, "atc-match", [{}, {}]);
+    expect((await abandon(p, stray)).status).toBe(200);
+    expect((await counters(p)).previous_trip_outcome).toBe("not_all_correct");
+
+    const t2 = await play(p, "identifier", tenOf(identifierFacts("787")));
+    const c2 = await completeOk(p, t2);
+    expect(c2.trip).toMatchObject({ outcome: "all_correct", goAround: true }); // any module on either side (J1)
+    expect(awardIds(c2)).toContain("go-around");
+    expect((await counters(p)).go_arounds).toBe(1);
+
+    const t3 = await play(p, "atc-match", tenOf());
+    const c3 = await completeOk(p, t3);
+    expect(c3.trip.goAround).toBe(false); // the previous one was all correct
+    expect(awardIds(c3)).not.toContain("go-around");
+    expect((await counters(p)).go_arounds).toBe(1);
+
+    // ASSUMPTION A18: a hinted-but-correct segment is "green", so the next one after a miss is a Go Around again.
+    await completeOk(p, await play(p, "atc-match", [...Array(9).fill({}), MISS]));
+    const t5 = await play(p, "atc-match", tenOf({ usedHint: true }));
+    const c5 = await completeOk(p, t5);
+    expect(c5.trip).toMatchObject({ outcome: "all_correct", goAround: true, hintUsed: true });
+    expect(await counters(p)).toMatchObject({ go_arounds: 2, trips_completed: 5, hint_free_trip_streak: 0 });
+  });
+
+  it("Red-Eye: a segment completed at 22:00-05:00 local counts as a night trip and earns Red-Eye Special", async () => {
+    const p = await newPlayer();
+    const night = await completeOk(p, await play(p, "atc-match", tenOf(), 23));
+    expect(night.trip.nightTrip).toBe(true);
+    expect(awardIds(night)).toContain("red-eye-special");
+    const day = await completeOk(p, await play(p, "atc-match", tenOf(), 12));
+    expect(day.trip.nightTrip).toBe(false);
+    expect((await counters(p)).night_trips).toBe(1);
+  });
+
+  it("Clipper Cards: first sighting collects, repeats count, latches hold and an unfinished Round collects nothing", async () => {
+    const p = await newPlayer();
+    const bodies = [
+      identifierFacts("787"),
+      identifierFacts("787"),
+      identifierFacts("A320", { usedHint: true }),
+      identifierFacts("A320", { errorCount: 1, attempts: 2 }),
+      identifierFacts("747", MISS),
+      ...Array(5).fill(identifierFacts("737")),
+    ];
+    const t1 = await play(p, "identifier", bodies);
+    const c1 = await completeOk(p, t1);
+    expect(c1.clipperCards.map((c: any) => c.key)).toEqual(["737", "787", "A320"]);
+    expect(c1.clipperCards.every((c: any) => c.module === "identifier")).toBe(true);
+    expect(awardIds(c1)).toEqual(["first-flight", "five-in-a-row", "first-card"]);
+    const card = (key: string) => row("SELECT * FROM player_clipper_cards WHERE player_id = $1 AND card_key = $2", [p.principal, key]);
+    expect(await card("787")).toMatchObject({ times_identified: 2, ever_perfect: true, ever_hint_free: true, first_trip_id: t1 });
+    expect(await card("A320")).toMatchObject({ times_identified: 2, ever_perfect: false, ever_hint_free: true });
+    expect(await card("737")).toMatchObject({ times_identified: 5, ever_perfect: true });
+    expect(await card("747")).toBeUndefined();
+    expect(await counters(p)).toMatchObject({ identifier_full_trips: 0, best_perfect_flight_streak: 5, perfect_flight_streak: 5 });
+
+    const t2 = await play(p, "identifier", tenOf(identifierFacts("787")));
+    const c2 = await completeOk(p, t2);
+    expect(c2.clipperCards).toEqual([]); // nothing new
+    expect(awardIds(c2)).toEqual(["sharp-eyes", "go-around"]); // trip 1 had a miss: this is also a Go Around
+    expect(await card("787")).toMatchObject({ times_identified: 12, first_trip_id: t1 });
+    expect((await completeOk(p, t1)).clipperCards).toEqual(c1.clipperCards); // still the first segment's list
+  });
+
+  it("Field Awards from Cards and tags: Quad-Engine Royalty, Heavy Metal and Textbook Landing arrive together, in catalog order", async () => {
+    const p = await newPlayer();
+    const keys = ["747", "A340", "767", "777", "787", "A300", "737", "A320", "E175", "CRJ"];
+    const t = await play(p, "identifier", keys.map((k) => identifierFacts(k)));
+    const done = await completeOk(p, t);
+    expect(done.clipperCards.map((c: any) => c.key)).toEqual([...keys].sort());
+    expect(awardIds(done)).toEqual([
+      "first-flight",
+      "sharp-eyes",
+      "five-in-a-row",
+      "first-card",
+      "textbook",
+      "quad-engine-royalty",
+      "heavy-metal",
+    ]);
+    const stored = await sql.query("SELECT award_id, trip_id, catalog_version FROM player_field_awards WHERE player_id = $1", [p.principal]);
+    expect(stored.rows).toHaveLength(7);
+    expect(stored.rows.every((r) => r.trip_id === t && r.catalog_version === 1)).toBe(true);
+  });
+
+  it("Military: one Card per distinct answer (the frozen key), Bogey Identified from the fastest correct answer", async () => {
+    const p = await newPlayer();
+    await useMilitaryItems({ "mil-a80": "Eurofighter Typhoon", "mil-a81": "Eurofighter  Typhoon", "mil-a82": "Lockheed Martin F-16" });
+    const order = ["mil-a80", "mil-a81", "mil-a82", "mil-a80", "mil-a81", "mil-a82", "mil-a80", "mil-a81", "mil-a82", "mil-a80"];
+    const bodies = order.map((id, i) => militaryFacts(id, { answerMs: i === 0 ? 1200 : 2500 }));
+    const done = await completeOk(p, await play(p, "aircraft-identifier-military", bodies));
+    expect(done.clipperCards.map((c: any) => [c.key, c.module])).toEqual([
+      ["mil:eurofighter typhoon", "aircraft-identifier-military"],
+      ["mil:lockheed martin f-16", "aircraft-identifier-military"],
+    ]);
+    expect(awardIds(done)).toEqual(["first-flight", "sharp-eyes", "five-in-a-row", "first-card", "bogey-identified"]);
+    expect(
+      await row("SELECT times_identified, fastest_correct_ms FROM player_clipper_cards WHERE player_id = $1 AND card_key = 'mil:eurofighter typhoon'", [p.principal]),
+    ).toEqual({ times_identified: 7, fastest_correct_ms: 1200 });
+    expect((await counters(p)).identifier_full_trips).toBe(1); // both Identifier modules count (A10)
+  });
+
+  it("errors: unknown, foreign and non-UUID segments are 404, an abandoned one 410, an expired partial one 410, a body is 400", async () => {
+    const p = await newPlayer();
+    const intruder = await newPlayer();
+    const full = await play(p, "atc-match", tenOf());
+    expect((await complete(p, randomUUID())).body.error.code).toBe("trip_not_found");
+    expect((await complete(p, "not-a-uuid")).status).toBe(404);
+    expect((await complete(intruder, full)).status).toBe(404);
+    expect((await tripRow(full)).status).toBe("open");
+    const noPlayer = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    expect((await request(server).post(`/v1/trips/${full}/complete`).set(noPlayer)).status).toBe(404);
+    expect((await request(server).post(`/v1/trips/${full}/complete`)).status).toBe(401);
+    expect((await request(server).post(`/v1/trips/${full}/complete`).set(p.auth).send({ anything: 1 })).status).toBe(400);
+    expect((await request(server).post(`/v1/trips/${full}/complete`).set(p.auth).send({})).status).toBe(200);
+
+    const q = await newPlayer();
+    const partial = await play(q, "atc-match", [{}, {}]);
+    expect((await abandon(q, partial)).status).toBe(200);
+    const gone = await complete(q, partial);
+    expect(gone.status).toBe(410);
+    expect(gone.body.error.code).toBe("trip_closed");
+  });
+
+  it("ASSUMPTION A21: a partial segment past its expiry is 410 trip_expired (expiry wins over trip_incomplete), marked abandoned, streak released", async () => {
+    const r = await newPlayer();
+    const stale = await play(r, "atc-match", [{}, {}]);
+    await ageTrip(stale);
+    const expired = await complete(r, stale);
+    expect(expired.status).toBe(410);
+    expect(expired.body.error.code).toBe("trip_expired");
+    expect((await tripRow(stale)).status).toBe("abandoned");
+    expect((await progress(r)).perfectStreak).toBe(0);
+    expect((await complete(r, stale)).body.error.code).toBe("trip_expired");
+  });
+
+  it("ASSUMPTION A22: the summary localDate is the day of completion (the 10th Round's local day), not the opening day", async () => {
+    const p = await newPlayer();
+    const tripId = await play(p, "atc-match", tenOf());
+    // Arrange: the segment was opened on the previous local day.
+    await sql.query("UPDATE trips SET local_date = local_date - 1 WHERE id = $1", [tripId]);
+    const opening = (await row("SELECT to_char(local_date, 'YYYY-MM-DD') AS d FROM trips WHERE id = $1", [tripId])).d as string;
+    const lastRound = (
+      await row("SELECT to_char(local_date, 'YYYY-MM-DD') AS d FROM rounds WHERE trip_id = $1 AND flight_number = 10 AND status = 'completed'", [tripId])
+    ).d as string;
+    expect(opening).not.toBe(lastRound);
+    const done = await completeOk(p, tripId);
+    expect(done.trip.localDate).toBe(lastRound);
+    expect(done.trip.localDate).not.toBe(opening);
+    expect((await completeOk(p, tripId)).trip.localDate).toBe(lastRound);
+  });
+
+  it("ASSUMPTION A23: Cards are listed by key and awards in catalog order, identically on the first answer and every replay", async () => {
+    const p = await newPlayer();
+    // Flight order is deliberately not key order.
+    const keys = ["A340", "787", "747", "CRJ", "A300", "737", "767", "E175", "777", "A320"];
+    const t = await play(p, "identifier", keys.map((k) => identifierFacts(k)));
+    const first = await completeOk(p, t);
+    expect(first.clipperCards.map((c: any) => c.key)).toEqual([...keys].sort());
+    const order = FIELD_AWARD_IDS as readonly string[];
+    const ids = awardIds(first);
+    expect(ids.length).toBeGreaterThan(3);
+    expect(ids).toEqual([...ids].sort((a, b) => order.indexOf(a) - order.indexOf(b)));
+    const replay = await completeOk(p, t);
+    expect(replay.clipperCards).toEqual(first.clipperCards);
+    expect(replay.fieldAwards).toEqual(first.fieldAwards);
+  });
+
+  it("the live streak: replays of complete and of an open read the Perfect Streak of no live segment as 0", async () => {
+    const p = await newPlayer();
+    const t1 = await play(p, "atc-match", tenOf());
+    expect((await completeOk(p, t1)).progress.perfectStreak).toBe(0);
+    const key = newKey();
+    const o2 = await open(p, "atc-match", key, localClock(12));
+    expect(o2.status).toBe(201);
+    const t2 = o2.body.trip.tripId as string;
+    for (let n = 0; n < 3; n += 1) await bank(p, t2);
+    expect((await row("SELECT perfect_streak FROM players WHERE id = $1", [p.principal])).perfect_streak).toBe(3);
+    await ageTrip(t2); // T2 expires; nothing has marked it yet, so the stored streak (3) belongs to no live segment
+    const replay = await complete(p, t1);
+    expect(replay.status).toBe(200);
+    expect(replay.body.replayed).toBe(true);
+    expect(replay.body.progress.perfectStreak).toBe(0);
+    const reopen = await open(p, "atc-match", key, localClock(12));
+    expect(reopen.status).toBe(200);
+    expect(reopen.body.progress.perfectStreak).toBe(0);
+  });
+
+  it("complete-then-open for a linked player: the version bumps only as U2 says, and the copy write is due now", async () => {
+    const p = await newPlayer();
+    await sql.query("INSERT INTO ugs_links (player_id, ugs_player_id, linked_at) VALUES ($1, $2, now())", [
+      p.principal,
+      `ugs${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+    ]);
+    const outbox = () => row("SELECT version, due_at FROM ugs_mirror_outbox WHERE player_id = $1", [p.principal]);
+
+    // (a) Ends on a miss and no hint is due: the completion changes nothing visible, so neither does the open.
+    await play(p, "atc-match", [...Array(9).fill({}), MISS]);
+    await sql.query("DELETE FROM ugs_mirror_outbox WHERE player_id = $1", [p.principal]);
+    let before = await versionOf(p);
+    expect((await open(p, "atc-match")).status).toBe(201);
+    expect(await versionOf(p)).toBe(before);
+    let queued = await outbox();
+    expect(queued.version).toBe(before);
+    expect(queued.due_at.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+    expect((await counters(p)).trips_completed).toBe(1);
+
+    // (b) A perfect segment that is the 4th: the hint and the streak reset are one bump, the copy is queued at that version.
+    await sql.query("UPDATE trips SET status = 'abandoned', closed_at = now() WHERE player_id = $1 AND status = 'open'", [p.principal]);
+    await presetTrips(p, 3);
+    await play(p, "atc-match", tenOf());
+    await sql.query("DELETE FROM ugs_mirror_outbox WHERE player_id = $1", [p.principal]);
+    before = await versionOf(p);
+    const opened = await open(p, "atc-match");
+    expect(opened.status).toBe(201);
+    expect(await versionOf(p)).toBe(before + 1);
+    expect(opened.body.progress.version).toBe(before + 1);
+    queued = await outbox();
+    expect(queued.version).toBe(before + 1);
+    expect(queued.due_at.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+  });
+
+  it("a segment superseded before it was full is closed, not completable", async () => {
+    const p = await newPlayer();
+    const old = await play(p, "atc-match", [{}, {}, {}]);
+    expect((await open(p, "atc-match")).status).toBe(201);
+    const res = await complete(p, old);
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe("trip_closed");
+    expect((await counters(p)).trips_completed).toBe(0);
+  });
+
+  it("the UGS copy is republished when the completion changes nothing visible (a segment that ended on a miss)", async () => {
+    const p = await newPlayer();
+    await sql.query("INSERT INTO ugs_links (player_id, ugs_player_id, linked_at) VALUES ($1, $2, now())", [
+      p.principal,
+      `ugs${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+    ]);
+    const t = await play(p, "atc-match", [...Array(9).fill({}), MISS]);
+    await sql.query("DELETE FROM ugs_mirror_outbox WHERE player_id = $1", [p.principal]);
+    const before = await versionOf(p);
+    expect((await progress(p)).perfectStreak).toBe(0);
+    await completeOk(p, t);
+    expect(await versionOf(p)).toBe(before); // streak already 0, no hint due: no bump (U2)
+    const queued = await row("SELECT version, due_at FROM ugs_mirror_outbox WHERE player_id = $1", [p.principal]);
+    expect(queued.version).toBe(before);
+    expect(queued.due_at.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+  });
+});
+
+describe("T3: the stored counters equal a re-derivation from stored segments and Rounds", () => {
+  it("deriveDayLog / deriveTripCounters / recordSighting over the history equal player_counters, the Cards and the awards", async () => {
+    const p = await newPlayer();
+    await useMilitaryItems({ "mil-a80": "Eurofighter Typhoon", "mil-a81": "Lockheed Martin F-16" });
+    const grants: number[] = [];
+    const run = async (module: string, bodies: Record<string, unknown>[], hour = 12) => {
+      const done = await completeOk(p, await play(p, module, bodies, hour));
+      grants.push(done.hintGrants.length);
+    };
+    await run(
+      "identifier",
+      [
+        ...[0, 1, 2, 3].map(() => identifierFacts("787")),
+        identifierFacts("A320", { usedHint: true }),
+        identifierFacts("A320"),
+        identifierFacts("747", { finished: false, errorCount: 2, attempts: 3 }),
+        ...Array(3).fill(identifierFacts("747")),
+      ],
+      23,
+    );
+    await run(
+      "aircraft-identifier-military",
+      Array.from({ length: 10 }, (_, i) => militaryFacts(i % 2 === 0 ? "mil-a80" : "mil-a81", { answerMs: 1200 })),
+      3,
+    );
+    await play(p, "identifier", [identifierFacts("A320"), identifierFacts("707")]); // abandoned by the next open
+    await run("atc-match", tenOf({ usedHint: true }));
+    await run("identifier", tenOf(identifierFacts("787")));
+    expect(grants).toEqual([0, 0, 0, 1]); // the 4th completed segment grants one hint
+
+    const dayRows = (
+      await sql.query(
+        `SELECT to_char(local_date, 'YYYY-MM-DD') AS day, completed_at FROM rounds WHERE player_id = $1 AND status = 'completed' ORDER BY completed_at, id`,
+        [p.principal],
+      )
+    ).rows as { day: string; completed_at: Date }[];
+    const roundDays = dayRows.map((r) => r.day);
+    const tripRows = (await sql.query("SELECT *, to_char(completion_local_date, 'YYYY-MM-DD') AS completion_day FROM trips WHERE player_id = $1 AND status = 'completed' ORDER BY closed_at", [p.principal])).rows;
+    expect(tripRows).toHaveLength(4);
+
+    const catalog = catalogInForce();
+    const history: CompletedTrip[] = [];
+    const cards = new Map<string, CardRecord>();
+    const cardFirstTrip = new Map<string, string>();
+    const earned = new Set<FieldAwardId>();
+    const awardFirstTrip = new Map<string, string>();
+    for (const t of tripRows) {
+      const rs = (await sql.query("SELECT * FROM rounds WHERE trip_id = $1 AND status = 'completed' ORDER BY flight_number", [t.id])).rows;
+      const flights = rs.map((r) => flightFact({ finished: r.finished, errorCount: r.error_count, usedHint: r.used_hint }));
+      const lastAt: Date = rs[rs.length - 1].completed_at;
+      const trip: CompletedTrip = {
+        module: t.module,
+        flights,
+        miles: rs.reduce((n, r) => n + r.miles_awarded, 0),
+        completedLocal: localDateTimeOf(lastAt, t.utc_offset_minutes),
+      };
+      // The counters as they stood when this segment completed: the trips before it plus the days played up to its last Round.
+      const before = deriveTripCounters(history, deriveDayLog(dayRows.filter((d) => d.completed_at <= lastAt).map((d) => d.day)));
+      const applied = applyCompletedTrip(before, trip);
+      // Every result column the completion wrote equals the re-derivation.
+      expect({
+        outcome: t.outcome,
+        correct: t.correct,
+        hint_used: t.hint_used,
+        best_streak: t.best_streak,
+        miles: t.miles,
+        status_points: t.status_points,
+        go_around: t.go_around,
+        night_trip: t.night_trip,
+        completion_local_date: t.completion_day,
+        catalog_version: t.catalog_version,
+      }).toEqual({
+        outcome: applied.outcome,
+        correct: flights.filter((f) => f.correct).length,
+        hint_used: !applied.hintFree,
+        best_streak: applied.bestStreak,
+        miles: trip.miles,
+        status_points: rs.reduce((n, r) => n + r.sp_awarded, 0),
+        go_around: applied.goAround,
+        night_trip: applied.nightTrip,
+        completion_local_date: trip.completedLocal.date,
+        catalog_version: catalog.version,
+      });
+      history.push(trip);
+      rs.forEach((r, i) => {
+        if (!r.finished || !r.card_key) return;
+        const fact = flights[i]!;
+        const seen = recordSighting(cards.get(r.card_key) ?? null, r.card_key, t.module, {
+          perfect: fact.perfect,
+          hintUsed: fact.hintUsed,
+          answerMs: r.answer_ms,
+        });
+        if (seen.collected) cardFirstTrip.set(r.card_key, t.id);
+        cards.set(r.card_key, seen.card);
+      });
+      const evaluated = evaluateFieldAwards(catalog.awards, { counters: applied.counters, cards: [...cards.values()], tags: catalog.tags }, earned);
+      for (const id of evaluated.newlyEarned) {
+        earned.add(id);
+        awardFirstTrip.set(id, t.id);
+      }
+    }
+    const derived = deriveTripCounters(history, deriveDayLog(roundDays));
+
+    const raw = (
+      await sql.query("SELECT *, to_char(last_played_date, 'YYYY-MM-DD') AS last_day FROM player_counters WHERE player_id = $1", [p.principal])
+    ).rows[0]!;
+    const camel = Object.fromEntries(
+      Object.entries(raw).map(([k, v]) => [k.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase()), v]),
+    ) as Record<string, any>;
+    const storedCounters = toCounters({ ...camel, milesEarned: Number(camel.milesEarned), lastPlayedDate: raw.last_day } as any);
+    expect(storedCounters).toEqual(derived);
+
+    const storedCards = (await sql.query("SELECT * FROM player_clipper_cards WHERE player_id = $1 ORDER BY card_key", [p.principal])).rows.map((c) => ({
+      key: c.card_key,
+      module: c.module,
+      timesIdentified: c.times_identified,
+      everPerfect: c.ever_perfect,
+      everHintFree: c.ever_hint_free,
+      fastestCorrectMs: c.fastest_correct_ms,
+    }));
+    expect(storedCards).toEqual([...cards.values()].sort((a, b) => (a.key < b.key ? -1 : 1)));
+
+    const evaluation = evaluateFieldAwards(catalog.awards, { counters: derived, cards: [...cards.values()], tags: catalog.tags });
+    const storedAwards = (await sql.query("SELECT award_id FROM player_field_awards WHERE player_id = $1", [p.principal])).rows.map((r) => r.award_id as string);
+    expect([...storedAwards].sort()).toEqual([...evaluation.newlyEarned].sort());
+    expect(storedAwards).toEqual(expect.arrayContaining(["first-flight", "bogey-identified", "red-eye-special", "sharp-eyes"]));
+    // Each award and Card names the segment where the fold first reached / sighted it.
+    const awardTrips = (await sql.query("SELECT award_id, trip_id FROM player_field_awards WHERE player_id = $1", [p.principal])).rows;
+    expect(Object.fromEntries(awardTrips.map((r) => [r.award_id, r.trip_id]))).toEqual(Object.fromEntries(awardFirstTrip));
+    const cardTrips = (await sql.query("SELECT card_key, first_trip_id FROM player_clipper_cards WHERE player_id = $1", [p.principal])).rows;
+    expect(Object.fromEntries(cardTrips.map((r) => [r.card_key, r.first_trip_id]))).toEqual(Object.fromEntries(cardFirstTrip));
+    await expectLedgersBalanced(p);
+  });
+});
+
+describe("T3: integrity", () => {
+  it("deleting the account removes its Cards, awards and counters", async () => {
+    const p = await newPlayer();
+    await completeOk(p, await play(p, "identifier", tenOf(identifierFacts("787"))));
+    expect(await count("SELECT COUNT(*) AS n FROM player_clipper_cards WHERE player_id = $1", [p.principal])).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM player_field_awards WHERE player_id = $1", [p.principal])).toBeGreaterThan(0);
+    expect((await request(server).delete("/v1/me").set(p.auth)).status).toBe(204);
+    for (const table of ["player_clipper_cards", "player_field_awards", "player_counters", "trips"]) {
+      expect(await count(`SELECT COUNT(*) AS n FROM ${table} WHERE player_id = $1`, [p.principal]), table).toBe(0);
+    }
+  });
+
+  it("the database refuses an unknown award id, an unknown Card module, a duplicate Card or award, and a Card with times_identified 0", async () => {
+    const p = await newPlayer();
+    const tripId = await openTrip(p);
+    const award = (id: string) =>
+      sql.query("INSERT INTO player_field_awards (player_id, award_id, earned_at, trip_id, catalog_version) VALUES ($1, $2, now(), $3, 1)", [p.principal, id, tripId]);
+    await expect(award("first-solo")).rejects.toMatchObject({ code: "23514", constraint: "player_field_awards_award_id_check" });
+    await award("first-flight");
+    await expect(award("first-flight")).rejects.toMatchObject({ code: "23505" });
+    const card = (key: string, module: string, times = 1) =>
+      sql.query(
+        `INSERT INTO player_clipper_cards (player_id, card_key, module, first_collected_at, first_trip_id, times_identified, ever_perfect, ever_hint_free)
+         VALUES ($1, $2, $3, now(), $4, $5, false, false)`,
+        [p.principal, key, module, tripId, times],
+      );
+    await expect(card("787", "atc-match")).rejects.toMatchObject({ code: "23514", constraint: "player_clipper_cards_module_check" });
+    await expect(card("787", "identifier", 0)).rejects.toMatchObject({ code: "23514", constraint: "player_clipper_cards_times_check" });
+    await card("787", "identifier");
+    await expect(card("787", "identifier")).rejects.toMatchObject({ code: "23505" });
+  });
+
+  it("a completed row must have all ten Rounds and an outcome (the database refuses a half-completed segment)", async () => {
+    const p = await newPlayer();
+    const tripId = await openTrip(p);
+    await expect(
+      sql.query("UPDATE trips SET status = 'completed', closed_at = now(), rounds_banked = 9, outcome = 'all_correct' WHERE id = $1", [tripId]),
+    ).rejects.toMatchObject({ code: "23514", constraint: "trips_completed_check" });
   });
 });

@@ -13,6 +13,7 @@ export const ERROR_CODES = [
   "trip_expired",
   "trip_closed",
   "trip_full",
+  "trip_incomplete",
   "local_date_mismatch",
   "idempotency_key_reused",
   "rank_not_certified",

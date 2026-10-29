@@ -50,9 +50,9 @@ src/config/               env parsed once with zod; fail fast
 src/db/                   drizzle schema + pg Pool provider; migrations in drizzle/
 src/common/               ApiError + ErrorCode, exception filter, ZodValidationPipe, request-id middleware
 src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal()
-src/rules/                pure, Unity-mirrored logic: scoring, ranks (isPleasureCruise), first-class, banking (bankRound) (+ products.ts catalog later)
+src/rules/                pure, Unity-mirrored logic: scoring, ranks (isPleasureCruise), first-class, banking (bankRound), trips, Clipper Cards, Field Awards (+ products.ts catalog later)
 src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
-src/players/, src/rounds/, src/trips/ feature modules: controller (HTTP) + service (transactions, domain outcomes); src/trips/trip-store.ts holds the segment helpers RoundsService shares
+src/players/, src/rounds/, src/trips/ feature modules: controller (HTTP) + service (transactions, domain outcomes); src/trips/trip-store.ts holds the segment helpers RoundsService shares, src/trips/trip-completion.ts completes a full segment (Cards, counters, awards)
 src/storage/              BlobStore (Bunny / memory / none), key validation
 src/content/              staff xlsx import/export: module mappings, pure import planner, service, controller
 src/admin/                GET /v1/admin/me (staff check for the website)
@@ -77,6 +77,18 @@ closed (at its expiry) by the next write that sees it; there is no sweeper. `tri
 only inside `PlayerBalance.update`'s transaction, by the files listed in `TRIP_WRITERS` in `test/balance-guard.test.ts` (a
 structural guard). A Round result also writes the day log (`player_counters`) and may post a `day_streak_grant` hint, in the same
 transaction as the Miles posting.
+
+Completing a segment (T3, `POST /v1/trips/{id}/complete`, or implicitly when `POST /v1/trips` finds a full open one) runs
+in one `PlayerBalance.update` transaction, in the lock order player → trip → Round → `player_counters` / Cards / awards:
+the ten banked Rounds are folded in flight order through the pure `applyCompletedTrip` (counters, Go Around, Red-Eye), each
+finished Round with a Card key upserts `player_clipper_cards`, all 28 awards are evaluated against `catalogInForce()` (a code
+constant until T4 reads `content_documents`) and the new ones are inserted into `player_field_awards`, the segment row gets its
+result columns, and the Trip hint is the only posting (`trip_grant`, UNIQUE (player, kind, ref = tripId)). The step is
+`republish` + `mirrorNow`; `players.version` bumps only when a hint is granted or the streak was not already 0 (U2). The answer
+is read back from the tables (Cards by `first_trip_id`, awards by `trip_id`, the hint from the ledger), so the first answer and
+every replay are the same lists. `player_clipper_cards` and `player_field_awards` are written only by
+`src/trips/trip-completion.ts` (`AWARD_WRITERS` in the balance guard). `player_counters` is a cache: `test/trips.e2e.test.ts`
+rebuilds it from stored segments and Rounds (`deriveDayLog`, `deriveTripCounters`) and compares.
 
 `PlayerBalance` is a deep module with one Postgres adapter, not a seam. Player creation (`open`: INSERT ... ON CONFLICT
 DO NOTHING, the one write that cannot lock first), deletion (`erase`) and the UGS link records (`linkUgs`) live in it too.
@@ -285,7 +297,7 @@ moving `due_at`, which is the lease while claimed, so the lease keeps protecting
 clears it, and release/fail clear it too. Exempt:
 the first write after a link, a re-link to another UGS player and a link move (the pace row names the UGS player it was
 written for, so a different current link means "never written"), and deletions, which never use it. A waiting row is not
-"due", so it does not show as backlog or lag. Hook for a write at Trip end (server Trips come later, not built): `PlayerBalance`
+"due", so it does not show as backlog or lag. The write at Trip end (built in T3: `complete`, and an open that completes a full segment, set it): `PlayerBalance`
 `Step.mirrorNow` (honoured only when the step enqueues: a change, a changed profile or `republish`) / `enqueueMirror({ dueNow })` makes the row due now, pulls a waiting row forward, and is remembered on a claimed row (backing-off rows keep their backoff).
 
 **UGS to backend (unchanged, not built).** Triggers webhook action authenticated with `{{ hmac_sha256 "SECRET" }}` over the

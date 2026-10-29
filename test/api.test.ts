@@ -91,7 +91,8 @@ async function startRound(call: Call, module = "atc-match") {
   if (!segment || segment.module !== module) segment = { id: await openSegment(call, module), module };
   let issued = await call("POST", "/v1/rounds", { tripId: segment.id });
   if (issued.status === 409 && issued.body.error.code === "trip_full") {
-    // Arrangement: a full segment is completed by slice T3's route. Until then the test closes it by hand.
+    // Arrangement: these economy tests do not model the Trip hint (+1 per 4th completed segment) that `complete` grants,
+    // so they close a full segment by hand. The complete route has its own tests (trips.e2e.test.ts, slice T3).
     await sql.query("UPDATE trips SET status = 'abandoned', closed_at = now() WHERE id = $1", [segment.id]);
     segment = { id: await openSegment(call, module), module };
     issued = await call("POST", "/v1/rounds", { tripId: segment.id });
@@ -680,8 +681,8 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 15 guarded routes (incl. 4 admin, 2 trips) plus two health routes.
-    expect(routes.length).toBe(17);
+    // Guard against the enumeration silently finding nothing: 16 guarded routes (incl. 4 admin, 3 trips) plus two health routes.
+    expect(routes.length).toBe(18);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military");
       const response = await send(method, concrete, {});

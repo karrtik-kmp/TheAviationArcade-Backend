@@ -36,6 +36,8 @@ const LINKS = rawTable("ugs_links", "ugsLinks");
 const PACE = rawTable("ugs_mirror_pace", "ugsMirrorPace");
 const TRIPS = rawTable("trips", "trips");
 const COUNTERS = rawTable("player_counters", "playerCounters");
+const CARDS = rawTable("player_clipper_cards", "playerClipperCards");
+const AWARDS = rawTable("player_field_awards", "playerFieldAwards");
 const QUEUE = `(?:${rawTable("ugs_mirror_outbox", "ugsMirrorOutbox")}|${rawTable("ugs_mirror_deletions", "ugsMirrorDeletions")})`;
 const PROTECTED = id("players|milesLedger|hintLedger|ugsLinks|ugsMirrorOutbox|ugsMirrorDeletions|ugsMirrorPace");
 const NOT_BACKTICK = "[^;`]";
@@ -82,6 +84,15 @@ export const RULES: { name: string; pattern: RegExp }[] = [
       "i",
     ),
   },
+  {
+    // Clipper Card progress and earned Field Awards are written once per `complete`, inside PlayerBalance.update's
+    // transaction, by the files in AWARD_WRITERS only.
+    name: "writes Clipper Cards or Field Awards",
+    pattern: R(
+      String.raw`\.(?:insert|update|delete)\(\s*${id("playerClipperCards|playerFieldAwards")}\s*\)|\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+(?:${CARDS}|${AWARDS})`,
+      "i",
+    ),
+  },
   // Any string literal naming the private module: static import, dynamic import(), require(); .js/.ts/no extension.
   { name: "imports the private mirror-outbox module", pattern: /["'][^"'\n]*\bmirror-outbox(?:\.[cm]?[jt]s)?["']/ },
   {
@@ -114,10 +125,17 @@ export const PACE_WRITERS: Record<string, string> = {
 export const TRIP_WRITERS: Record<string, string> = {
   "src/trips/trips.service.ts": "opens and abandons Flight Segments inside PlayerBalance.update",
   "src/trips/trip-store.ts": "shared segment helpers (close, expire) called from inside PlayerBalance.update",
+  "src/trips/trip-completion.ts": "completes a full segment (result columns, Award counters) inside PlayerBalance.update (T3)",
   "src/rounds/rounds.service.ts": "issues and banks Rounds: segment counters and the day log, inside PlayerBalance.update",
 };
 
+/** Files outside src/balance that may write player_clipper_cards or player_field_awards, and why. */
+export const AWARD_WRITERS: Record<string, string> = {
+  "src/trips/trip-completion.ts": "collects Cards and records earned Field Awards once per complete, inside PlayerBalance.update (T3)",
+};
+
 const PACE_RULE = "writes ugs_mirror_pace";
+const AWARD_RULE = "writes Clipper Cards or Field Awards";
 const TRIP_RULE = "writes trips or player_counters";
 const IMPORT_RULE = "imports a ledger or mirror-queue table";
 
@@ -145,6 +163,7 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
         if (allowed && name === IMPORT_RULE) continue;
         if (rel.split(sep).join("/") in PACE_WRITERS && name === PACE_RULE) continue;
         if (rel.split(sep).join("/") in TRIP_WRITERS && name === TRIP_RULE) continue;
+        if (rel.split(sep).join("/") in AWARD_WRITERS && name === AWARD_RULE) continue;
         found.push(`${rel}: ${name}`);
       }
     }
@@ -166,6 +185,12 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
   it("the trips writer allowlist has no stale entries", () => {
     for (const rel of Object.keys(TRIP_WRITERS)) {
       expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(TRIP_RULE);
+    }
+  });
+
+  it("the Cards and awards writer allowlist has no stale entries", () => {
+    for (const rel of Object.keys(AWARD_WRITERS)) {
+      expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(AWARD_RULE);
     }
   });
 
@@ -204,6 +229,31 @@ describe("balance guard checker catches seeded violations", () => {
       "await tx.execute(sql`UPDATE public.player_counters SET day_streak = 0`);",
     ]) {
       expect(violations(seeded), seeded).toContain("writes trips or player_counters");
+    }
+  });
+
+  it("writes to Clipper Cards and Field Awards: drizzle and raw SQL, any quoting", () => {
+    for (const seeded of [
+      "await tx.insert(playerClipperCards).values({});",
+      "await tx.update(schema.playerClipperCards).set({}).where(x);",
+      "await tx\n  .delete(\n    playerFieldAwards\n  );",
+      "await tx.insert(playerFieldAwards).values({});",
+      "await tx.execute(sql`INSERT INTO player_field_awards (a) VALUES (1)`);",
+      "await tx.execute(sql`update ${playerClipperCards} set times_identified = 9`);",
+      'await tx.execute(sql`DELETE FROM "player_clipper_cards"`);',
+      "await tx.execute(sql`UPDATE public.player_field_awards SET trip_id = null`);",
+    ]) {
+      expect(violations(seeded), seeded).toContain(AWARD_RULE);
+    }
+  });
+
+  it("reading Clipper Cards and Field Awards is fine", () => {
+    for (const seeded of [
+      "await tx.select().from(playerClipperCards).where(x);",
+      "await tx.select().from(playerFieldAwards);",
+      "await tx.execute(sql`SELECT * FROM player_field_awards WHERE player_id = ${id}`);",
+    ]) {
+      expect(violations(seeded), seeded).not.toContain(AWARD_RULE);
     }
   });
 

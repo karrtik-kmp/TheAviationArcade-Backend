@@ -92,18 +92,37 @@ export class TripsController {
           "idempotency_key_reused",
           "This Idempotency-Key already opened a Flight Segment for a different module; use a new key.",
         );
-      case "trip_full":
-        throw new ApiError(
-          409,
-          "trip_full",
-          "The open Flight Segment has all ten Rounds banked; complete it first (POST /v1/trips/{tripId}/complete).",
-          {},
-          { tripId: outcome.tripId },
-        );
       case "opened":
       case "replayed":
         res.status(outcome.kind === "opened" ? 201 : 200);
         return { trip: outcome.trip, progress: progressView(outcome.player, now) };
+    }
+  }
+
+  /**
+   * Complete the Flight Segment after its tenth banked Round. No body. Idempotent: a completed segment answers the same
+   * lists with `replayed: true`. 409 `trip_incomplete` before ten Rounds are banked.
+   */
+  @Post(":tripId/complete")
+  @HttpCode(200)
+  async complete(
+    @Principal() principal: string,
+    @Param("tripId", new TripIdPipe()) tripId: string,
+    @Body(new ZodValidationPipe(emptyBody, "Expected no body.")) _body: undefined,
+  ) {
+    const now = new Date();
+    const outcome = await this.trips.completeTrip(principal, tripId, now);
+    switch (outcome.kind) {
+      case "not_found":
+        throw new ApiError(404, "trip_not_found", "No such Flight Segment for this player.");
+      case "incomplete":
+        throw new ApiError(409, "trip_incomplete", "Fewer than ten Rounds of this Flight Segment are banked.");
+      case "expired":
+        throw new ApiError(410, "trip_expired", "This Flight Segment expired before all ten Rounds were banked.");
+      case "closed":
+        throw new ApiError(410, "trip_closed", "This Flight Segment was abandoned.");
+      case "completed":
+        return { ...outcome.completion, replayed: outcome.replayed, progress: progressView(outcome.player, now) };
     }
   }
 
