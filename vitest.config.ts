@@ -16,6 +16,7 @@ export default defineConfig({
       "test/military-mapping.test.ts",
       "test/import-plan.test.ts",
       "test/ugs.test.ts",
+      "test/balance-guard.test.ts",
     ],
   },
 });

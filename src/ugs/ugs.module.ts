@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { BalanceModule } from "../balance/balance.module.js";
 import { APP_CONFIG } from "../config/config.module.js";
 import type { AppConfig } from "../config/config.module.js";
 import { MirrorWorker } from "./mirror-worker.js";
@@ -11,6 +12,7 @@ import { PROOF_CALLS_PER_MIN, TokenBucket } from "./mirror-policy.js";
 import { DEFAULT_WORKER_OPTIONS, UGS_CLIENT, UGS_FETCH, UGS_KEYS, UGS_PROOF_BUCKET, UGS_WORKER_OPTIONS } from "./ugs.tokens.js";
 
 @Module({
+  imports: [BalanceModule],
   controllers: [UgsController],
   providers: [
     // The real network fetcher and key set; tests override both so nothing reaches Unity.

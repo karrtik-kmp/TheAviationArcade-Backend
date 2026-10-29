@@ -204,13 +204,14 @@ paths:
 
         201 on the first link. 200 when this player was already linked to that UGS player (answered from the
         server's own record with no call to UGS, so calling this on every launch is cheap), or when it was
-        re-pointed to a different UGS player (the old copy is deleted by the server; progress is unchanged).
+        re-pointed to a different UGS player (the old copy is deleted by the server; progress is unchanged, but `version` goes up
+        by one because the copy target changed). A first link does not change `version`.
         Requires a player (`PUT /v1/me` first). 404 `not_found` means this server has the mirror turned off.
 
         Any other attempt asks UGS for the link proof and counts against 5 per hour per player (429 `rate_limited`
         with `Retry-After`) and a server-wide proof budget (503 `service_unavailable`, `Retry-After: 5`). If the UGS
         player is still recorded against another sign-in that UGS no longer lists as linked, the link moves to this
-        player.
+        player; that move bumps the caller's `version` (the old holder's is unchanged).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       requestBody:

@@ -271,7 +271,7 @@ export const ugsMirrorGeneration = pgSequence("ugs_mirror_generation_seq");
 /**
  * Coalesced mirror queue: at most one row per linked player. Written in the same transaction as every
  * progress change. `version` is the highest players.version seen (informational); `generation` comes from a
- * sequence and changes on every enqueue (including ones that do not bump players.version, e.g. Active Rank), so
+ * sequence and changes on every enqueue (including ones that do not bump players.version, e.g. a first link or a repeated same-value write), so
  * the worker deletes a row only if nothing changed since it claimed it. `claim_id` is set when a worker claims
  * the row (due_at is then a lease); the worker's later delete/release/fail only match that claim, so a worker
  * whose lease expired cannot touch a row another worker has since claimed. `last_error` is a short status

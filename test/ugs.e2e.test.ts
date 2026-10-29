@@ -15,7 +15,6 @@ import { DatabaseService } from "../src/database/database.module.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { LEASE_MS, TokenBucket } from "../src/ugs/mirror-policy.js";
 import { MirrorWorker } from "../src/ugs/mirror-worker.js";
-import { enqueueMirror } from "../src/ugs/outbox.js";
 import { REQUEST_TIMEOUT_MS } from "../src/ugs/ugs-client.js";
 import { UGS_ISSUER } from "../src/ugs/ugs-token.js";
 import { UGS_CLIENT, UGS_FETCH, UGS_KEYS, UGS_PROOF_BUCKET, UGS_WORKER_OPTIONS } from "../src/ugs/ugs.tokens.js";
@@ -194,7 +193,7 @@ describe("PUT /v1/me/ugs-link", () => {
     const link = (await sql.query("SELECT * FROM ugs_links WHERE player_id = $1", [player.principal])).rows[0];
     expect(link.ugs_player_id).toBe(player.ugsId);
     expect(await outbox(player.principal)).toMatchObject({ version: 1, attempts: 0 });
-    expect(await versionOf(player.principal)).toBe(1); // linking is not a balance change
+    expect(await versionOf(player.principal)).toBe(1); // D-1: a FIRST link enqueues at the current version and does not bump it
   });
 
   it("is idempotent for the same UGS player (200, same linkedAt, one row each)", async () => {
@@ -205,17 +204,19 @@ describe("PUT /v1/me/ugs-link", () => {
     expect(again.body.link.linkedAt).toBe(first.body.link.linkedAt);
     expect((await sql.query("SELECT 1 FROM ugs_links WHERE player_id = $1", [player.principal])).rowCount).toBe(1);
     expect((await sql.query("SELECT 1 FROM ugs_mirror_outbox WHERE player_id = $1", [player.principal])).rowCount).toBe(1);
+    expect(await versionOf(player.principal)).toBe(1); // re-linking the same UGS player bumps nothing
   });
 
-  it("replaces the link for a different UGS id (200), keeps version and progress, queues deleting the old copy", async () => {
+  it("replaces the link for a different UGS id (200), bumps version once (D-1), enqueues at it, queues deleting the old copy", async () => {
     const player = await newPlayer({ link: true });
     await bankRound(player);
-    const before = await versionOf(player.principal);
+    const before = (await versionOf(player.principal)) as number;
     const other = `ugs${randomUUID().replace(/-/g, "").slice(0, 20)}`;
     const res = await player.link(other);
     expect(res.status).toBe(200);
     expect((await sql.query("SELECT ugs_player_id FROM ugs_links WHERE player_id = $1", [player.principal])).rows[0].ugs_player_id).toBe(other);
-    expect(await versionOf(player.principal)).toBe(before);
+    expect(await versionOf(player.principal)).toBe(before + 1);
+    expect(await outbox(player.principal)).toMatchObject({ version: before + 1 });
     expect((await sql.query("SELECT 1 FROM ugs_mirror_deletions WHERE ugs_player_id = $1", [player.ugsId])).rowCount).toBe(1);
   });
 
@@ -305,6 +306,7 @@ describe("PUT /v1/me/ugs-link", () => {
     const holder = await newPlayer({ link: true });
     await bankRound(holder);
     const caller = await newPlayer();
+    const holderVersion = await versionOf(holder.principal);
     identities.set(holder.ugsId, [{ externalId: caller.uid, providerId: PROVIDER }]); // re-linked to the caller in UGS
     calls.length = 0;
     const res = await request(server).put("/v1/me/ugs-link").set(caller.auth).send({ ugsToken: await ugsToken(holder.ugsId) });
@@ -313,7 +315,9 @@ describe("PUT /v1/me/ugs-link", () => {
     const links = (await sql.query("SELECT player_id FROM ugs_links WHERE ugs_player_id = $1", [holder.ugsId])).rows;
     expect(links).toEqual([{ player_id: caller.principal }]);
     expect(await outbox(holder.principal)).toBeUndefined();
-    expect(await outbox(caller.principal)).toBeDefined();
+    expect(await outbox(caller.principal)).toMatchObject({ version: 2 }); // the move bumps the caller (D-1)
+    expect(await versionOf(caller.principal)).toBe(2);
+    expect(await versionOf(holder.principal)).toBe(holderVersion); // the old holder is not bumped
     expect(await count("ugs_mirror_deletions")).toBe(0); // the UGS player is the caller's: nothing to delete
   });
 
@@ -327,6 +331,7 @@ describe("PUT /v1/me/ugs-link", () => {
     expect(row.ugs_player_id).toBe(holder.ugsId);
     expect((await sql.query("SELECT 1 FROM ugs_links WHERE player_id = $1", [holder.principal])).rowCount).toBe(0);
     expect((await sql.query("SELECT 1 FROM ugs_mirror_deletions WHERE ugs_player_id = $1", [caller.ugsId])).rowCount).toBe(1);
+    expect(await versionOf(caller.principal)).toBe(2);
   });
 
   it("429 rate_limited after 5 proofs per hour for one principal; idempotent re-links do not count", async () => {
@@ -417,7 +422,7 @@ describe("outbox: every progress write enqueues in its own transaction, for link
     expect(await outbox(player.principal)).toBeUndefined();
   });
 
-  it("hint spend enqueues (version + 1); a replayed spend does not", async () => {
+  it("hint spend enqueues (version + 1); a replayed spend leaves generation and version unchanged", async () => {
     const player = await newPlayer({ link: true });
     await sql.query("DELETE FROM ugs_mirror_outbox");
     const issued = await request(server).post("/v1/rounds").set(player.auth).send({ module: "identifier" });
@@ -425,11 +430,14 @@ describe("outbox: every progress write enqueues in its own transaction, for link
     expect((await request(server).post(path).set(player.auth)).status).toBe(200);
     const row = await outbox(player.principal);
     expect(row).toMatchObject({ version: 2 });
+    const version = await versionOf(player.principal);
     expect((await request(server).post(path).set(player.auth)).body.hint.replayed).toBe(true);
     expect((await outbox(player.principal)).generation).toBe(row.generation);
+    expect((await outbox(player.principal)).version).toBe(row.version);
+    expect(await versionOf(player.principal)).toBe(version);
   });
 
-  it("hint-pack purchase enqueues (version + 1); a replayed key does not; unlinked players get no row", async () => {
+  it("hint-pack purchase enqueues (version + 1); a replayed key leaves generation and version unchanged", async () => {
     const linked = await newPlayer({ link: true });
     const unlinked = await newPlayer();
     for (const player of [linked, unlinked]) {
@@ -443,8 +451,11 @@ describe("outbox: every progress write enqueues in its own transaction, for link
     const row = await outbox(linked.principal);
     expect(row).toMatchObject({ version: 2 });
     expect(await outbox(unlinked.principal)).toBeUndefined();
+    const version = await versionOf(linked.principal);
     expect((await buy(linked)).body.purchase.replayed).toBe(true);
     expect((await outbox(linked.principal)).generation).toBe(row.generation);
+    expect((await outbox(linked.principal)).version).toBe(row.version);
+    expect(await versionOf(linked.principal)).toBe(version);
   });
 
   it("Active Rank change bumps players.version and enqueues (D-1)", async () => {
@@ -463,24 +474,6 @@ describe("outbox: every progress write enqueues in its own transaction, for link
     expect((await request(server).put("/v1/me/active-rank").set(player.auth).send({ rank: "trainee" })).status).toBe(200);
     expect(await outbox(player.principal)).toBeUndefined();
   });
-
-  it("a rolled-back transaction leaves no outbox row (the enqueue shares the writer's transaction)", async () => {
-    const player = await newPlayer({ link: true });
-    await sql.query("DELETE FROM ugs_mirror_outbox");
-    const database = app.get(DatabaseService);
-    await expect(
-      database.withTransaction(async (tx) => {
-        await enqueueMirror(tx, player.principal, 9, new Date());
-        throw new Error("boom");
-      }),
-    ).rejects.toThrow("boom");
-    expect(await outbox(player.principal)).toBeUndefined();
-    await database.withTransaction(async (tx) => {
-      await enqueueMirror(tx, player.principal, 9, new Date());
-    });
-    expect(await outbox(player.principal)).toMatchObject({ version: 9 });
-  });
-
 
   it("PUT /v1/me create enqueues nothing (a new player cannot be linked)", async () => {
     const player = await newPlayer();

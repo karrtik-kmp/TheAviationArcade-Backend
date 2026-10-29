@@ -64,8 +64,11 @@ destroyed on an unexpected failure; a deliberate rollback such as a refused spen
 Round, hint and shop writes (and the Active Rank change) all go through `PlayerBalance.update` in `src/balance/`,
 which owns the lock, the ledger postings, the relative balance update, the version bump and the mirror enqueue (its
 invariants are written on the class); callers keep their own SQL for their own tables inside the same transaction.
-`PlayerBalance` is a deep module with one Postgres adapter, not a seam. Player creation and deletion
-(`PlayersService.ensurePlayer`/`deletePlayer`) and the UGS link still lock directly until slice S3 moves them in.
+`PlayerBalance` is a deep module with one Postgres adapter, not a seam. Player creation (`open`: INSERT ... ON CONFLICT
+DO NOTHING, the one write that cannot lock first), deletion (`erase`) and the UGS link records (`linkUgs`) live in it too.
+`enqueueMirror` and the `ugs_mirror_deletions` writes sit in `src/balance/mirror-outbox.ts`, private to the module:
+`test/balance-guard.test.ts` fails if any file outside `src/balance/` locks `players` FOR UPDATE, calls those helpers,
+or inserts into the mirror queue tables or the ledgers (the checker is multiline-aware and unit-tested on seeded violations).
 No write overwrites another. The database also enforces one open Round per player (unique partial index).
 
 Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health). Production config refuses
@@ -206,17 +209,19 @@ The server verifies it (jose, remote JWKS with the same fail-closed key handling
 `auth_unavailable`; a bad UGS token is 400 `invalid_request`, because 401 is reserved for the Firebase token), then proves
 the link server-side with Player Auth admin (403 without proof; UGS down is 503 `service_unavailable`). A client-supplied UGS
 player id is never accepted. Table `ugs_links` (`player_id` PK, `ugs_player_id` unique): re-link to the same UGS player is an
-idempotent 200; to another replaces the link under the player lock (progress and `version` untouched) and queues deletion of
-the old copy; a UGS player already linked to another principal is 409 `ugs_link_conflict`, unless the same proof shows
-UGS no longer lists that principal's uid, in which case the link moves (both players locked in id order). A token for the UGS
+idempotent 200 that changes nothing; to another replaces the link under the player lock, bumps `version` once (D-1) and
+queues deletion of the old copy (a first link enqueues at the current version without bumping it); a UGS player already
+linked to another principal is 409 `ugs_link_conflict`, unless the same proof shows UGS no longer lists that principal's
+uid, in which case the link moves (both players locked in id order; the caller's `version` is bumped, the old holder's
+is not). A token for the UGS
 player already on record is answered from `ugs_links` without a Player Auth call. Proof calls are limited to 5 per hour per
 principal and a process-wide sliding window of 12/min (burst 10) under the 500 per 30 min Player Auth admin limit.
 
 **Outbox and worker.** `ugs_mirror_outbox` holds at most one row per linked player (`version` = highest seen, `generation` =
 count of enqueues, `due_at`, `attempts`, short `last_error`). `PlayerBalance.update` calls the helper
-(`enqueueMirror`) inside the same transaction, after the player row is locked and updated, for every write that changes
-what the mirror shows: Round result, hint spend, hint pack, Active Rank change (`PUT /v1/me` creation still calls it
-directly, a no-op because a new player has no link). Every such change bumps `players.version` (D-1, 2026-10-29), so
+(`enqueueMirror`, private to `src/balance/`) inside the same transaction, after the player row is locked and updated, for every write that changes
+what the mirror shows: Round result, hint spend, hint pack, Active Rank change, UGS link records (`PUT /v1/me` creation calls it
+too, a no-op because a new player has no link). Every such change bumps `players.version` (D-1, 2026-10-29), so
 `version` is the total order of copies and `GET /v1/me/progress` returns it; the row also carries a `generation` drawn from a sequence (never repeats, even
 after the row is deleted and re-inserted) and each claim stamps a `claim_id`; the worker deletes or releases a row only if
 both still match its claim, otherwise it is due again at once (migration 0007). The in-process worker (`src/ugs/`, only when

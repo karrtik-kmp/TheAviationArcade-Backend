@@ -165,7 +165,7 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   Player Auth which external identity is on that UGS player; it must be provider `UGS_OIDC_PROVIDER` with the
   Firebase uid. Nothing the client names is trusted. One UGS player links to one backend player (409
   `ugs_link_conflict`, unless UGS no longer lists the other sign-in, in which case the link moves); re-linking the
-  same UGS player is a 200 no-op answered without calling UGS; pointing at another UGS player replaces the link and
+  same UGS player is a 200 no-op answered without calling UGS; pointing at another UGS player replaces the link, bumps `version` once and
   queues deletion of the old copy. Link proofs are limited to 5 per hour per player and a server-wide 12/min (burst
   10), because UGS allows only 500 Player Auth admin calls per 30 min per project.
 - **What is mirrored.** The Cloud Save **Protected** item `progress`: `{ schemaVersion: 1, version, statusPoints, miles,
@@ -181,7 +181,8 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   retrying daily. Every tick with due rows logs backlog and lag (never values). `/v1/health/ready` ignores UGS.
 - **Ordering.** The game orders UGS copies (and a copy against a server answer) by `version`: it goes up by one with every
   change visible in the copy, an Active Rank change included, and `GET /v1/me/progress` returns the same counter (D-1,
-  2026-10-29). `updatedAt` is informational. A UGS re-link does not bump it yet (slice S3).
+  2026-10-29). `updatedAt` is informational. A UGS re-link to a different UGS player and a stale-holder link move bump it (D-1); a first link enqueues at the current
+  version without bumping it, and re-linking the same UGS player changes nothing.
 - **Lag.** Writes are paced to stay inside UGS's admin rate limit (60 req/s and 1,000 per 30 min per project and IP, about
   33/min sustained), so under load the copy can trail the server by minutes. **The game must prefer the server whenever it
   is reachable** and use the UGS copy only as a fallback; the mirror is read-only for the game.

@@ -82,7 +82,8 @@ contract (see Decisions).
 |---|---|---|---|
 | S1 | Active Rank 404 race fix | Done (committed b1ca340) | |
 | S2 | `PlayerBalance` core | Done (local, uncommitted, not independently reviewed) | `src/balance/` (`player-balance.ts`, `balance.module.ts`, `ledger-kinds.ts`). `RoundsService` (issue, complete, hint), `ShopService` and `PlayersService.setActiveRank` go through `PlayerBalance.update`; none of them import `players`, the ledgers or `enqueueMirror` for those writes any more. D-1 applied: an Active Rank change bumps `version` and enqueues (same value = no-op); `version` added to `Progress` (openapi, `progressView`). A completed Round keeps its unconditional bump, even when it pays nothing. No new ledger kind, no schema change, no migration. Still direct: `ensurePlayer`, `deletePlayer`, `UgsLinkService` (S3) |
-| S3+ | Lifecycle/UGS link onto `PlayerBalance` (re-link bump), `bankRound`, parity test, MirrorQueue, shared budget | Not started | |
+| S3 | Player lifecycle and UGS link through `PlayerBalance` | Done (local, uncommitted, not independently reviewed) | `PlayerBalance.open` (ensurePlayer; INSERT ... ON CONFLICT DO NOTHING, only the creator writes the starter ledger row and enqueues at version 1), `erase` (deletePlayer; lock first, records the UGS deletion row, uses the request clock, idempotent) and `linkUgs` (link / re-link / stale-holder move; the network proof stays outside the transaction). D-1 for links: a FIRST link enqueues at the current version with no bump; a re-link to a DIFFERENT UGS player bumps `version` and enqueues; re-linking the SAME UGS player changes nothing (shortcut kept, no admin call); a stale-holder move bumps the caller, not the old holder. `src/ugs/outbox.ts` moved to `src/balance/mirror-outbox.ts` (`enqueueMirror`, `queueMirrorDeletion`, `cancelMirrorDeletion`, `dropMirror`), private to the module. `test/balance-guard.test.ts` (unit): no file outside `src/balance/` locks `players` FOR UPDATE, calls the helpers or inserts into the mirror queue/ledgers, and no test imports the module; multiline regex over comment-stripped source, with the checker proven on seeded violations. `ugs.e2e` keeps the hint-spend and hint-pack replay tests (replay leaves outbox generation and version unchanged); the rolled-back enqueue test moved to `player-balance.e2e`. Review fixes: the guard also covers interpolated/quoted/qualified raw SQL tables, direct writes to players/ugs_links/ledgers, `.for(` with any argument, dynamic/ext-less imports of mirror-outbox, `;` inside literals, table imports (allowlist: mirror worker) and table aliasing; the opposite stale-holder test now uses a real lock barrier. No schema change, no migration |
+| S4+ | `bankRound`, parity test, MirrorQueue, shared budget | Not started | |
 
 ### Phase 6 — Hosting and launch
 
@@ -173,6 +174,13 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-10-29 (S3, PlayerBalance owns player lifecycle and the UGS link): from PowerShell in
+  `H:\Work\TheAviationArcade\Backend` with Postgres up: `npm run typecheck` clean; `npm test` 13 files, 218/218;
+  `npm run test:e2e` 6 files, 226/226 (new: open() under 6 concurrent calls = one starter row, erase() linked / unlinked /
+  missing, linkUgs first / different / same / stale-holder / held / no_player / opposite moves in parallel, rollback of the
+  enqueue); `npm run build` clean. Changed ugs.e2e expectations: a re-link to a different UGS player now bumps `version`
+  by one and enqueues at it; a stale-holder move bumps the caller to 2 and leaves the holder. Not independently
+  reviewed. Local only, no UGS or cloud call.
 - 2026-10-29 (S2 independent review + fixes): Opus review found one regression — a refused spend (the
   `InsufficientBalance` sentinel) made `withTransaction` destroy a healthy pooled connection, so a client tapping a
   spend with no funds churned the pool. Fixed with `ExpectedRollback` (connection kept after a successful ROLLBACK),

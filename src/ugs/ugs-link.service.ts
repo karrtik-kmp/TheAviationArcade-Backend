@@ -1,14 +1,14 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { AuthUnavailableError } from "../auth/firebase.js";
+import { PlayerBalance } from "../balance/player-balance.js";
 import { ApiError } from "../common/errors.js";
 import { APP_CONFIG } from "../config/config.module.js";
 import type { AppConfig, UgsConfig } from "../config/config.module.js";
 import { rootCause } from "../database/database-errors.js";
 import { DatabaseService } from "../database/database.module.js";
-import { players, ugsLinks, ugsMirrorDeletions, ugsMirrorOutbox } from "../db/schema.js";
-import { LINK_PROOFS_PER_HOUR, SlidingWindowLimiter, TokenBucket, mirrorDeletionDueAt } from "./mirror-policy.js";
-import { enqueueMirror } from "./outbox.js";
+import { players, ugsLinks } from "../db/schema.js";
+import { LINK_PROOFS_PER_HOUR, SlidingWindowLimiter, TokenBucket } from "./mirror-policy.js";
 import { UgsClient } from "./ugs-client.js";
 import type { ExternalId } from "./ugs-client.js";
 import { InvalidUgsTokenError, verifyUgsToken } from "./ugs-token.js";
@@ -34,6 +34,7 @@ export class UgsLinkService {
 
   constructor(
     private readonly database: DatabaseService,
+    private readonly balance: PlayerBalance,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(UGS_CLIENT) private readonly client: UgsClient | null,
     @Inject(UGS_KEYS) private readonly keys: UgsKeys,
@@ -119,50 +120,12 @@ export class UgsLinkService {
     return externalIds.some((entry) => entry.providerId === provider && entry.externalId === holderUid);
   }
 
-  private record(principal: string, ugsPlayerId: string, now: Date, moveFrom?: string): Promise<LinkOutcome> {
-    return this.database.withTransaction(async (tx): Promise<LinkOutcome> => {
-      // Same lock as every progress write, so the link and the enqueue see one consistent version. When moving a
-      // stale link both players are locked, in id order so two opposite moves cannot deadlock.
-      const ids = moveFrom ? [principal, moveFrom] : [principal];
-      const locked = await tx.select().from(players).where(inArray(players.id, ids)).orderBy(asc(players.id)).for("update");
-      const player = locked.find((row) => row.id === principal);
-      if (!player) throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
-
-      const [taken] = await tx
-        .select({ playerId: ugsLinks.playerId })
-        .from(ugsLinks)
-        .where(and(eq(ugsLinks.ugsPlayerId, ugsPlayerId), ne(ugsLinks.playerId, principal)));
-      if (taken && taken.playerId !== moveFrom) throw new LinkHeldError(taken.playerId);
-      if (taken) {
-        // The stale holder loses the link and its queued mirror. No deletion is queued: the UGS player is the
-        // caller's now, and the caller's next write replaces the item.
-        await tx.delete(ugsLinks).where(eq(ugsLinks.playerId, taken.playerId));
-        await tx.delete(ugsMirrorOutbox).where(eq(ugsMirrorOutbox.playerId, taken.playerId));
-      }
-
-      const [existing] = await tx.select().from(ugsLinks).where(eq(ugsLinks.playerId, principal));
-      let result: LinkOutcome;
-      if (existing && existing.ugsPlayerId === ugsPlayerId) {
-        result = { created: false, linkedAt: existing.linkedAt }; // idempotent
-      } else {
-        if (existing) {
-          // Replaced: the old UGS player's copy is stale and no longer ours to keep. Due only after any write in
-          // flight on another instance has finished, so it cannot bring the copy back.
-          await tx
-            .insert(ugsMirrorDeletions)
-            .values({ ugsPlayerId: existing.ugsPlayerId, dueAt: mirrorDeletionDueAt(now), createdAt: now })
-            .onConflictDoUpdate({ target: ugsMirrorDeletions.ugsPlayerId, set: { dueAt: mirrorDeletionDueAt(now) } });
-          await tx.update(ugsLinks).set({ ugsPlayerId, linkedAt: now }).where(eq(ugsLinks.playerId, principal));
-        } else {
-          await tx.insert(ugsLinks).values({ playerId: principal, ugsPlayerId, linkedAt: now });
-        }
-        // A deletion queued for this UGS id (an earlier account) must not wipe the mirror we are about to write.
-        await tx.delete(ugsMirrorDeletions).where(eq(ugsMirrorDeletions.ugsPlayerId, ugsPlayerId));
-        result = { created: !existing, linkedAt: now };
-      }
-      await enqueueMirror(tx, principal, player.version, now);
-      return result;
-    });
+  /** Writes go through PlayerBalance.linkUgs (player lock, link rows, version rule, enqueue). The proof is already done. */
+  private async record(principal: string, ugsPlayerId: string, now: Date, moveFrom?: string): Promise<LinkOutcome> {
+    const result = await this.balance.linkUgs(principal, ugsPlayerId, now, moveFrom);
+    if (result.kind === "no_player") throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
+    if (result.kind === "held") throw new LinkHeldError(result.holder);
+    return { created: result.created, linkedAt: result.linkedAt };
   }
 }
 

@@ -234,3 +234,153 @@ describe("PlayerBalance.update", () => {
     expect((await row(id)).version).toBe(2);
   });
 });
+
+const STARTER = { postings: [{ account: "hints" as const, delta: 3, kind: "starter" as const, ref: "starter" }] };
+const freshId = () => `firebase:demo-airplane-games:bal-${randomUUID()}`;
+
+describe("PlayerBalance.open", () => {
+  it("is idempotent under 6 concurrent calls: one creator, one starter ledger row, version 1", async () => {
+    const id = freshId();
+    const results = await Promise.all(Array.from({ length: 6 }, () => balance.open(id, NOW, STARTER)));
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(results.every((r) => r.player.id === id)).toBe(true);
+    expect(await row(id)).toMatchObject({ hints: 3, miles: 0, version: 1 });
+    expect(await ledgerSums(id)).toEqual({ miles: 0, hints: 3 });
+    expect((await sql.query("SELECT 1 FROM hint_ledger WHERE player_id = $1", [id])).rowCount).toBe(1);
+  });
+
+  it("returns an existing player unchanged and writes nothing", async () => {
+    const id = await newPlayer({ miles: 40, hints: 2 });
+    const result = await balance.open(id, NOW, STARTER);
+    expect(result.created).toBe(false);
+    expect(result.player).toMatchObject({ miles: 40, hints: 2, version: 1 });
+    expect(await ledgerSums(id)).toEqual({ miles: 40, hints: 2 });
+  });
+});
+
+describe("PlayerBalance.erase", () => {
+  it("on a linked player leaves one ugs_mirror_deletions row due after the lease, and removes the player and queue", async () => {
+    const id = await newPlayer({ linked: true, hints: 1 });
+    await balance.update(id, NOW, async () => ({ value: null, republish: true as const }));
+    expect(await outbox(id)).toHaveLength(1);
+    expect(await balance.erase(id, NOW)).toBe(true);
+    expect(await row(id)).toBeUndefined();
+    expect(await outbox(id)).toEqual([]);
+    const deletions = (await sql.query("SELECT * FROM ugs_mirror_deletions WHERE ugs_player_id = $1", [`ugs-${id}`])).rows;
+    expect(deletions).toHaveLength(1);
+    expect(deletions[0].created_at.getTime()).toBe(NOW.getTime()); // the injected clock, not new Date()
+    expect(deletions[0].due_at.getTime()).toBeGreaterThan(NOW.getTime());
+  });
+
+  it("on an unlinked player records nothing; on a missing player returns false (idempotent)", async () => {
+    const id = await newPlayer();
+    const before = (await sql.query("SELECT COUNT(*)::int AS n FROM ugs_mirror_deletions")).rows[0].n;
+    expect(await balance.erase(id, NOW)).toBe(true);
+    expect(await balance.erase(id, NOW)).toBe(false);
+    expect(await balance.erase(freshId(), NOW)).toBe(false);
+    expect((await sql.query("SELECT COUNT(*)::int AS n FROM ugs_mirror_deletions")).rows[0].n).toBe(before);
+  });
+});
+
+describe("PlayerBalance.linkUgs (D-1 version rules)", () => {
+  const ugsId = () => `ugs-${randomUUID()}`;
+
+  it("a FIRST link enqueues at the current version without bumping it", async () => {
+    const id = await newPlayer();
+    const result = await balance.linkUgs(id, ugsId(), NOW);
+    expect(result).toMatchObject({ kind: "linked", created: true });
+    expect((await row(id)).version).toBe(1);
+    expect((await outbox(id))[0].version).toBe(1);
+  });
+
+  it("re-linking a DIFFERENT UGS player bumps the version, enqueues at it and queues deleting the old copy", async () => {
+    const id = await newPlayer({ linked: true });
+    const next = ugsId();
+    const result = await balance.linkUgs(id, next, NOW);
+    expect(result).toMatchObject({ kind: "linked", created: false });
+    expect((await row(id)).version).toBe(2);
+    expect((await outbox(id))[0].version).toBe(2);
+    expect((await sql.query("SELECT 1 FROM ugs_mirror_deletions WHERE ugs_player_id = $1", [`ugs-${id}`])).rowCount).toBe(1);
+    expect((await sql.query("SELECT ugs_player_id FROM ugs_links WHERE player_id = $1", [id])).rows[0].ugs_player_id).toBe(next);
+  });
+
+  it("re-linking the SAME UGS player does not bump the version", async () => {
+    const id = await newPlayer({ linked: true });
+    const result = await balance.linkUgs(id, `ugs-${id}`, NOW);
+    expect(result).toMatchObject({ kind: "linked", created: false });
+    expect((await row(id)).version).toBe(1);
+  });
+
+  it("a stale-holder move bumps the caller, not the old holder, and drops the holder queue", async () => {
+    const holder = await newPlayer({ linked: true });
+    await balance.update(holder, NOW, async () => ({ value: null, republish: true as const }));
+    const caller = await newPlayer();
+    const result = await balance.linkUgs(caller, `ugs-${holder}`, NOW, holder);
+    expect(result).toMatchObject({ kind: "linked", created: true });
+    expect((await row(caller)).version).toBe(2);
+    expect((await row(holder)).version).toBe(1);
+    expect(await outbox(holder)).toEqual([]);
+    expect((await outbox(caller))[0].version).toBe(2);
+    expect((await sql.query("SELECT 1 FROM ugs_links WHERE player_id = $1", [holder])).rowCount).toBe(0);
+  });
+
+  it("answers held (writing nothing) when another player holds the UGS id, and no_player for a missing caller", async () => {
+    const holder = await newPlayer({ linked: true });
+    const caller = await newPlayer();
+    expect(await balance.linkUgs(caller, `ugs-${holder}`, NOW)).toEqual({ kind: "held", holder });
+    expect((await sql.query("SELECT 1 FROM ugs_links WHERE player_id = $1", [caller])).rowCount).toBe(0);
+    expect(await balance.linkUgs(freshId(), ugsId(), NOW)).toEqual({ kind: "no_player" });
+  });
+
+  it("opposite stale-holder moves in parallel settle (locks are taken in id order, no deadlock)", async () => {
+    const a = await newPlayer({ linked: true });
+    const b = await newPlayer({ linked: true });
+    // Barrier: a separate connection holds both rows locked, both moves start and block on it, then it is released,
+    // so the two transactions really overlap instead of running back to back.
+    const holder = await sql.connect();
+    let released = false;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM players WHERE id = ANY($1) FOR UPDATE", [[a, b]]);
+      const moves = [balance.linkUgs(a, `ugs-${b}`, NOW, b), balance.linkUgs(b, `ugs-${a}`, NOW, a)];
+      const settled = Promise.allSettled(moves);
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        // Polled on another connection: inside the holder's transaction pg_stat_activity is a frozen snapshot.
+        const waiting = await sql.query(
+          "SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%for update%'",
+        );
+        if (waiting.rows[0].n >= 2) break;
+        if (Date.now() > deadline) throw new Error("both moves never blocked on the held row locks");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await holder.query("COMMIT");
+      released = true;
+      const results = await settled;
+      expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    } finally {
+      if (!released) await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+    const linkOf = async (id: string) => (await sql.query("SELECT ugs_player_id FROM ugs_links WHERE player_id = $1", [id])).rows[0]?.ugs_player_id;
+    expect(await linkOf(a)).toBe(`ugs-${b}`);
+    expect(await linkOf(b)).toBe(`ugs-${a}`);
+    const deletions = await sql.query("SELECT 1 FROM ugs_mirror_deletions WHERE ugs_player_id = ANY($1)", [[`ugs-${a}`, `ugs-${b}`]]);
+    expect(deletions.rowCount).toBe(0);
+  });
+});
+
+describe("mirror enqueue shares the writer's transaction", () => {
+  it("a rolled-back update leaves no outbox row; a committed republish leaves one", async () => {
+    const id = await newPlayer({ linked: true });
+    await expect(
+      balance.update(id, NOW, async ({ tx }) => {
+        await tx.execute(dsql`SELECT 1`);
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(await outbox(id)).toEqual([]);
+    await balance.update(id, NOW, async () => ({ value: null, republish: true as const }));
+    expect(await outbox(id)).toHaveLength(1);
+  });
+});
