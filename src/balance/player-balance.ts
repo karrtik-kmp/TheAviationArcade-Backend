@@ -1,5 +1,7 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { APP_CONFIG } from "../config/config.module.js";
+import type { AppConfig } from "../config/config.module.js";
 import { DatabaseService, ExpectedRollback } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import { hintLedger, milesLedger, players, ugsLinks } from "../db/schema.js";
@@ -46,6 +48,12 @@ export type Step<T> = {
   profile?: ProfileChange;
   /** Queue a mirror write at the current version without changing anything. */
   republish?: true;
+  /**
+   * Hook for the "write at Trip end" trigger (server Trips come later; nothing sets it yet): the queued copy write
+   * is due now even inside UGS_MIRROR_MIN_INTERVAL_SEC (C3). Applies only when the step enqueues (a `change`, a
+   * changed `profile`, or `republish`); a step that does none of those queues nothing and this is ignored.
+   */
+  mirrorNow?: true;
 };
 
 export type UpdateResult<T> =
@@ -102,7 +110,19 @@ class InsufficientBalance extends ExpectedRollback {
  */
 @Injectable()
 export class PlayerBalance {
-  constructor(private readonly database: DatabaseService) {}
+  /** C3: least seconds between two Cloud Save copy writes for one player (0 when UGS is off or the delay is disabled). */
+  private readonly minIntervalSec: number;
+
+  constructor(
+    private readonly database: DatabaseService,
+    @Inject(APP_CONFIG) config: AppConfig,
+  ) {
+    this.minIntervalSec = config.ugs?.mirrorMinIntervalSec ?? 0;
+  }
+
+  private enqueue(tx: Tx, principal: string, version: number, now: Date, dueNow = false): Promise<void> {
+    return enqueueMirror(tx, principal, version, now, { minIntervalSec: this.minIntervalSec, dueNow });
+  }
 
   async update<T>(
     principal: string,
@@ -130,7 +150,7 @@ export class PlayerBalance {
 
         const profileChanged = step.profile?.activeRank !== undefined && step.profile.activeRank !== player.activeRank;
         if (!step.change && !profileChanged) {
-          if (step.republish) await enqueueMirror(tx, principal, player.version, now);
+          if (step.republish) await this.enqueue(tx, principal, player.version, now, step.mirrorNow === true);
           return { kind: "ok", value: step.value, player };
         }
 
@@ -171,7 +191,7 @@ export class PlayerBalance {
           .returning();
         // The row is locked, so it cannot vanish between the SELECT and the UPDATE.
         if (!updated) throw new Error("Locked player row was not updated.");
-        await enqueueMirror(tx, principal, updated.version, now);
+        await this.enqueue(tx, principal, updated.version, now, step.mirrorNow === true);
         return { kind: "ok", value: step.value, player: updated };
       });
     } catch (error) {
@@ -211,7 +231,7 @@ export class PlayerBalance {
         }
         // A brand-new player has no UGS link yet (a deleted account's link went with it), so this is a no-op today;
         // it keeps every progress-creating write on the same rule.
-        await enqueueMirror(tx, principal, inserted[0].version, now);
+        await this.enqueue(tx, principal, inserted[0].version, now);
       }
       const [player] = await tx.select().from(players).where(eq(players.id, principal));
       if (!player) throw new Error("Player row missing after insert.");
@@ -265,7 +285,7 @@ export class PlayerBalance {
       const [existing] = await tx.select().from(ugsLinks).where(eq(ugsLinks.playerId, principal));
       if (existing && existing.ugsPlayerId === ugsPlayerId) {
         // Already this UGS player (a race): nothing changes, but the copy is republished at the current version.
-        await enqueueMirror(tx, principal, player.version, now);
+        await this.enqueue(tx, principal, player.version, now);
         return { kind: "linked", created: false, linkedAt: existing.linkedAt };
       }
       if (existing) {
@@ -289,7 +309,7 @@ export class PlayerBalance {
         if (!updated) throw new Error("Locked player row was not updated.");
         version = updated.version;
       }
-      await enqueueMirror(tx, principal, version, now);
+      await this.enqueue(tx, principal, version, now);
       return { kind: "linked", created: !existing, linkedAt: now };
     });
   }

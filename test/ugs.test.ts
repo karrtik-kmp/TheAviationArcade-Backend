@@ -12,12 +12,18 @@ import {
   SlidingWindowLimiter,
   TokenBucket,
   backoffMs,
+  bucketCapacity,
   mirrorDeletionDueAt,
+  mirrorDueAt,
   mirrorSnapshot,
+  refillTokens,
   uidOfPrincipal,
 } from "../src/ugs/mirror-policy.js";
+import { InMemoryUgsBudget } from "../src/ugs/budget.js";
 import { REQUEST_TIMEOUT_MS, UGS_API_BASE, UgsClient, parseRetryAfter } from "../src/ugs/ugs-client.js";
 import { InvalidUgsTokenError, UGS_ISSUER, verifyUgsToken } from "../src/ugs/ugs-token.js";
+
+import { budgetContract } from "./ugs-budget-contract.js";
 
 const PROJECT = "11111111-2222-3333-4444-555555555555";
 const ENV = "66666666-7777-8888-9999-000000000000";
@@ -337,8 +343,31 @@ describe("UGS config", () => {
       serviceAccountSecret: "super-secret-value",
       oidcProvider: "oidc-firebase",
       mirrorMaxPerMin: 25,
+      mirrorMinIntervalSec: 300,
     });
     expect(loadConfig({ ...base, ...full, UGS_MIRROR_MAX_PER_MIN: "12" }).ugs?.mirrorMaxPerMin).toBe(12);
+  });
+
+  it("UGS_MIRROR_MIN_INTERVAL_SEC (C3): default 300, 0 disables, range 0-3600, integers only", () => {
+    const interval = (value: string) => loadConfig({ ...base, ...full, UGS_MIRROR_MIN_INTERVAL_SEC: value }).ugs?.mirrorMinIntervalSec;
+    expect(interval("")).toBe(300); // blank = unset = default
+    expect(interval("0")).toBe(0);
+    expect(interval("1")).toBe(1);
+    expect(interval("3600")).toBe(3600);
+    expect(failure({ ...base, ...full, UGS_MIRROR_MIN_INTERVAL_SEC: "3601" })).toContain("UGS_MIRROR_MIN_INTERVAL_SEC");
+    expect(failure({ ...base, ...full, UGS_MIRROR_MIN_INTERVAL_SEC: "-1" })).toContain("UGS_MIRROR_MIN_INTERVAL_SEC");
+    expect(failure({ ...base, ...full, UGS_MIRROR_MIN_INTERVAL_SEC: "2.5" })).toContain("UGS_MIRROR_MIN_INTERVAL_SEC");
+    expect(failure({ ...base, ...full, UGS_MIRROR_MIN_INTERVAL_SEC: "soon" })).toContain("UGS_MIRROR_MIN_INTERVAL_SEC");
+  });
+
+  it("UGS_MIRROR_MIN_INTERVAL_SEC alone is partial config too (even 0): a stray knob must not leave the mirror off", () => {
+    for (const value of ["0", "120"]) {
+      const message = failure({ ...base, UGS_MIRROR_MIN_INTERVAL_SEC: value });
+      for (const name of ["UGS_PROJECT_ID", "UGS_ENVIRONMENT_ID", "UGS_SERVICE_ACCOUNT_KEY_ID", "UGS_SERVICE_ACCOUNT_SECRET", "UGS_OIDC_PROVIDER"]) {
+        expect(message).toContain(name);
+      }
+    }
+    expect(loadConfig({ ...base, UGS_MIRROR_MIN_INTERVAL_SEC: "" }).ugs).toBeUndefined(); // blank is not "given"
   });
 
   it("UGS_MIRROR_MAX_PER_MIN alone is partial config: it fails instead of silently leaving the mirror off", () => {
@@ -364,5 +393,47 @@ describe("UGS config", () => {
     expect(failure({ ...base, ...full, UGS_MIRROR_MAX_PER_MIN: "34" })).toContain("UGS_MIRROR_MAX_PER_MIN");
     expect(failure({ ...base, ...full, UGS_MIRROR_MAX_PER_MIN: "0" })).toContain("UGS_MIRROR_MAX_PER_MIN");
     expect(failure({ ...base, ...full, UGS_OIDC_PROVIDER: "firebase" })).not.toContain("super-secret-value");
+  });
+});
+
+describe("budget math (D-4)", () => {
+  it("refillTokens adds perMin per minute, caps at capacity and ignores a clock that moves backwards", () => {
+    expect(refillTokens(0, 0, 6_000, 60, 10)).toEqual({ tokens: 6, last: 6_000 });
+    expect(refillTokens(9, 0, 60_000, 60, 10)).toEqual({ tokens: 10, last: 60_000 });
+    expect(refillTokens(2, 10_000, 4_000, 60, 10)).toEqual({ tokens: 2, last: 10_000 }); // backwards: nothing, last stays
+    expect(bucketCapacity(25)).toBe(10);
+    expect(bucketCapacity(3)).toBe(3);
+  });
+
+  it("TokenBucket.takeUpTo takes at most n whole tokens and giveBack never exceeds capacity", () => {
+    const bucket = new TokenBucket(60, 0, 5);
+    expect(bucket.takeUpTo(8, 0)).toBe(5);
+    expect(bucket.takeUpTo(1, 0)).toBe(0);
+    bucket.giveBack(2, 0);
+    expect(bucket.takeUpTo(5, 0)).toBe(2);
+    bucket.giveBack(99, 0);
+    expect(bucket.available(0)).toBe(5);
+  });
+});
+
+budgetContract("InMemoryUgsBudget", async (perMin, capacity) => new InMemoryUgsBudget(perMin, 0, capacity));
+
+describe("mirrorDueAt (C3 minimum interval)", () => {
+  const now = new Date("2026-10-29T12:00:00Z");
+  const last = (secAgo: number) => new Date(now.getTime() - secAgo * 1000);
+
+  it("is now when there is no earlier write (the first write after a link, a re-link or a move)", () => {
+    expect(mirrorDueAt(now, null, 300)).toEqual(now);
+  });
+
+  it("is last write + interval while that is in the future, else now", () => {
+    expect(mirrorDueAt(now, last(100), 300).getTime()).toBe(now.getTime() + 200_000);
+    expect(mirrorDueAt(now, last(300), 300)).toEqual(now);
+    expect(mirrorDueAt(now, last(4000), 300)).toEqual(now); // long ago: never earlier than now
+  });
+
+  it("is now when the interval is 0, and for an urgent (Trip end) enqueue", () => {
+    expect(mirrorDueAt(now, last(1), 0)).toEqual(now);
+    expect(mirrorDueAt(now, last(1), 300, true)).toEqual(now);
   });
 });

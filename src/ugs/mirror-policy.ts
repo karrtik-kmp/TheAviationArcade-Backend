@@ -52,9 +52,43 @@ export function mirrorSnapshot(player: PlayerRow, now: Date): MirrorSnapshot {
   };
 }
 
+/** Burst size of a bucket: at most 10, so a backlog never spikes past the UGS budget (about 33/min sustained). */
+export function bucketCapacity(perMin: number): number {
+  return Math.min(perMin, 10);
+}
+
+/**
+ * How far past `now` a stored refill time may be before it is treated as a clock error. A forward-jumping clock on
+ * one process (the in-memory budget, or a process-time Postgres budget) stamps a refill time in the future; without
+ * a bound every other caller would see "no time elapsed" until real time catches up, freezing the budget. Within the
+ * bound (ordinary skew between instances) the stored time is kept, so two slightly different clocks mint nothing.
+ */
+export const MAX_CLOCK_LEAD_MS = 5 * 60_000;
+
+/**
+ * The pure refill step shared by the in-memory TokenBucket and the shared Postgres budget row (src/ugs/budget.ts):
+ * `perMin` tokens per minute since `last`, capped at `capacity`. A clock that moves backwards adds nothing and does
+ * not move `last` back, so two instances with slightly different clocks cannot mint tokens. A `last` more than
+ * MAX_CLOCK_LEAD_MS ahead of `now` is clamped to `now` (still minting nothing), so one wrong clock freezes the
+ * budget for at most that long.
+ */
+export function refillTokens(
+  tokens: number,
+  last: number,
+  now: number,
+  perMin: number,
+  capacity: number,
+): { tokens: number; last: number } {
+  const from = last - now > MAX_CLOCK_LEAD_MS ? now : last;
+  const elapsed = Math.max(0, now - from);
+  return { tokens: Math.min(capacity, tokens + (elapsed * perMin) / 60_000), last: Math.max(from, now) };
+}
+
 /**
  * Token bucket: `perMin` tokens per minute, burst of at most min(perMin, 10) so a backlog never spikes past the
- * UGS budget (about 33/min sustained). Time is passed in, so it is deterministic in tests.
+ * UGS budget (about 33/min sustained). Time is passed in, so it is deterministic in tests. Per process: the
+ * cross-instance budget is PostgresUgsBudget; this class is its in-memory twin (InMemoryUgsBudget) and the math is
+ * shared through refillTokens.
  */
 export class TokenBucket {
   private tokens: number;
@@ -64,7 +98,7 @@ export class TokenBucket {
   constructor(
     private readonly perMin: number,
     now: number,
-    capacity: number = Math.min(perMin, 10),
+    capacity: number = bucketCapacity(perMin),
   ) {
     this.capacity = capacity;
     this.tokens = this.capacity;
@@ -78,9 +112,7 @@ export class TokenBucket {
   }
 
   private refill(now: number): void {
-    const elapsed = Math.max(0, now - this.last);
-    this.last = Math.max(this.last, now);
-    this.tokens = Math.min(this.capacity, this.tokens + (elapsed * this.perMin) / 60_000);
+    ({ tokens: this.tokens, last: this.last } = refillTokens(this.tokens, this.last, now, this.perMin, this.capacity));
   }
 
   /** Whole tokens available right now. */
@@ -91,14 +123,29 @@ export class TokenBucket {
 
   /** Take one token if there is one. */
   take(now: number): boolean {
+    return this.takeUpTo(1, now) === 1;
+  }
+
+  /** Take up to `n` whole tokens; returns how many were taken. */
+  takeUpTo(n: number, now: number): number {
     this.refill(now);
-    if (this.tokens < 1) return false;
-    this.tokens -= 1;
-    return true;
+    const granted = Math.max(0, Math.min(Math.floor(n), Math.floor(this.tokens)));
+    this.tokens -= granted;
+    return granted;
+  }
+
+  /** Give back `n` unused tokens (never above capacity). */
+  giveBack(n: number, now: number): void {
+    this.refill(now);
+    this.tokens = Math.min(this.capacity, this.tokens + Math.max(0, n));
   }
 }
 
-/** In-memory sliding window per key (e.g. a principal). Single instance only, like the global rate limiter. */
+/**
+ * In-memory sliding window per key (e.g. a principal). Deliberately per process (D-4 note): the 5 link proofs per hour
+ * per principal is a fairness limit, not the UGS budget; N instances allow at most N x 5. The scarce Player Auth
+ * admin calls themselves are bounded across instances by the shared `player_auth_admin` budget row.
+ */
 export class SlidingWindowLimiter {
   private readonly hits = new Map<string, number[]>();
 
@@ -123,7 +170,7 @@ export class SlidingWindowLimiter {
   }
 }
 
-/** Player Auth admin calls (link proofs) per minute, process-wide: under its 500 / 30 min limit. */
+/** Player Auth admin calls (link proofs) per minute across all instances: under its 500 / 30 min limit. */
 export const PROOF_CALLS_PER_MIN = 12;
 /** Link proofs per principal per hour (calls that reach the Player Auth admin API). */
 export const LINK_PROOFS_PER_HOUR = 5;
@@ -163,4 +210,15 @@ export const CREDENTIALS_PAUSE_MS = 15 * 60_000;
 export function backoffMs(attempts: number): number {
   const exponent = Math.min(Math.max(attempts, 1) - 1, 20);
   return Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** exponent);
+}
+
+/**
+ * When a progress write queued at `now` may run (C3). Exempt, so due at once: the first write after a link (and after
+ * any re-link or link move: `lastMirroredAt` is null then), an `urgent` enqueue (the hook for a write at Trip end,
+ * later), and an interval of 0. Otherwise no earlier than `lastMirroredAt + minIntervalSec`. This is the spec of the
+ * SQL in src/balance/mirror-outbox.ts enqueueMirror (an e2e test pins them together); deletions never use it.
+ */
+export function mirrorDueAt(now: Date, lastMirroredAt: Date | null, minIntervalSec: number, urgent = false): Date {
+  if (urgent || minIntervalSec <= 0 || lastMirroredAt === null) return now;
+  return new Date(Math.max(now.getTime(), lastMirroredAt.getTime() + minIntervalSec * 1000));
 }

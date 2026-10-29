@@ -290,6 +290,12 @@ export const ugsMirrorOutbox = pgTable(
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
+    /**
+     * An urgent enqueue (the "write at Trip end" hook) landed while this row was claimed. due_at is the lease while a
+     * row is claimed, so it cannot carry the request; the worker's "changed while writing" reset reads this flag and
+     * makes the row due now instead of one interval later, and clears it. Release and fail clear it as well.
+     */
+    urgent: boolean("urgent").notNull().default(false),
   },
   (t) => [
     index("ugs_mirror_outbox_due").on(t.dueAt),
@@ -318,6 +324,38 @@ export const ugsMirrorDeletions = pgTable(
     index("ugs_mirror_deletions_due").on(t.dueAt),
     check("ugs_mirror_deletions_last_error_check", sql`${t.lastError} IS NULL OR length(${t.lastError}) <= 80`),
   ],
+);
+
+/**
+ * Per linked player, when the mirror last wrote a Cloud Save copy and for which UGS player (C3, UGS_MIRROR_MIN_INTERVAL_SEC).
+ * Written by the mirror worker after a successful write, read by the enqueue helper to compute `due_at`. It is a
+ * separate table, not a column on ugs_links, because ugs_links is written only by PlayerBalance (balance guard) and
+ * the worker's success path must record this. A row whose `ugs_player_id` differs from the current link (a re-link or
+ * a link move) counts as "never written": the first write after a link is never delayed. Deleted with the player.
+ */
+export const ugsMirrorPace = pgTable("ugs_mirror_pace", {
+  playerId: text("player_id")
+    .primaryKey()
+    .references(() => players.id, { onDelete: "cascade" }),
+  ugsPlayerId: text("ugs_player_id").notNull(),
+  lastMirroredAt: timestamp("last_mirrored_at", { withTimezone: true }).notNull(),
+});
+
+/**
+ * Token buckets shared by every backend instance for the scarce UGS admin APIs (D-4): 'cloud_save_admin' paces
+ * Cloud Save writes and deletions, 'player_auth_admin' paces link proofs. `tokens` is the balance as of
+ * `refilled_at`; rate and burst come from configuration (every instance must use the same values). `paused_until`
+ * is a shared pause: a 429 or refused credentials seen by one instance stops them all. Rows are created on first use.
+ */
+export const ugsBudget = pgTable(
+  "ugs_budget",
+  {
+    name: text("name").primaryKey(),
+    tokens: doublePrecision("tokens").notNull(),
+    refilledAt: timestamp("refilled_at", { withTimezone: true }).notNull(),
+    pausedUntil: timestamp("paused_until", { withTimezone: true }),
+  },
+  (t) => [check("ugs_budget_tokens_check", sql`${t.tokens} >= 0`)],
 );
 
 export type PlayerRow = typeof players.$inferSelect;

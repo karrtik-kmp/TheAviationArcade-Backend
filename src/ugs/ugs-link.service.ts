@@ -8,11 +8,12 @@ import type { AppConfig, UgsConfig } from "../config/config.module.js";
 import { rootCause } from "../database/database-errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import { players, ugsLinks } from "../db/schema.js";
-import { LINK_PROOFS_PER_HOUR, SlidingWindowLimiter, TokenBucket } from "./mirror-policy.js";
+import type { UgsBudget } from "./budget.js";
+import { LINK_PROOFS_PER_HOUR, SlidingWindowLimiter } from "./mirror-policy.js";
 import { UgsClient } from "./ugs-client.js";
 import type { ExternalId } from "./ugs-client.js";
 import { InvalidUgsTokenError, verifyUgsToken } from "./ugs-token.js";
-import { UGS_CLIENT, UGS_KEYS, UGS_PROOF_BUCKET } from "./ugs.tokens.js";
+import { UGS_CLIENT, UGS_KEYS, UGS_PROOF_BUDGET } from "./ugs.tokens.js";
 import type { UgsKeys } from "./ugs.tokens.js";
 
 export type LinkOutcome = { created: boolean; linkedAt: Date };
@@ -25,7 +26,8 @@ export type LinkOutcome = { created: boolean; linkedAt: Date };
  *
  * The admin API is the scarce resource (500 calls / 30 min per project), so a verified token for the UGS player
  * this principal is already linked to answers 200 without calling it; every other attempt is throttled per
- * principal (5 per hour) and by a process-wide token bucket (503 + Retry-After when empty).
+ * principal (5 per hour, in memory: per instance, a fairness limit rather than the UGS budget) and by the shared
+ * `player_auth_admin` budget row (12 per minute, burst 10, across all instances; 503 + Retry-After when empty).
  */
 @Injectable()
 export class UgsLinkService {
@@ -38,7 +40,7 @@ export class UgsLinkService {
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(UGS_CLIENT) private readonly client: UgsClient | null,
     @Inject(UGS_KEYS) private readonly keys: UgsKeys,
-    @Inject(UGS_PROOF_BUCKET) private readonly proofBucket: TokenBucket,
+    @Inject(UGS_PROOF_BUDGET) private readonly proofBudget: UgsBudget,
   ) {}
 
   private uidOf(principal: string): string {
@@ -74,7 +76,7 @@ export class UgsLinkService {
     if (wait > 0) {
       throw new ApiError(429, "rate_limited", "Too many link attempts. Try again later.", { "Retry-After": String(wait) });
     }
-    if (!this.proofBucket.take(now.getTime())) {
+    if ((await this.proofBudget.reserve(1, now.getTime())) < 1) {
       this.logger.warn({ event: "ugs_link_proof_budget_empty" });
       throw new ApiError(503, "service_unavailable", "UGS is busy. Retry shortly.", { "Retry-After": "5" });
     }

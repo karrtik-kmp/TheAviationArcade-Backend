@@ -11,18 +11,18 @@ import {
   DEAD_DELETION_BACKOFF_MS,
   MAX_REJECTED_ATTEMPTS,
   REJECTED_BACKOFF_MS,
-  TokenBucket,
   backoffMs,
 } from "./mirror-policy.js";
+import type { UgsBudget } from "./budget.js";
 import { UgsClient } from "./ugs-client.js";
 import { CopyDeletionQueue, ProgressWriteQueue } from "./mirror-queue.js";
 import type { Claimed, MirrorQueue } from "./mirror-queue.js";
-import { UGS_CLIENT, UGS_MIRROR_QUEUES, UGS_WORKER_OPTIONS } from "./ugs.tokens.js";
+import { UGS_BUDGET, UGS_CLIENT, UGS_MIRROR_QUEUES, UGS_WORKER_OPTIONS } from "./ugs.tokens.js";
 import type { UgsWorkerOptions } from "./ugs.tokens.js";
 
 /** The production queues in priority order: deletions first (privacy-relevant), then writes. */
-export function defaultMirrorQueues(database: DatabaseService, client: UgsClient): readonly MirrorQueue[] {
-  return [new CopyDeletionQueue(database, client), new ProgressWriteQueue(database, client)];
+export function defaultMirrorQueues(database: DatabaseService, client: UgsClient, minIntervalSec = 0): readonly MirrorQueue[] {
+  return [new CopyDeletionQueue(database, client), new ProgressWriteQueue(database, client, minIntervalSec)];
 }
 
 export type TickSummary = {
@@ -49,8 +49,11 @@ export type TickSummary = {
  * matches its own claim, so a worker whose lease expired cannot disturb a row another one has claimed since.
  * Success deletes the row only if its generation (a never-repeating sequence value) is unchanged; otherwise it is
  * due again at once. The worker owns policy only; the two queues (src/ugs/mirror-queue.ts: deletions, then writes)
- * own their tables. Pacing is a token bucket (UGS_MIRROR_MAX_PER_MIN). A 429 pauses the whole worker for
- * Retry-After. Our own credentials refused (401/403) pause it for 15 minutes with one error log. 5xx or network
+ * own their tables. Pacing is the shared Cloud Save budget (src/ugs/budget.ts, one Postgres row all instances draw
+ * from, UGS_MIRROR_MAX_PER_MIN, D-4): a tick with due rows reserves min(due rows, BATCH_MAX) tokens before it claims anything (an idle tick
+ * reserves nothing), claims at most that many rows and refunds the tokens it did not spend. A 429 pauses ALL instances for Retry-After (the pause is in
+ * the shared row). Our own credentials refused (401/403) pause all of them for 15 minutes with one error log. The
+ * per-player minimum interval between writes (C3) is not decided here: a delayed row is simply not due yet. 5xx or network
  * failures back off per row (5 s doubling to 15 min); another 4xx backs off for an hour, is logged once, and the
  * write is dropped after MAX_REJECTED_ATTEMPTS (a deletion is kept and retried daily). Every tick with due rows
  * logs the backlog and the oldest lag. Logs carry counts only: never values, tokens or ids.
@@ -58,9 +61,7 @@ export type TickSummary = {
 @Injectable()
 export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger("UgsMirror");
-  private readonly bucket: TokenBucket | undefined;
   private readonly queues: readonly MirrorQueue[] | undefined;
-  private pausedUntil = 0;
   private timer: NodeJS.Timeout | undefined;
   private inflight: Promise<unknown> | undefined;
   private stopped = false;
@@ -72,11 +73,12 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
     @Inject(UGS_CLIENT) private readonly client: UgsClient | null,
     @Inject(UGS_WORKER_OPTIONS) private readonly options: UgsWorkerOptions,
     @Inject(APP_CONFIG) config: AppConfig,
+    /** Shared Cloud Save budget; null when UGS is not configured. */
+    @Inject(UGS_BUDGET) private readonly budget: UgsBudget | null,
     /** Tests inject in-memory queues; production builds the two Postgres adapters. Priority order: deletions, writes. */
     @Optional() @Inject(UGS_MIRROR_QUEUES) queues?: readonly MirrorQueue[],
   ) {
-    this.bucket = config.ugs ? new TokenBucket(config.ugs.mirrorMaxPerMin, options.clock()) : undefined;
-    this.queues = queues ?? (client ? defaultMirrorQueues(database, client) : undefined);
+    this.queues = queues ?? (client ? defaultMirrorQueues(database, client, config.ugs?.mirrorMinIntervalSec ?? 0) : undefined);
   }
 
   onModuleInit(): void {
@@ -120,80 +122,79 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
       backlog: 0,
       lagMs: 0,
     };
-    if (!this.queues || !this.bucket) return summary;
+    if (!this.queues || !this.budget) return summary;
     const now = new Date(nowMs);
     ({ backlog: summary.backlog, lagMs: summary.lagMs } = await this.backlog(now));
-    if (this.isPaused(nowMs)) return this.finish(summary, nowMs);
-    let budget = Math.min(this.bucket.available(nowMs), BATCH_MAX);
-    if (budget <= 0) return this.finish(summary, nowMs);
+    // Nothing due: no reservation, so an idle tick never touches the shared budget row.
+    if (summary.backlog <= 0) return await this.finish(summary, nowMs);
+    // Reserve before claiming, only what the due rows need: 0 while any instance has paused the shared budget or the
+    // bucket is empty. (Rows that fell due after the count was taken wait for the next tick.)
+    const granted = await this.budget.reserve(Math.min(summary.backlog, BATCH_MAX), nowMs);
+    if (granted <= 0) return await this.finish(summary, nowMs);
+    let spent = 0;
+    try {
+      let room = granted;
+      // Priority order: deletions first (the privacy-relevant ones), then writes.
+      const pending: { queue: MirrorQueue; claimed: Claimed }[] = [];
+      for (const queue of this.queues) {
+        if (room <= 0) break;
+        const rows = await queue.claim(room, now);
+        room -= rows.length;
+        for (const claimed of rows) pending.push({ queue, claimed });
+      }
 
-    // Priority order: deletions first (the privacy-relevant ones), then writes.
-    const pending: { queue: MirrorQueue; claimed: Claimed }[] = [];
-    for (const queue of this.queues) {
-      if (budget <= 0) break;
-      const rows = await queue.claim(budget, now);
-      budget -= rows.length;
-      for (const claimed of rows) pending.push({ queue, claimed });
+      let haltUntil: number | undefined;
+      for (const { queue, claimed } of pending) {
+        if (this.stopped || haltUntil !== undefined) {
+          await queue.release(claimed, new Date(haltUntil ?? nowMs));
+          continue;
+        }
+        spent += 1;
+        const result = await queue.process(claimed, now, this.abort.signal);
+        if (result === "done") {
+          this.rejectedLogged.delete(`${queue.op}:${claimed.key}`);
+          if (queue.op === "delete") summary.deleted += 1;
+          else summary.written += 1;
+        } else if (result.kind === "rate_limited") {
+          summary.rateLimited = true;
+          haltUntil = nowMs + result.retryAfterMs;
+          await this.budget.pause(haltUntil, nowMs);
+          await queue.release(claimed, new Date(haltUntil));
+        } else if (result.kind === "auth_failed") {
+          // Our own credentials: every row would fail the same way, so stop calling UGS and say so once.
+          summary.credentialsRejected = true;
+          haltUntil = nowMs + CREDENTIALS_PAUSE_MS;
+          await this.budget.pause(haltUntil, nowMs);
+          this.logger.error({ event: "ugs_mirror_credentials_rejected", status: result.status, pausedMs: CREDENTIALS_PAUSE_MS });
+          await queue.release(claimed, new Date(haltUntil));
+        } else if (result.kind === "rejected") {
+          summary.rejected += 1;
+          await this.reject(queue, claimed, result.status, nowMs);
+        } else {
+          summary.retried += 1;
+          const delay = Math.min(BACKOFF_CAP_MS, backoffMs(claimed.attempts + 1));
+          await queue.fail(claimed, new Date(nowMs + delay), `http ${result.status}`);
+        }
+      }
+    } finally {
+      // Tokens for rows that were never claimed, or claimed but released without a UGS call, go back to the shared row.
+      // A failing refund must not replace the error that got us here; the tokens are then lost until they refill.
+      if (spent < granted) {
+        await this.budget.refund(granted - spent, nowMs).catch((error: unknown) => {
+          const root = rootCause(error);
+          this.logger.warn(`budget refund failed: ${root instanceof Error ? root.message : "unknown error"}`);
+        });
+      }
     }
-
-    let haltUntil: number | undefined;
-    for (const { queue, claimed } of pending) {
-      if (this.stopped || haltUntil !== undefined) {
-        await queue.release(claimed, new Date(haltUntil ?? nowMs));
-        continue;
-      }
-      if (!this.takeToken(nowMs)) {
-        await queue.release(claimed, now);
-        continue;
-      }
-      const result = await queue.process(claimed, now, this.abort.signal);
-      if (result === "done") {
-        this.rejectedLogged.delete(`${queue.op}:${claimed.key}`);
-        if (queue.op === "delete") summary.deleted += 1;
-        else summary.written += 1;
-      } else if (result.kind === "rate_limited") {
-        summary.rateLimited = true;
-        haltUntil = nowMs + result.retryAfterMs;
-        this.pause(haltUntil);
-        await queue.release(claimed, new Date(haltUntil));
-      } else if (result.kind === "auth_failed") {
-        // Our own credentials: every row would fail the same way, so stop calling UGS and say so once.
-        summary.credentialsRejected = true;
-        haltUntil = nowMs + CREDENTIALS_PAUSE_MS;
-        this.pause(haltUntil);
-        this.logger.error({ event: "ugs_mirror_credentials_rejected", status: result.status, pausedMs: CREDENTIALS_PAUSE_MS });
-        await queue.release(claimed, new Date(haltUntil));
-      } else if (result.kind === "rejected") {
-        summary.rejected += 1;
-        await this.reject(queue, claimed, result.status, nowMs);
-      } else {
-        summary.retried += 1;
-        const delay = Math.min(BACKOFF_CAP_MS, backoffMs(claimed.attempts + 1));
-        await queue.fail(claimed, new Date(nowMs + delay), `http ${result.status}`);
-      }
-    }
-    return this.finish(summary, nowMs);
-  }
-
-  // Budget and pause state. Per process in S6; S7 replaces these three with a shared Postgres budget row
-  // (reserve before claiming, refund unused tokens, a pause visible to every instance).
-  private isPaused(nowMs: number): boolean {
-    return nowMs < this.pausedUntil;
-  }
-
-  private takeToken(nowMs: number): boolean {
-    return this.bucket!.take(nowMs);
-  }
-
-  private pause(untilMs: number): void {
-    this.pausedUntil = untilMs;
+    return await this.finish(summary, nowMs);
   }
 
   /** One JSON line per tick that had due rows or did something, even while throttled or paused. */
-  private finish(summary: TickSummary, nowMs: number): TickSummary {
+  private async finish(summary: TickSummary, nowMs: number): Promise<TickSummary> {
     const active = summary.written + summary.deleted + summary.retried + summary.rejected > 0 || summary.rateLimited;
     if (active || summary.backlog > 0) {
-      this.logger.log({ event: "ugs_mirror_batch", ...summary, paused: this.isPaused(nowMs) });
+      const paused = summary.rateLimited || summary.credentialsRejected || (await this.budget!.isPaused(nowMs));
+      this.logger.log({ event: "ugs_mirror_batch", ...summary, paused });
     }
     return summary;
   }

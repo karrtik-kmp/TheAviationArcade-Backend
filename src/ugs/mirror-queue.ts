@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
+import { rootCause } from "../database/database-errors.js";
 import type { DatabaseService } from "../database/database.module.js";
 import { players, ugsLinks, ugsMirrorDeletions, ugsMirrorOutbox } from "../db/schema.js";
 import { LEASE_MS, mirrorSnapshot } from "./mirror-policy.js";
@@ -90,13 +91,20 @@ async function countDue(database: DatabaseService, table: PgTable, now: Date): P
   return { count: Number(row?.n ?? 0), oldest: row?.oldest ? new Date(row.oldest) : null };
 }
 
-/** Progress writes: one `progress` item per linked player, from ugs_mirror_outbox. */
+/**
+ * Progress writes: one `progress` item per linked player, from ugs_mirror_outbox. With `minIntervalSec` > 0 (C3,
+ * UGS_MIRROR_MIN_INTERVAL_SEC) a successful write records `ugs_mirror_pace.last_mirrored_at`, and a row that was changed
+ * while it was being written is due again as a new enqueue would be (resetChanged): `minIntervalSec` after that write, but
+ * now after a re-link or when an urgent enqueue landed meanwhile. The enqueue side (src/balance) uses the
+ * same record to delay a new row; deletions never wait.
+ */
 export class ProgressWriteQueue implements MirrorQueue {
   readonly op = "write" as const;
 
   constructor(
     private readonly database: DatabaseService,
     private readonly client: UgsClient,
+    private readonly minIntervalSec = 0,
   ) {}
 
   claim(limit: number, now: Date): Promise<Claimed[]> {
@@ -128,29 +136,67 @@ export class ProgressWriteQueue implements MirrorQueue {
     }
     const result = await this.client.writeProgress(row.ugsPlayerId, mirrorSnapshot(row.player, now), signal);
     if (result.kind !== "ok") return result;
+    // Recorded BEFORE the row is removed: a Round that commits in between hits the outbox conflict, and one that
+    // commits after the delete inserts a row that already sees this write time.
+    await this.recordWrite(claimed.key, row.ugsPlayerId, now);
     // Only our own claim, and only if nothing was queued meanwhile (a generation is never reused).
     const removed = await this.database.db
       .delete(ugsMirrorOutbox)
       .where(and(mine, eq(ugsMirrorOutbox.generation, claimed.generation)))
       .returning({ playerId: ugsMirrorOutbox.playerId });
-    if (removed.length === 0) {
-      // Changed while we were writing: due again now. If our claim was lost (lease expired), this matches nothing.
-      await this.database.db
-        .update(ugsMirrorOutbox)
-        .set({ dueAt: now, attempts: 0, lastError: null, claimId: null })
-        .where(mine);
-    }
+    if (removed.length === 0) await this.resetChanged(claimed, now);
     return "done";
   }
 
+  /**
+   * The row changed while we were writing: give it back, due again as a NEW enqueue would be. Due time = `urgent` or no
+   * interval: now; else mirrorDueAt() from the pace row of the player's CURRENT link, which is one interval after the
+   * write we just recorded, or now when there is no matching pace row (the player re-linked or moved while we wrote,
+   * so the UGS player we wrote to is no longer the link and the new one has never been written). A claim that was
+   * lost (lease expired) matches nothing. Clears `urgent`.
+   */
+  private async resetChanged(claimed: Claimed, now: Date): Promise<void> {
+    const nowIso = now.toISOString();
+    await this.database.db.execute(sql`
+      UPDATE ugs_mirror_outbox o
+      SET due_at = CASE
+            WHEN o.urgent OR ${this.minIntervalSec}::int <= 0 THEN ${nowIso}::timestamptz
+            ELSE coalesce(
+              (SELECT GREATEST(${nowIso}::timestamptz, p.last_mirrored_at + ${this.minIntervalSec}::int * interval '1 second')
+               FROM ugs_links l JOIN ugs_mirror_pace p ON p.player_id = l.player_id AND p.ugs_player_id = l.ugs_player_id
+               WHERE l.player_id = o.player_id),
+              ${nowIso}::timestamptz)
+          END,
+          attempts = 0, last_error = NULL, claim_id = NULL, urgent = false
+      WHERE o.player_id = ${claimed.key} AND o.claim_id = ${claimed.claimId}::uuid
+    `);
+  }
+
+  /**
+   * Remember when this UGS player's copy was last written. Only while the player still has this very link: a player
+   * deleted or re-linked while the write was in flight (the FK or the link check) simply records nothing.
+   */
+  private async recordWrite(playerId: string, ugsPlayerId: string, at: Date): Promise<void> {
+    try {
+      await this.database.db.execute(sql`
+        INSERT INTO ugs_mirror_pace (player_id, ugs_player_id, last_mirrored_at)
+        SELECT player_id, ugs_player_id, ${at.toISOString()}::timestamptz
+        FROM ugs_links WHERE player_id = ${playerId} AND ugs_player_id = ${ugsPlayerId}
+        ON CONFLICT (player_id) DO UPDATE SET ugs_player_id = EXCLUDED.ugs_player_id, last_mirrored_at = EXCLUDED.last_mirrored_at
+      `);
+    } catch (error) {
+      if ((rootCause(error) as { code?: unknown } | null)?.code !== "23503") throw error; // the player vanished just now
+    }
+  }
+
   async release(claimed: Claimed, dueAt: Date): Promise<void> {
-    await this.database.db.update(ugsMirrorOutbox).set({ dueAt, claimId: null }).where(this.mine(claimed));
+    await this.database.db.update(ugsMirrorOutbox).set({ dueAt, claimId: null, urgent: false }).where(this.mine(claimed));
   }
 
   async fail(claimed: Claimed, dueAt: Date, label: string): Promise<void> {
     await this.database.db
       .update(ugsMirrorOutbox)
-      .set({ dueAt, attempts: sql`${ugsMirrorOutbox.attempts} + 1`, lastError: label, claimId: null })
+      .set({ dueAt, attempts: sql`${ugsMirrorOutbox.attempts} + 1`, lastError: label, claimId: null, urgent: false })
       .where(this.mine(claimed));
   }
 

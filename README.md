@@ -66,7 +66,8 @@ keys. Players created this way live in your local database only.
 | `BUNNY_STORAGE_ZONE` / `BUNNY_STORAGE_PASSWORD` | Required when `BLOB_STORE=bunny`. Zone `aviation-arcade-website` (shared with the website) and its read-write zone password, used exactly as given (not trimmed); a secret, never logged or echoed in config errors. Any `BUNNY_STORAGE_*` set while `BLOB_STORE` is not `bunny` fails at startup |
 | `BUNNY_STORAGE_REGION` / `BUNNY_STORAGE_PREFIX` | Default `de` (endpoint `https://de-s3.storage.bunnycdn.com`) and `backend/`. The prefix keeps this backend's objects apart from the website's: lowercase `[a-z0-9_-]` segments, ending in `/`, no leading `/` or `..` |
 | `UGS_PROJECT_ID` / `UGS_ENVIRONMENT_ID` / `UGS_SERVICE_ACCOUNT_KEY_ID` / `UGS_SERVICE_ACCOUNT_SECRET` / `UGS_OIDC_PROVIDER` | Optional, **all five or none** (a partial set fails at startup, naming the missing variables only). Turns on the UGS progress mirror and `PUT /v1/me/ugs-link`. The secret is a service account secret, never logged or echoed. `UGS_OIDC_PROVIDER` is the Player Auth OIDC provider id (`oidc-` + up to 15 of `a-z0-9_-`, for example `oidc-firebase`) |
-| `UGS_MIRROR_MAX_PER_MIN` | Default 25, 1–33. Mirror writes per minute (token bucket, burst ≤ 10), per instance for now. UGS allows about 33/min sustained per project and IP. Setting it without the other `UGS_*` variables fails at startup |
+| `UGS_MIRROR_MAX_PER_MIN` | Default 25, 1–33. Cloud Save calls per minute (token bucket, burst ≤ 10), **shared by all instances** through one Postgres row (`ugs_budget`), so run every instance with the same value. UGS allows about 33/min sustained per project and IP. Setting it without the other `UGS_*` variables fails at startup |
+| `UGS_MIRROR_MIN_INTERVAL_SEC` | Default 300, 0–3600; 0 turns the delay off. The least time between two copy writes for one player (C3): Rounds inside the interval coalesce into one write of the latest version. The first write after a link or re-link is not delayed (a Round that was already waiting when the player re-linked becomes due at once), and deletions are never delayed. Optional like `UGS_MIRROR_MAX_PER_MIN`, so it is not one of the five required variables, but setting it without them also fails at startup |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
 The server runs locally only for now; hosting is not chosen.
@@ -166,8 +167,9 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   Firebase uid. Nothing the client names is trusted. One UGS player links to one backend player (409
   `ugs_link_conflict`, unless UGS no longer lists the other sign-in, in which case the link moves); re-linking the
   same UGS player is a 200 no-op answered without calling UGS; pointing at another UGS player replaces the link, bumps `version` once and
-  queues deletion of the old copy. Link proofs are limited to 5 per hour per player and a server-wide 12/min (burst
-  10), because UGS allows only 500 Player Auth admin calls per 30 min per project.
+  queues deletion of the old copy. Link proofs are limited to 5 per hour per player (counted in memory, per instance) and
+  to 12/min across all instances (burst 10, its own `ugs_budget` row), because UGS allows only 500 Player Auth admin calls
+  per 30 min per project.
 - **What is mirrored.** The Cloud Save **Protected** item `progress`: `{ schemaVersion: 2, uid, version, statusPoints,
   miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt }` (see `UgsMirrorProgress` in
   `docs/openapi.yaml`). Field names and values match `GET /v1/me/progress`. `uid` is the owner's Firebase uid (user
@@ -176,9 +178,9 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
 - **How.** Every transaction that changes progress (Round result, hint spend, hint pack, Active Rank change) writes a
   coalesced `ugs_mirror_outbox` row (one per player) in the same transaction, for linked players only. An in-process
   worker claims due rows (`FOR UPDATE SKIP LOCKED`, so several instances are safe), writes them to Cloud Save, and
-  deletes the row only if its own claim is still current. Pacing is `UGS_MIRROR_MAX_PER_MIN` (per instance until the
-  shared budget row, brief S7); a UGS 429 pauses the worker for `Retry-After`; 401/403 (our credentials) pause it for
-  15 min with one error log; 5xx/network failures back off per row (5 s doubling to 15 min); another 4xx is retried
+  deletes the row only if its own claim is still current. Pacing is `UGS_MIRROR_MAX_PER_MIN`, one budget shared by every
+  instance (D-4): a tick with due rows reserves as many tokens as there are due rows (at most 20) before it claims anything and refunds the ones it did not use (an idle tick does not touch the budget); refill and pause time use the database clock, so one instance's wrong clock cannot freeze or inflate the shared budget; a UGS 429 pauses
+  **all** instances for `Retry-After`; 401/403 (our credentials) pause all of them for 15 min with one error log. **The pause is stored in the shared row, so it survives restarts of every instance.** After fixing the credentials, clear it instead of waiting out the 15 minutes: `UPDATE ugs_budget SET paused_until = NULL WHERE name = 'cloud_save_admin'` (the worker picks it up on its next tick); 5xx/network failures back off per row (5 s doubling to 15 min); another 4xx is retried
   and a write is dropped after 3 rejections (the next progress change queues it again), while a deletion keeps
   retrying daily. Every tick with due rows logs backlog and lag (never values). `/v1/health/ready` ignores UGS.
 - **Ordering.** The game orders UGS copies (and a copy against a server answer) by `version`: it goes up by one with every
@@ -186,7 +188,9 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   2026-10-29). `updatedAt` is informational. A UGS re-link to a different UGS player and a stale-holder link move bump it (D-1); a first link enqueues at the current
   version without bumping it, and re-linking the same UGS player changes nothing.
 - **Lag.** Writes are paced to stay inside UGS's admin rate limit (60 req/s and 1,000 per 30 min per project and IP, about
-  33/min sustained), so under load the copy can trail the server by minutes. **The game must prefer the server whenever it
+  33/min sustained, shared by all instances), and a player's copy is written at most once per
+  `UGS_MIRROR_MIN_INTERVAL_SEC` (default 5 minutes; C3), so the copy can trail the server by that interval plus any backlog
+  (the first write after a link or re-link is immediate, also for a Round that was waiting at that moment; a write at Trip end will skip the wait when server Trips exist). **The game must prefer the server whenever it
   is reachable** and use the UGS copy only as a fallback; the mirror is read-only for the game.
 - **Account deletion.** `DELETE /v1/me` removes the link and queued work in its transaction and records the UGS player id
   in `ugs_mirror_deletions`, due only after any in-flight write could have finished (lease + request timeout); the

@@ -33,8 +33,9 @@ const PLAYERS = rawTable("players", "players");
 const MILES = rawTable("miles_ledger", "milesLedger");
 const HINTS = rawTable("hint_ledger", "hintLedger");
 const LINKS = rawTable("ugs_links", "ugsLinks");
+const PACE = rawTable("ugs_mirror_pace", "ugsMirrorPace");
 const QUEUE = `(?:${rawTable("ugs_mirror_outbox", "ugsMirrorOutbox")}|${rawTable("ugs_mirror_deletions", "ugsMirrorDeletions")})`;
-const PROTECTED = id("players|milesLedger|hintLedger|ugsLinks|ugsMirrorOutbox|ugsMirrorDeletions");
+const PROTECTED = id("players|milesLedger|hintLedger|ugsLinks|ugsMirrorOutbox|ugsMirrorDeletions|ugsMirrorPace");
 const NOT_BACKTICK = "[^;`]";
 
 const R = (pattern: string, flags = "") => new RegExp(pattern, flags);
@@ -63,6 +64,12 @@ export const RULES: { name: string; pattern: RegExp }[] = [
     name: "writes players, ugs_links or a ledger directly (raw SQL)",
     pattern: R(String.raw`\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+(?:${PLAYERS}|${LINKS}|${MILES}|${HINTS})`, "i"),
   },
+  {
+    // The pace record decides when the next copy write is due. Only PlayerBalance (src/balance) and the mirror worker's
+    // success path (PACE_WRITERS) may write it; the enqueue side only reads it.
+    name: "writes ugs_mirror_pace",
+    pattern: R(String.raw`\.(?:insert|update|delete)\(\s*${id("ugsMirrorPace")}\s*\)|\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+${PACE}`, "i"),
+  },
   // Any string literal naming the private module: static import, dynamic import(), require(); .js/.ts/no extension.
   { name: "imports the private mirror-outbox module", pattern: /["'][^"'\n]*\bmirror-outbox(?:\.[cm]?[jt]s)?["']/ },
   {
@@ -86,6 +93,12 @@ export const READ_ONLY_IMPORTERS: Record<string, string> = {
     "claims and finishes its own ugs_mirror_outbox / ugs_mirror_deletions rows (update/delete only; inserts are PlayerBalance's). The Postgres MirrorQueue adapters; the worker itself no longer touches the tables",
 };
 
+/** Files outside src/balance that may write ugs_mirror_pace, and why. */
+export const PACE_WRITERS: Record<string, string> = {
+  "src/ugs/mirror-queue.ts": "ProgressWriteQueue records last_mirrored_at after a successful Cloud Save write, only for the current link",
+};
+
+const PACE_RULE = "writes ugs_mirror_pace";
 const IMPORT_RULE = "imports a ledger or mirror-queue table";
 
 /** Names of the rules the given source violates. */
@@ -110,6 +123,7 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
       const allowed = rel.split(sep).join("/") in READ_ONLY_IMPORTERS;
       for (const name of violations(readFileSync(file, "utf8"))) {
         if (allowed && name === IMPORT_RULE) continue;
+        if (rel.split(sep).join("/") in PACE_WRITERS && name === PACE_RULE) continue;
         found.push(`${rel}: ${name}`);
       }
     }
@@ -119,6 +133,12 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
   it("the read-only importer allowlist has no stale entries", () => {
     for (const rel of Object.keys(READ_ONLY_IMPORTERS)) {
       expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(IMPORT_RULE);
+    }
+  });
+
+  it("the pace writer allowlist has no stale entries", () => {
+    for (const rel of Object.keys(PACE_WRITERS)) {
+      expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(PACE_RULE);
     }
   });
 
@@ -261,6 +281,27 @@ describe("balance guard checker catches seeded violations", () => {
     expect(violations('import { players, hintLedger as h } from "../db/schema.js";')).toContain(IMPORT_RULE);
     expect(violations('import type {\n  ugsMirrorOutbox,\n} from "../db/schema.js";')).toContain(IMPORT_RULE);
     expect(violations('import { players, ugsLinks } from "../db/schema.js";')).not.toContain(IMPORT_RULE);
+  });
+
+  it("writes to ugs_mirror_pace: drizzle and raw SQL, any quoting", () => {
+    for (const seeded of [
+      "await db.insert(ugsMirrorPace).values({});",
+      "await db.update(schema.ugsMirrorPace).set({}).where(x);",
+      "await db\n  .delete(\n    ugsMirrorPace\n  );",
+      "await db.execute(sql`INSERT INTO ugs_mirror_pace (player_id) VALUES (1)`);",
+      "await db.execute(sql`insert into ${ugsMirrorPace} (a) values (1)`);",
+      'await db.execute(sql`UPDATE "ugs_mirror_pace" SET last_mirrored_at = now()`);',
+      "await db.execute(sql`DELETE FROM public.ugs_mirror_pace`);",
+    ]) {
+      expect(violations(seeded), seeded).toContain(PACE_RULE);
+    }
+    expect(violations("const t = ugsMirrorPace;")).toContain(ALIAS);
+  });
+
+  it("reading ugs_mirror_pace is fine", () => {
+    expect(violations("await db.select().from(ugsMirrorPace);")).not.toContain(PACE_RULE);
+    expect(violations("await db.execute(sql`SELECT 1 FROM ugs_links l JOIN ugs_mirror_pace p ON p.player_id = l.player_id`);")).not.toContain(PACE_RULE);
+    expect(violations("await db.execute(sql`UPDATE ugs_mirror_outbox SET urgent = false`);")).not.toContain(PACE_RULE);
   });
 
   it("assigning a protected table to a variable", () => {

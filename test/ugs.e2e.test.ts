@@ -13,11 +13,12 @@ import { AuthUnavailableError } from "../src/auth/firebase.js";
 import { APP_CONFIG } from "../src/config/config.module.js";
 import { DatabaseService } from "../src/database/database.module.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
-import { LEASE_MS, TokenBucket } from "../src/ugs/mirror-policy.js";
+import { InMemoryUgsBudget } from "../src/ugs/budget.js";
+import { LEASE_MS } from "../src/ugs/mirror-policy.js";
 import { MirrorWorker } from "../src/ugs/mirror-worker.js";
 import { REQUEST_TIMEOUT_MS } from "../src/ugs/ugs-client.js";
 import { UGS_ISSUER } from "../src/ugs/ugs-token.js";
-import { UGS_CLIENT, UGS_FETCH, UGS_KEYS, UGS_PROOF_BUCKET, UGS_WORKER_OPTIONS } from "../src/ugs/ugs.tokens.js";
+import { UGS_CLIENT, UGS_FETCH, UGS_KEYS, UGS_PROOF_BUDGET, UGS_WORKER_OPTIONS } from "../src/ugs/ugs.tokens.js";
 import { emulatorToken } from "./tokens.js";
 
 // The UGS progress mirror against the real test database. UGS itself is a stub injected as the fetcher and the
@@ -40,7 +41,7 @@ let server: ReturnType<NestExpressApplication["getHttpServer"]>;
 let sql: pg.Pool;
 let worker: MirrorWorker;
 /** Big burst so tests that link many players are not throttled by the process-wide proof budget; one test drains it. */
-const proofBucket = new TokenBucket(12, Date.now(), 1000);
+const proofBucket = new InMemoryUgsBudget(12, Date.now(), 1000);
 const savedEnv = { ...process.env };
 
 /** UGS identity table for the stub: ugsPlayerId -> externalIds. */
@@ -66,6 +67,8 @@ beforeAll(async () => {
     UGS_SERVICE_ACCOUNT_SECRET: "test-secret",
     UGS_OIDC_PROVIDER: PROVIDER,
     UGS_MIRROR_MAX_PER_MIN: "33",
+    // The minimum interval between copy writes (C3) is tested in ugs-pacing.e2e.test.ts; here Rounds re-queue at once.
+    UGS_MIRROR_MIN_INTERVAL_SEC: "0",
   });
   const pair = await generateKeyPair("RS256");
   privateKey = pair.privateKey;
@@ -86,10 +89,10 @@ beforeAll(async () => {
     })
     .overrideProvider(UGS_KEYS)
     .useValue(((header: any, token: any) => keysImpl(header, token)) as JWTVerifyGetKey)
-    .overrideProvider(UGS_PROOF_BUCKET)
+    .overrideProvider(UGS_PROOF_BUDGET)
     .useValue(proofBucket)
     .overrideProvider(UGS_WORKER_OPTIONS)
-    .useValue({ autoStart: false, intervalMs: 1000, clock: () => Date.now() })
+    .useValue({ autoStart: false, intervalMs: 1000, clock: () => Date.now(), budgetTime: "caller" })
     .compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
   configureApp(app);
@@ -113,6 +116,9 @@ beforeEach(async () => {
   proofBucket.reset(Date.now());
   await sql.query("DELETE FROM ugs_mirror_outbox");
   await sql.query("DELETE FROM ugs_mirror_deletions");
+  await sql.query("DELETE FROM ugs_mirror_pace");
+  // The shared Cloud Save budget row: ticks below use clocks far in the future, so start every test from a full, unpaused row.
+  await sql.query("DELETE FROM ugs_budget");
 });
 
 async function ugsToken(sub: string, claims: Record<string, unknown> = { project_id: PROJECT, envId: ENV }, expiresIn = 3600) {
@@ -357,7 +363,7 @@ describe("PUT /v1/me/ugs-link", () => {
 
   it("503 service_unavailable with Retry-After when the process-wide Player Auth budget is empty; no admin call", async () => {
     const player = await newPlayer();
-    while (proofBucket.take(Date.now())) {
+    while ((await proofBucket.reserve(1, Date.now())) > 0) {
       // drain
     }
     identities.set(player.ugsId, [{ externalId: player.uid, providerId: PROVIDER }]);
@@ -673,9 +679,11 @@ describe("mirror worker resilience", () => {
   const deletes = () => calls.filter((c) => c.method === "DELETE");
   const events = (spy: { mock: { calls: unknown[][] } }, event: string) =>
     spy.mock.calls.map((c) => c[0]).filter((m): m is Record<string, unknown> => typeof m === "object" && m !== null && (m as { event?: unknown }).event === event);
-  const fresh = () => new MirrorWorker(app.get(DatabaseService), app.get(UGS_CLIENT), app.get(UGS_WORKER_OPTIONS), app.get(APP_CONFIG));
+  // Own budget (not the shared Postgres row), so the extra worker has its own bucket and pause state.
+  const fresh = () =>
+    new MirrorWorker(app.get(DatabaseService), app.get(UGS_CLIENT), app.get(UGS_WORKER_OPTIONS), app.get(APP_CONFIG), new InMemoryUgsBudget(33, 0));
 
-  // Own worker (own token bucket and pause state): these tests tick far into the future.
+  // Own worker (own budget and pause state): these tests tick far into the future.
   let w: MirrorWorker;
   beforeEach(() => {
     w = fresh();
@@ -828,10 +836,13 @@ describe("account deletion", () => {
     await request(server).delete("/v1/me").set(doomed.auth);
     const waiting = await newPlayer({ link: true });
     const config = app.get(APP_CONFIG);
-    const tight = new MirrorWorker(app.get(DatabaseService), app.get(UGS_CLIENT), app.get(UGS_WORKER_OPTIONS), {
-      ...config,
-      ugs: { ...config.ugs!, mirrorMaxPerMin: 1 },
-    });
+    const tight = new MirrorWorker(
+      app.get(DatabaseService),
+      app.get(UGS_CLIENT),
+      app.get(UGS_WORKER_OPTIONS),
+      { ...config, ugs: { ...config.ugs!, mirrorMaxPerMin: 1 } },
+      new InMemoryUgsBudget(1, 0),
+    );
     calls.length = 0;
     const summary = await tight.tick(nextNow());
     expect(summary).toMatchObject({ deleted: 1, written: 0 });

@@ -57,6 +57,13 @@
       "when": 1793252857446,
       "tag": "0007_ugs_claim_and_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793261188569,
+      "tag": "0008_ugs_budget_and_pace",
+      "breakpoints": true
     }
   ]
 }

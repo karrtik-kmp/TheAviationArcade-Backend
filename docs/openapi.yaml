@@ -200,7 +200,9 @@ paths:
 
         The mirror is one-way and read-only for the game: the server is the only writer and the game must never write
         progress to UGS. The server stays the authority: prefer `GET /v1/me/progress` whenever the server is
-        reachable, and treat the UGS copy as a fallback that can lag the server by seconds to minutes under load.
+        reachable, and treat the UGS copy as a fallback that can lag the server by minutes: the server writes a player's copy
+        at most once per `UGS_MIRROR_MIN_INTERVAL_SEC` (default 5 minutes), except the first write after a link, and under
+        load it is also paced by a budget shared across all server instances.
 
         201 on the first link. 200 when this player was already linked to that UGS player (answered from the
         server's own record with no call to UGS, so calling this on every launch is cheap), or when it was
@@ -1178,7 +1180,7 @@ components:
         NOT an API response: the JSON value of the Cloud Save **Protected** item with key `progress`, written by the
         server for each linked player (the player can read their own, only the server can write). Same field names
         and values as `Progress` where they overlap. It is a fallback: prefer the server when it is reachable, and
-        expect the copy to lag by seconds to minutes. Never write it. Order two copies, or a copy and a server answer,
+        expect the copy to lag by minutes (at most one write per player per UGS_MIRROR_MIN_INTERVAL_SEC, default 5 minutes). Never write it. Order two copies, or a copy and a server answer,
         by `version`: it goes up by one with every visible change, Active Rank changes included, and `Progress.version`
         is the same counter. Use the copy only when `uid` is the signed-in Firebase user: after a UGS link moves, or an
         account is deleted and the UGS player re-linked, the item can still hold the previous owner's copy until the

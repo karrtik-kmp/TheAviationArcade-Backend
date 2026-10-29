@@ -7,6 +7,18 @@ import { mirrorDeletionDueAt } from "../ugs/mirror-policy.js";
 // write to the mirror queue tables happens here, inside a PlayerBalance transaction. The mirror worker only
 // claims, updates and deletes the rows these helpers create.
 
+export type EnqueueOptions = {
+  /** UGS_MIRROR_MIN_INTERVAL_SEC (C3): the least time between two copy writes for one player; 0 = no delay. */
+  minIntervalSec: number;
+  /**
+   * The hook for a write that must not wait (the "write at Trip end" trigger, with server Trips later): the row is due
+   * at `now` even inside the interval. A waiting row (not claimed, not backing off) is pulled forward to `now`; a
+   * claimed row cannot be (due_at is its lease), so the request is kept in `urgent` and the worker's "changed while
+   * writing" reset makes it due now. Nothing sets it yet.
+   */
+  dueNow?: boolean;
+};
+
 /**
  * Queue a progress mirror for a player. Call it inside the same transaction as the change, after the player row
  * is locked and updated, for EVERY write that changes what GET /v1/me/progress or the mirror shows (balances,
@@ -15,16 +27,40 @@ import { mirrorDeletionDueAt } from "../ugs/mirror-policy.js";
  * One row per player (coalescing). `generation` comes from a sequence on insert and on every conflict, so it is
  * unique over the table's whole life: the worker can tell whether anything changed while it was writing, and a row
  * deleted and re-inserted can never repeat a generation a stale worker still holds. On conflict the version keeps
- * its maximum; `due_at` and `claim_id` are left alone so a row that is backing off or claimed stays so.
+ * its maximum and `claim_id` is left alone. A row that is claimed or backing off (attempts > 0) keeps its `due_at`; a
+ * waiting row (unclaimed, attempts 0) takes the EARLIER of its due time and the one this enqueue computes, which
+ * is the same time for a Round on the same link (coalescing: one write at the latest version when the interval is up) but
+ * earlier after a re-link or link move (no pace row for the new UGS player: due now, so the first write after a link is
+ * immediate) and for an urgent enqueue. An urgent enqueue that lands on a claimed row sets `urgent` (see the column).
+ *
+ * C3 interval: a new row is due at GREATEST(now, last_mirrored_at + interval) where last_mirrored_at comes from
+ * ugs_mirror_pace for the CURRENT link. No pace row for this UGS player (never written since the link, a re-link, a
+ * link move) means due now, so the first write after a link is immediate. The same rule is mirrorDueAt() in
+ * src/ugs/mirror-policy.ts, which tests pin to this SQL.
  */
-export async function enqueueMirror(tx: Tx, playerId: string, version: number, now: Date): Promise<void> {
+export async function enqueueMirror(tx: Tx, playerId: string, version: number, now: Date, options: EnqueueOptions): Promise<void> {
+  const nowIso = now.toISOString();
+  const urgent = options.dueNow === true;
   await tx.execute(sql`
     INSERT INTO ugs_mirror_outbox (player_id, version, due_at, attempts, last_error)
-    SELECT ${playerId}, ${version}, ${now.toISOString()}::timestamptz, 0, NULL
-    WHERE EXISTS (SELECT 1 FROM ugs_links WHERE player_id = ${playerId})
+    SELECT l.player_id, ${version},
+      CASE WHEN ${urgent}::boolean OR ${options.minIntervalSec}::int <= 0 OR pace.last_mirrored_at IS NULL
+        THEN ${nowIso}::timestamptz
+        ELSE GREATEST(${nowIso}::timestamptz, pace.last_mirrored_at + ${options.minIntervalSec}::int * interval '1 second')
+      END,
+      0, NULL
+    FROM ugs_links l
+    LEFT JOIN ugs_mirror_pace pace ON pace.player_id = l.player_id AND pace.ugs_player_id = l.ugs_player_id
+    WHERE l.player_id = ${playerId}
     ON CONFLICT (player_id) DO UPDATE
       SET version = GREATEST(ugs_mirror_outbox.version, EXCLUDED.version),
-          generation = nextval('ugs_mirror_generation_seq')
+          generation = nextval('ugs_mirror_generation_seq'),
+          due_at = CASE
+            WHEN ugs_mirror_outbox.claim_id IS NULL AND ugs_mirror_outbox.attempts = 0
+              THEN LEAST(ugs_mirror_outbox.due_at, EXCLUDED.due_at)
+            ELSE ugs_mirror_outbox.due_at
+          END,
+          urgent = ugs_mirror_outbox.urgent OR (${urgent}::boolean AND ugs_mirror_outbox.claim_id IS NOT NULL)
   `);
 }
 

@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config/config.module.js";
+import { InMemoryUgsBudget } from "../src/ugs/budget.js";
 import {
   BACKOFF_CAP_MS,
   CREDENTIALS_PAUSE_MS,
@@ -24,13 +25,15 @@ const T0 = Date.UTC(2026, 9, 29, 12, 0, 0);
 const at = (ms: number) => new Date(ms);
 const OPTIONS: UgsWorkerOptions = { autoStart: false, intervalMs: 1000, clock: () => T0 };
 
-function build(perMin = 600) {
+const CONFIG = { ugs: { mirrorMaxPerMin: 600 } } as unknown as AppConfig;
+
+/** A worker over in-memory queues. Pass `budget` to share one between workers (the production shape: one Postgres row). */
+function build(perMin = 600, budget: InMemoryUgsBudget = new InMemoryUgsBudget(perMin, T0), minIntervalSec = 0) {
   const deletions = new InMemoryMirrorQueue("delete");
-  const writes = new InMemoryMirrorQueue("write");
-  const config = { ugs: { mirrorMaxPerMin: perMin } } as unknown as AppConfig;
+  const writes = new InMemoryMirrorQueue("write", minIntervalSec);
   // The client is never called (the queues own the UGS call); only its presence switches the worker on.
-  const worker = new MirrorWorker(null as never, {} as never, OPTIONS, config, [deletions, writes]);
-  return { worker, deletions, writes };
+  const worker = new MirrorWorker(null as never, {} as never, OPTIONS, CONFIG, budget, [deletions, writes]);
+  return { worker, deletions, writes, budget };
 }
 
 function events(spy: { mock: { calls: unknown[][] } }, event: string): Record<string, unknown>[] {
@@ -129,7 +132,7 @@ describe("production queue order", () => {
 
 describe("MirrorWorker loop over MirrorQueue", () => {
   it("does nothing without queues (UGS not configured)", async () => {
-    const worker = new MirrorWorker(null as never, null, OPTIONS, { ugs: undefined } as unknown as AppConfig);
+    const worker = new MirrorWorker(null as never, null, OPTIONS, { ugs: undefined } as unknown as AppConfig, null);
     expect(await worker.tick(T0)).toMatchObject({ written: 0, deleted: 0, backlog: 0 });
   });
 
@@ -314,5 +317,212 @@ describe("MirrorWorker loop over MirrorQueue", () => {
     await worker.onModuleDestroy();
     expect(seen!.aborted).toBe(true);
     await running;
+  });
+});
+
+describe("MirrorWorker over a shared budget (D-4)", () => {
+  it("two workers on one budget never exceed it together; on separate budgets they would (control)", async () => {
+    const shared = new InMemoryUgsBudget(33, T0); // burst 10
+    const a = build(33, shared);
+    const b = build(33, shared);
+    for (const w of [a, b]) for (let i = 0; i < 15; i += 1) w.writes.add(`p${i}`, at(T0 - 1));
+    const [x, y] = await Promise.all([a.worker.tick(T0), b.worker.tick(T0)]);
+    expect(x.written + y.written).toBe(10);
+
+    // The same scenario with one bucket per worker (the old per-process pacing) writes 20: the shared budget is what holds.
+    const c = build(33, new InMemoryUgsBudget(33, T0));
+    const d = build(33, new InMemoryUgsBudget(33, T0));
+    for (const w of [c, d]) for (let i = 0; i < 15; i += 1) w.writes.add(`p${i}`, at(T0 - 1));
+    const [m, n] = await Promise.all([c.worker.tick(T0), d.worker.tick(T0)]);
+    expect(m.written + n.written).toBe(20);
+  });
+
+  it("refunds the tokens it did not use: three due rows spend three tokens, the rest stay for another instance", async () => {
+    const shared = new InMemoryUgsBudget(33, T0);
+    const a = build(33, shared);
+    for (const k of ["a", "b", "c"]) a.writes.add(k, at(T0 - 1));
+    expect((await a.worker.tick(T0)).written).toBe(3);
+    expect(await shared.reserve(100, T0)).toBe(7);
+  });
+
+  it("refunds the tokens of rows released after a 429 (only the call that was made is spent)", async () => {
+    const shared = new InMemoryUgsBudget(33, T0);
+    const a = build(33, shared);
+    for (const k of ["a", "b", "c", "d"]) a.writes.add(k, at(T0 - 1));
+    a.writes.outcome = () => ({ kind: "rate_limited", retryAfterMs: 5_000 });
+    await a.worker.tick(T0);
+    expect(a.writes.processed).toHaveLength(1);
+    expect(await shared.reserve(100, T0 + 5_000)).toBe(10); // 1 spent, 9 refunded, plus refill back to the cap
+  });
+
+  it("a 429 seen by worker A pauses worker B; so does refused credentials (401)", async () => {
+    const shared = new InMemoryUgsBudget(33, T0);
+    const a = build(33, shared);
+    const b = build(33, shared);
+    a.writes.add("a", at(T0 - 1));
+    b.writes.add("b", at(T0 - 1));
+    a.writes.outcome = () => ({ kind: "rate_limited", retryAfterMs: 30_000 });
+    expect(await a.worker.tick(T0)).toMatchObject({ rateLimited: true });
+    const blocked = await b.worker.tick(T0 + 1_000);
+    expect(blocked).toMatchObject({ written: 0, backlog: 1 });
+    expect(b.writes.processed).toEqual([]); // not even claimed
+    expect(events(log, "ugs_mirror_batch").at(-1)).toMatchObject({ paused: true });
+    expect(await b.worker.tick(T0 + 30_000)).toMatchObject({ written: 1 });
+
+    a.writes.add("a2", at(T0));
+    a.writes.outcome = () => ({ kind: "auth_failed", status: 401 });
+    expect(await a.worker.tick(T0 + 40_000)).toMatchObject({ credentialsRejected: true });
+    b.writes.add("b2", at(T0));
+    expect(await b.worker.tick(T0 + 41_000)).toMatchObject({ written: 0 });
+    expect(await b.worker.tick(T0 + 40_000 + CREDENTIALS_PAUSE_MS)).toMatchObject({ written: 1 });
+  });
+
+  it("an idle tick never touches the budget; a tick reserves only what is due", async () => {
+    const real = new InMemoryUgsBudget(33, T0);
+    const reserved: number[] = [];
+    const budget = Object.create(real) as InMemoryUgsBudget;
+    budget.reserve = async (n, now) => {
+      reserved.push(n);
+      return real.reserve(n, now);
+    };
+    const a = build(33, budget);
+    expect(await a.worker.tick(T0)).toMatchObject({ written: 0, backlog: 0 });
+    expect(reserved).toEqual([]);
+    for (const k of ["a", "b", "c"]) a.writes.add(k, at(T0 - 1));
+    await a.worker.tick(T0);
+    expect(reserved).toEqual([3]);
+    for (let i = 0; i < 30; i += 1) a.writes.add(`m${i}`, at(T0 - 1));
+    await a.worker.tick(T0 + 60_000);
+    expect(reserved).toEqual([3, 20]); // capped at BATCH_MAX
+  });
+
+  it("a refund that throws does not mask the error that ended the tick", async () => {
+    const budget = new InMemoryUgsBudget(33, T0);
+    budget.refund = async () => {
+      throw new Error("refund failed");
+    };
+    const a = build(33, budget);
+    a.writes.add("a", at(T0 - 1));
+    a.writes.add("b", at(T0 - 1));
+    a.writes.process = async () => {
+      throw new Error("database exploded");
+    };
+    await expect(a.worker.tick(T0)).rejects.toThrow("database exploded");
+  });
+
+  it("does nothing when UGS has a client but no budget row source (budget null)", async () => {
+    const worker = new MirrorWorker(null as never, {} as never, OPTIONS, CONFIG, null, [new InMemoryMirrorQueue("write")]);
+    expect(await worker.tick(T0)).toMatchObject({ written: 0, backlog: 0 });
+  });
+});
+
+describe("minimum interval between copy writes (C3), queue contract", () => {
+  const INTERVAL = 300;
+
+  it("the first write is immediate; a second change inside the interval waits and is written once at the later version", async () => {
+    const { worker, writes } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0)); // first write after a link: no earlier write
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0);
+    expect(await worker.tick(T0)).toMatchObject({ written: 1 });
+
+    writes.enqueue("p", at(T0 + 10_000)); // Round 1 inside the interval
+    writes.enqueue("p", at(T0 + 20_000)); // Round 2 coalesces into the waiting row
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + INTERVAL * 1000);
+    expect(await worker.tick(T0 + 299_000)).toMatchObject({ written: 0, backlog: 0 });
+    expect(await worker.tick(T0 + INTERVAL * 1000)).toMatchObject({ written: 1 });
+    expect(writes.processed).toEqual(["p", "p"]); // two writes in total for three changes
+  });
+
+  it("a change that lands while the write is in flight is due one interval after that write, not at once", async () => {
+    const { worker, writes } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0));
+    writes.outcome = async () => {
+      writes.enqueue("p", at(T0)); // a Round commits mid-write
+      return "done" as const;
+    };
+    await worker.tick(T0);
+    expect(writes.rows.get("p")).toMatchObject({ claimId: null, attempts: 0 });
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + INTERVAL * 1000);
+    writes.outcome = () => "done";
+    expect(await worker.tick(T0 + 1_000)).toMatchObject({ written: 0 });
+    expect(await worker.tick(T0 + INTERVAL * 1000)).toMatchObject({ written: 1 });
+  });
+
+  it("dueNow (the Trip end hook) is due at once and pulls a waiting row forward, but not a claimed or backing-off one", async () => {
+    const { writes } = build(600, undefined, INTERVAL);
+    writes.setPace("p", at(T0)); // written at T0
+    writes.enqueue("p", at(T0 + 1_000));
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + INTERVAL * 1000);
+    writes.enqueue("p", at(T0 + 2_000), true);
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + 2_000);
+
+    writes.rows.get("p")!.dueAt = at(T0 + INTERVAL * 1000);
+    writes.rows.get("p")!.attempts = 2; // backing off after a failure: left alone
+    writes.enqueue("p", at(T0 + 3_000), true);
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + INTERVAL * 1000);
+  });
+
+  it("a re-link while the row waits makes it due now (the first write after a link is immediate)", async () => {
+    const { worker, writes } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0));
+    await worker.tick(T0);
+    writes.enqueue("p", at(T0 + 1_000)); // a Round inside the interval: waits
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + INTERVAL * 1000);
+    writes.relink("p"); // PlayerBalance.linkUgs: the new UGS player has no pace row ...
+    writes.enqueue("p", at(T0 + 2_000)); // ... and enqueues
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0 + 2_000);
+    expect(await worker.tick(T0 + 2_000)).toMatchObject({ written: 1 });
+    expect(writes.pace.get("p")!.ugsPlayerId).toBe(writes.linkOf("p"));
+  });
+
+  it("a re-link while the write is in flight: the reset is due now, not one interval later", async () => {
+    const { worker, writes } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0));
+    writes.outcome = async () => {
+      writes.relink("p"); // the player linked another UGS player while the old one was being written
+      writes.enqueue("p", at(T0)); // the link write enqueues; the row is claimed, so it only gets a new generation
+      return "done" as const;
+    };
+    await worker.tick(T0);
+    expect(writes.pace.has("p")).toBe(false); // the write went to a UGS player that is no longer the link: nothing recorded
+    expect(writes.rows.get("p")).toMatchObject({ claimId: null, attempts: 0 });
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0);
+    writes.outcome = () => "done";
+    expect(await worker.tick(T0 + 1_000)).toMatchObject({ written: 1 });
+  });
+
+  it("an urgent enqueue that lands while the row is claimed is kept and honoured by the reset", async () => {
+    const { worker, writes } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0));
+    writes.outcome = async () => {
+      writes.enqueue("p", at(T0 + 500), true); // Trip end while the write is in flight
+      expect(writes.rows.get("p")!.urgent).toBe(true);
+      return "done" as const;
+    };
+    await worker.tick(T0);
+    expect(writes.rows.get("p")).toMatchObject({ claimId: null, attempts: 0, urgent: false });
+    expect(writes.rows.get("p")!.dueAt.getTime()).toBe(T0); // now, not T0 + interval
+    writes.outcome = () => "done";
+    expect(await worker.tick(T0 + 1_000)).toMatchObject({ written: 1 });
+  });
+
+  it("an urgent request does not leak: released or failed rows drop the flag, a later plain change waits the interval", async () => {
+    const { worker, writes } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0));
+    writes.outcome = async () => {
+      writes.enqueue("p", at(T0), true);
+      return { kind: "transient", status: 500 } as const;
+    };
+    await worker.tick(T0);
+    expect(writes.rows.get("p")).toMatchObject({ urgent: false, attempts: 1 });
+  });
+
+  it("a deletion is never delayed by the interval", async () => {
+    const { worker, writes, deletions } = build(600, undefined, INTERVAL);
+    writes.enqueue("p", at(T0));
+    await worker.tick(T0);
+    writes.enqueue("p", at(T0 + 1_000)); // waiting out the interval
+    deletions.add("ugs-p", at(T0 + 2_000));
+    expect(await worker.tick(T0 + 2_000)).toMatchObject({ deleted: 1, written: 0 });
   });
 });

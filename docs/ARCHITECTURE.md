@@ -220,7 +220,8 @@ linked to another principal is 409 `ugs_link_conflict`, unless the same proof sh
 uid, in which case the link moves (both players locked in id order; the caller's `version` is bumped, the old holder's
 is not). A token for the UGS
 player already on record is answered from `ugs_links` without a Player Auth call. Proof calls are limited to 5 per hour per
-principal and a process-wide sliding window of 12/min (burst 10) under the 500 per 30 min Player Auth admin limit.
+principal (in memory, per instance) and by the shared `player_auth_admin` budget row (12/min, burst 10, across all instances) under the
+500 per 30 min Player Auth admin limit.
 
 **Outbox and worker.** `ugs_mirror_outbox` holds at most one row per linked player (`version` = highest seen, `generation` =
 count of enqueues, `due_at`, `attempts`, short `last_error`). `PlayerBalance.update` calls the helper
@@ -237,14 +238,45 @@ claims due rows in a single `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)
 of batch size × request timeout + 60 s (260 s), so instances never share a row and no network call is made while a row or
 player lock is held. It reads the current player,
 writes the Protected key `progress` (no `writeLock`: Postgres is the only writer and `version`/`updatedAt` in the value order
-updates), through a token bucket (`UGS_MIRROR_MAX_PER_MIN`, burst ≤ 10; per process — the shared Postgres budget row is
-brief S7, decided 2026-10-29 D-4). A 429 pauses the whole worker for `Retry-After`; 401/403 (our credentials) pause it for
+updates), paced by the shared Cloud Save budget (`UGS_MIRROR_MAX_PER_MIN`, burst ≤ 10, one Postgres row for all instances;
+see "Budget and interval" below). A 429 pauses ALL instances for `Retry-After`; 401/403 (our credentials) pause all of them for
 15 min with one error log; 5xx or network errors back off per row (5 s doubling, cap 15 min); another 4xx is logged once and a
 write is dropped after 3 rejections (the next change re-queues it), a deletion retries daily. Each tick with due rows logs
 backlog and lag. On shutdown it stops before the pool closes and aborts in-flight requests. Account deletion and re-link
 record the old UGS player id in `ugs_mirror_deletions` in the same transaction, due at lease + request timeout so a write
 already in flight cannot land after it; the worker deletes the Cloud Save item (retried). Known gap: a write in flight for a
 holder at the moment its link moves can still land on that UGS player; the new holder's next write overwrites it.
+
+**Budget and interval (D-4, C3; migration 0008).** Cloud Save writes and deletions share one token bucket across ALL instances:
+the row `cloud_save_admin` of `ugs_budget` (`tokens` as of `refilled_at`, `paused_until`; rate `UGS_MIRROR_MAX_PER_MIN`, burst
+min(rate, 10), both from configuration, so every instance must run the same value). `PostgresUgsBudget.reserve` runs in one short
+transaction (`SELECT ... FOR UPDATE` on the row, the pure refill step shared with the in-memory bucket, `UPDATE`; no network call
+while it is held). A tick with due rows reserves min(due rows, 20) tokens BEFORE claiming (an idle tick reserves nothing and does not touch the row),
+claims at most that many rows (deletions first), and refunds every token it did not spend (unclaimed rows, rows released after a pause). A 429 or refused credentials write `paused_until`
+(never shortened), which stops every instance at its next reserve. **A pause lives in the row, so it survives a restart of every
+instance; to resume early after fixing credentials run `UPDATE ugs_budget SET paused_until = NULL WHERE name = 'cloud_save_admin'`
+(the next tick reserves again).** Clocks: `PostgresUgsBudget` does all refill and pause arithmetic on the DATABASE clock
+(`clock_timestamp()`; `pause` keeps only the duration the worker computed), so one instance's wrong clock can neither freeze nor
+inflate the budget; the `nowMs` argument matters only to the in-memory twin and to tests (`budgetTime: "caller"`). Defence in
+depth: a stored `refilled_at` more than 5 minutes ahead of now is clamped to now, and a clock that moves backwards mints nothing. The in-memory twin (`InMemoryUgsBudget`) is for unit tests. Guarantee: the sum of grants over all
+instances is at most burst + rate x elapsed. Link proofs have their own row, `player_auth_admin` (12/min, burst 10); the 5 proofs
+per hour per principal stays in memory, per instance (a fairness limit, not the UGS budget). If the table is unreachable the tick
+fails and is logged; nothing is written to UGS without a reservation.
+
+C3: a copy write for one player waits at least `UGS_MIRROR_MIN_INTERVAL_SEC` (default 300, 0 disables) after the previous one.
+The worker records `ugs_mirror_pace(player_id, ugs_player_id, last_mirrored_at)` after each successful write (a table of its own,
+because `ugs_links` is written only by `PlayerBalance`). `enqueueMirror` inserts a new row with `due_at = GREATEST(now,
+last_mirrored_at + interval)` where the pace row must name the CURRENT link. A row that already exists keeps its `due_at` if it is
+claimed or backing off; a waiting row takes `LEAST(its due_at, the new one)`: the same time for a Round on the same link (it
+coalesces and writes the latest version once), but now after a re-link or link move. A change that lands while the write is in
+flight re-queues the row with the same rule from the pace row of the current link (one interval after that write, or now when the
+player re-linked meanwhile). An urgent enqueue on a claimed row is kept in `ugs_mirror_outbox.urgent` (a column rather than
+moving `due_at`, which is the lease while claimed, so the lease keeps protecting the in-flight write); the reset honours and
+clears it, and release/fail clear it too. Exempt:
+the first write after a link, a re-link to another UGS player and a link move (the pace row names the UGS player it was
+written for, so a different current link means "never written"), and deletions, which never use it. A waiting row is not
+"due", so it does not show as backlog or lag. Hook for a write at Trip end (server Trips come later, not built): `PlayerBalance`
+`Step.mirrorNow` (honoured only when the step enqueues: a change, a changed profile or `republish`) / `enqueueMirror({ dueNow })` makes the row due now, pulls a waiting row forward, and is remembered on a claimed row (backing-off rows keep their backoff).
 
 **UGS to backend (unchanged, not built).** Triggers webhook action authenticated with `{{ hmac_sha256 "SECRET" }}` over the
 rendered body (or the `{{ jwt }}` header), idempotent on `X-Unity-Event-ID`; public URL only.

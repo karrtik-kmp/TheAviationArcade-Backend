@@ -54,6 +54,8 @@ export type UgsConfig = {
   oidcProvider: string;
   /** Mirror writes per minute (token bucket). UGS admin APIs allow about 33/min sustained per project and IP. */
   mirrorMaxPerMin: number;
+  /** Least seconds between two Cloud Save copy writes for one player (C3); 0 disables the delay. Deletions are never delayed. */
+  mirrorMinIntervalSec: number;
 };
 
 export type BlobStoreKind = "none" | "memory" | "bunny";
@@ -160,13 +162,14 @@ const envSchema = z.object({
   /** Defaults (de, backend/) are applied only for BLOB_STORE=bunny, so "was it set at all" stays visible. */
   BUNNY_STORAGE_REGION: z.enum(BUNNY_REGIONS).optional(),
   BUNNY_STORAGE_PREFIX: z.string().trim().optional(),
-  /** UGS progress mirror: all-or-none (UGS_MIRROR_MAX_PER_MIN is optional with a default). */
+  /** UGS progress mirror: all-or-none (UGS_MIRROR_MAX_PER_MIN and UGS_MIRROR_MIN_INTERVAL_SEC are optional with defaults). */
   UGS_PROJECT_ID: optionalText,
   UGS_ENVIRONMENT_ID: optionalText,
   UGS_SERVICE_ACCOUNT_KEY_ID: optionalText,
   UGS_SERVICE_ACCOUNT_SECRET: optionalText,
   UGS_OIDC_PROVIDER: optionalText,
   UGS_MIRROR_MAX_PER_MIN: optionalInt(1, 33),
+  UGS_MIRROR_MIN_INTERVAL_SEC: optionalInt(0, 3600),
 });
 
 /** Parse the environment once. Fails fast, naming the bad variables but never their values. */
@@ -202,6 +205,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_SERVICE_ACCOUNT_SECRET,
     UGS_OIDC_PROVIDER,
     UGS_MIRROR_MAX_PER_MIN,
+    UGS_MIRROR_MIN_INTERVAL_SEC,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -282,6 +286,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_SERVICE_ACCOUNT_SECRET,
     UGS_OIDC_PROVIDER,
     UGS_MIRROR_MAX_PER_MIN,
+    UGS_MIRROR_MIN_INTERVAL_SEC,
   });
   return {
     appEnv: APP_ENV,
@@ -315,10 +320,13 @@ const UGS_REQUIRED = [
 ] as const;
 
 /** All-or-none. Errors name variables only, never values (the secret must not appear anywhere). */
-function parseUgsConfig(env: Partial<Record<(typeof UGS_REQUIRED)[number], string>> & { UGS_MIRROR_MAX_PER_MIN?: number }): UgsConfig | undefined {
-  // UGS_MIRROR_MAX_PER_MIN alone counts as "given": a stray tuning knob must not silently leave the mirror off.
+function parseUgsConfig(
+  env: Partial<Record<(typeof UGS_REQUIRED)[number], string>> & { UGS_MIRROR_MAX_PER_MIN?: number; UGS_MIRROR_MIN_INTERVAL_SEC?: number },
+): UgsConfig | undefined {
+  // The two tuning knobs are optional (defaults 25/min and 300 s) and not required to enable the mirror, but setting
+  // either one alone counts as "given": a stray knob must not silently leave the mirror off.
   const given = UGS_REQUIRED.filter((name) => env[name] !== undefined);
-  if (given.length === 0 && env.UGS_MIRROR_MAX_PER_MIN === undefined) return undefined;
+  if (given.length === 0 && env.UGS_MIRROR_MAX_PER_MIN === undefined && env.UGS_MIRROR_MIN_INTERVAL_SEC === undefined) return undefined;
   const missing = UGS_REQUIRED.filter((name) => env[name] === undefined);
   if (missing.length > 0) {
     throw new Error(`Invalid environment configuration: ${missing.join(", ")} required when any UGS_* setting is given`);
@@ -337,6 +345,7 @@ function parseUgsConfig(env: Partial<Record<(typeof UGS_REQUIRED)[number], strin
     serviceAccountSecret: env.UGS_SERVICE_ACCOUNT_SECRET ?? "",
     oidcProvider: env.UGS_OIDC_PROVIDER ?? "",
     mirrorMaxPerMin: env.UGS_MIRROR_MAX_PER_MIN ?? 25,
+    mirrorMinIntervalSec: env.UGS_MIRROR_MIN_INTERVAL_SEC ?? 300,
   };
 }
 
