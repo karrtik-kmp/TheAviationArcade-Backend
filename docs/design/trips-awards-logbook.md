@@ -481,7 +481,8 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 | T5 | Logbook | S | `GET /v1/me/logbook` | e2e against a seeded history; schema parity |
 | T6 | Admin edit and publish (C12) | M | staff routes, version checks, publish, audit; after U7/U10 | e2e: an edit reaches the manifest; Unity pulls it (cross-repo gate in ADR-0008 S2) |
 
-Then the dealer slices B1–B5 (brief), then server answer checks with releases (§10). Each slice: focused commit,
+Order (user, 2026-10-29): interleaved with the dealer slices from the brief, one at a time: T2 → B1 → B2 → T3 → B3 →
+B4 → B5 → T4 → T5 → T6, then server answer checks and dealing with releases (§10). Each slice: focused commit,
 independent review for T2–T4 and T6, verification recorded in `docs/TASKS.md`.
 
 ### T2 as built (2026-10-29)

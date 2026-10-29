@@ -14,6 +14,7 @@ export default defineConfig({
       "test/blob-store.test.ts",
       "test/xlsx.test.ts",
       "test/military-mapping.test.ts",
+      "test/catalog.test.ts",
       "test/import-plan.test.ts",
       "test/ugs.test.ts",
       "test/mirror-worker.test.ts",

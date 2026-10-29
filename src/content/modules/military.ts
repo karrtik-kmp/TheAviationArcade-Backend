@@ -1,7 +1,8 @@
 import type { ContentModuleMapping, ImportIssue, ParsedRow, ParsedSheet, StoredItem } from "../content-module.js";
 import { SpreadsheetError } from "../xlsx.js";
 import type { Cell, SheetRow } from "../xlsx.js";
-import type { Rank } from "../../rules/ranks.js";
+import { isRank } from "../../rules/ranks.js";
+import { rankDisplayName, rankFromDisplayName } from "../../rules/catalog.js";
 
 /**
  * Military Aircraft Identifier (working title) from the client's sheet "Military Airplane Identifier v1.xlsx":
@@ -11,15 +12,6 @@ import type { Rank } from "../../rules/ranks.js";
  */
 
 export const MILITARY_ID = /^mil-a[1-9]\d{0,5}$/;
-
-/** The client's Level wording and the rank each means. Export writes the first wording back. */
-const LEVELS: readonly (readonly [string, Rank])[] = [
-  ["Trainee", "trainee"],
-  ["First Officer", "first-officer"],
-  ["Captain", "captain"],
-  ["Check Airman", "check-airman"],
-  ["Chief Pilot", "chief-pilot"],
-];
 
 const REQUIRED_HEADERS = ["level", "correct answer", "wrong answer 1", "wrong answer 2", "wrong answer 3", "file", "photographer"] as const;
 const HEADER_SCAN_ROWS = 10;
@@ -107,7 +99,7 @@ function parse(rows: SheetRow[]): ParsedSheet {
     }
 
     const problems: string[] = [];
-    const rank = LEVELS.find(([wording]) => normalise(wording) === normalise(level))?.[1];
+    const rank = rankFromDisplayName(level);
     if (!rank) problems.push(level === "" ? "Level is missing." : "Level is not one of Trainee, First Officer, Captain, Check Airman, Chief Pilot.");
     if (answer === "") problems.push("Correct Answer is missing.");
     wrong.forEach((value, i) => {
@@ -159,7 +151,7 @@ function exportRows(items: readonly StoredItem[]): (string | number)[][] {
     out.push([
       item.id,
       item.version,
-      LEVELS.find(([, rank]) => rank === item.rank)?.[0] ?? item.rank,
+      isRank(item.rank) ? rankDisplayName(item.rank) : item.rank,
       data.answer,
       data.wrong[0] ?? "",
       data.wrong[1] ?? "",

@@ -164,6 +164,10 @@ verified email for ranked play).
   brief `../docs/briefs/backend.md` S1–S7 (the per-player UGS write interval folds into S6/S7), then the Trips,
   Field Award, Logbook and admin-update delivery contracts on top of PlayerBalance, then the catalog/dealer
   slices B1–B5 (`../docs/briefs/cross-repo-catalog-dealer.md`). S8 waits for Phase 4.
+- 2026-10-29 (user), superseding the strict "then B1–B5" above: interleave, one slice at a time, each reviewed and
+  committed before the next: T2 → B1 → B2 → T3 → B3 → B4 → B5 → T4 → T5 → T6, then releases and server dealing.
+  B1–B2 go first because they unblock the website and Unity consumers. B5 comes after T2, which changes
+  `content.service.ts`. The B slices follow the brief's "Refresh 2026-10-29" section.
 - 2026-10-29 (user) D-1: an Active Rank change and a UGS re-link bump `players.version`, and `GET /v1/me/progress`
   exposes `version` (needed for C3). D-4: cross-instance UGS budget is a shared Postgres row (S7); link-proof
   calls get their own row. D-5: the module catalog originates in Unity `ModuleRegistry`; the backend mirrors it.
@@ -226,6 +230,15 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-10-29 (B1 catalog module, implementer's run): new `src/rules/catalog.ts` (pure): `RANK_CATALOG` (`{unity,name}` per Rank) and
+  `MODULE_CATALOG` (`{unity,slug,ticket}` per ModuleId), typed `Record<Rank|ModuleId,...>` so a missing key fails typecheck; re-exports
+  `FLIGHTS_PER_TRIP`, adds `MAX_FLIGHTS_AT_OWN_RANK = 6`, `rankDisplayName`, `rankFromDisplayName` (trim, collapse whitespace, case-insensitive;
+  miss = `undefined`, as `LEVELS.find` was) and `modulesInTicketOrder`. `RANKS`/`MODULE_IDS` literals untouched. `military.ts` `LEVELS` removed,
+  now uses the catalog. `test/catalog.test.ts` (8 tests) added to `vitest.config.ts`. Names and slugs checked against Unity `ModuleRegistry.cs`
+  and `FlightRankExtensions.DisplayName` (read only): no differences from the brief. From PowerShell in `H:\Work\TheAviationArcade\Backend`:
+  `npm run typecheck` clean; `npm test` 19 files, 434/434 (was 426; +8); `npm run db:migrate` OK; `npm run test:e2e` 9 files, 331/331;
+  `npm run build` clean; `npm run db:generate` "No schema changes". `military-mapping.test.ts` unchanged and green. Not committed.
 
 - 2026-10-29 (T2 segments and Rounds, implementer's run, before review): from PowerShell in `H:\Work\TheAviationArcade\Backend`, `docker compose up -d`.
   `npm run db:generate` produced `0009_trips_and_segments` with only T2's DDL (a second run: "No schema changes"); `npm run typecheck` clean;
