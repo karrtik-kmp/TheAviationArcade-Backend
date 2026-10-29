@@ -5,8 +5,8 @@
  *   - MilesHintPack.cs (client ruling CF-53, 2026-09-28): 10 hints for 5,000 Miles.
  * Keep them in step: the app shows these numbers, the server is the one that debits them.
  *
- * Not implemented, deliberately: HintBank's Trip-completion grant (+1 per 4 Trips) and 7-day-streak
- * grant. The backend has no Trip or played-day concept yet; both are logged as blocked.
+ * HintBank's Trip-completion grant (+1 per 4 Trips) and 7-day-streak grant are pure rules in trips.ts
+ * (`tripHintGrant`, `recordPlayedDay`); nothing posts them to the ledger until slices T2/T3 build Trips.
  */
 export const STARTER_HINTS = 5;
 export const HINTS_PER_ROUND = 1;

@@ -1,6 +1,6 @@
 # Trips, Field Awards, Clipper Cards, Logbook and the content manifest
 
-**Status:** designed 2026-10-29, **not built**. Contract: the `x-planned` operations and schemas in
+**Status:** designed 2026-10-29; slice T1 (pure rules) built 2026-10-29, T2-T6 not built. Contract: the `x-planned` operations and schemas in
 [`../openapi.yaml`](../openapi.yaml) (the parity test asserts they answer 404 today). Owner: this session (backend repo).
 
 Binding inputs: `docs/TASKS.md` Decisions 2026-10-29 "contract round 1" and "contract round 2", D-1, D-3, D-5, C5, C12.
@@ -104,6 +104,12 @@ Identifier Rounds only (Unity `AwardCounters.PerfectFlightStreak`), a separate c
 - `aircraftKey`, module by module:
   - `identifier`: the Unity family of the question's correct answer (`identifier_questions.json` `family`, e.g. `787`).
     That is the commercial Card key (contract round 2 (4): commercial Cards keep Unity's families).
+    **Gate (T2/T3 rule):** the value must be an exact key of the seeded commercial Card catalog (U9;
+    `SEED_COMMERCIAL_CARD_KEYS`, checked by `cardKeyFor(module, value, catalog)`). Anything else (a typo, `a320`, a
+    Military key such as `mil:...`) answers the Round result with **400 `invalid_request`** and banks nothing, so a case
+    variant or an unknown family can never create a second Card. (Alternative, not chosen: bank the Round and give it no
+    Card; that would hide a client bug and silently drop Card progress.) The catalog is read from the clipper-cards
+    document once T4 lands.
   - `aircraft-identifier-military`: **proposed** — the content item id (`mil-a4`); the server reads the item's
     `answer` from `content_items` (approved or retired, A6) and derives the Card key. Reason: ADR-0008 §2/§3 asks for
     "a roster id for military", the ruling keys the Card by the answer text, and only the id lets the server check the
@@ -142,12 +148,22 @@ card_key)`: first time = collected (returned in `clipperCards`), later = `times_
 
 Card keys:
 - Commercial: Unity family (`787`), `keySource: unity_family`.
-- Military (contract round 2 (4)): the client's answer text **trimmed, case-folded, whitespace runs collapsed to one
-  space**, `keySource: client_answer_text`. Eurofighter Typhoon (`mil-a4`, `mil-a8`, `mil-a26`) is one Card; T-28
-  (`a17`/`a23`) and AW139 (`a22`/`a27`) likewise; `Boeing F/A-18 Super Hornet` and `Boeing F/A-18E/F Super Hornet` stay
-  two Cards, as do the three C-130 answers, until the client supplies a family mapping (J2).
+- Military (contract round 2 (4)): `mil:` + the client's answer text normalised (A14: NFC, format characters
+  removed, dash variants folded to `-`, whitespace runs one space, spaces around `/` removed, trimmed, lower-cased),
+  `keySource: client_answer_text`. The `mil:` namespace means a Military key can never equal a commercial family key
+  (A20). Eurofighter Typhoon (`mil-a4`, `mil-a8`, `mil-a26`) is one Card; T-28 (`a17`/`a23`) and AW139 (`a22`/`a27`)
+  likewise. The sheet has **27 distinct correct answers** (31 rows; checked against the real xlsx 2026-10-29). The three
+  C-130 answers stay three Cards until the client supplies a family mapping (J2). `Boeing F/A-18 Super Hornet` is **not**
+  a client answer (it is only a wrong option in `mil-a4`; the sheet's answer is `Boeing F/A-18E/F Super Hornet`), so it
+  is no Card and the "two Super Hornet Cards" case does not exist today.
+- **The Military key is computed once, at the item's first import, and FROZEN on the content item** (a `card_key`
+  field written by the importer, T2/T3). A later staff or client text edit of the answer (a typo fix, a changed
+  dash) keeps the key, so collected Cards, `times_identified` and the tag table entry survive. The Round result and
+  `complete` read the frozen key from the item, never re-derive it; only a new item (a new row) gets a new key, and two
+  items whose answers normalise equal share one Card by design (Typhoon x3). Normalisation changes in later releases
+  therefore cannot orphan existing Cards.
 
-Note the three normalisations in play: this Card key (trim/case-fold/collapse); Unity's tag lookup
+Note the three normalisations in play: this Card key (A14); Unity's tag lookup
 `AircraftTagTable.Normalize` (letters and digits only); the dealer's `normalizeAnswer` (letters and digits, brief B3).
 The tag document is keyed by Card key, so only one is used for awards.
 
@@ -176,7 +192,7 @@ Scopes follow Unity `AwardCounters` (its doc comment records them as user-approv
 | 15 | red-eye-special | Red-Eye Special | night-trips | 1 | completion local time in [22:00, 05:00) (A3) |
 | 16 | fleet-admiral | Fleet Admiral | cards-collected | 50 | client ruling 2026-10-28 |
 | 17 | centennial-streak | Centennial Streak | best-day-streak | 100 | |
-| 18 | go-around | Go Around | go-arounds | 1 | all-correct segment right after a completed segment that was not; first ever never counts; any module (J1) |
+| 18 | go-around | Go Around | go-arounds | 1 | all-correct segment right after a completed segment that was not; first ever never counts; any module (J1); "correct" = any correct Flight, hinted or second-try included (A18, J12) |
 | 19 | globe-trotter | Globe Trotter | miles-earned | 24,901 | client confirmed "lifetime Miles earned" |
 | 20 | quad-engine-royalty | Quad-Engine Royalty | quad-engine-cards | 2 | Cards tagged quad-engine (jets only, client ruling) |
 | 21 | the-great-rivalry | The Great Rivalry | rivalry-balance | 10 | min(Boeing Cards, Airbus Cards) |
@@ -196,9 +212,13 @@ at the next `complete` without a data migration.
 
 **Locked, not hidden.** Every award is always on the board with `current/target`; with today's content several cannot
 be reached (CLIENT_CONTENT_IMPORT: Fleet Admiral 50, Executive Platinum 100 and The Great Rivalry cannot; Regional
-needs 5 regional Cards but only E175 and CRJ exist). They simply stay locked; the server never invents content or
-lowers a target (J6). Military Cards change reachability: Curator of the Skies (25) becomes reachable with 12
-commercial Cards plus the distinct Military answers, and Quad-Engine Royalty with the C-17 (J3).
+needs 5 regional Cards but only E175 and CRJ exist; **Rotorhead needs 4 rotary Cards but the client's 27 Military
+answers hold only 2, the AW139 and the AS332 Super Puma**). **Vertical Horizon depends on J5**: the only VTOL-tagged
+aircraft among the client's answers are those same two helicopters (our provisional table tags helicopters as VTOL); if
+the client's grid says helicopters are not VTOL, it has no reachable aircraft until a Harrier or F-35B is delivered.
+They simply stay locked; the server never invents content or lowers a target (J6). Military Cards change
+reachability: Curator of the Skies (25) becomes reachable with 12 commercial Cards plus the 27 distinct Military
+answers, and Quad-Engine Royalty with the C-17 (J3).
 
 ### 3.7 Go Around and the other segment counters
 
@@ -278,6 +298,11 @@ One read transaction, no lock, no writes: `recentTrips` = the 20 newest complete
 `lifetime` and `counters` from `player_counters`; `clipperCards` from `player_clipper_cards`; `fieldAwards` = the
 catalog in force × (`player_field_awards` ∪ current metric values). `version` = `players.version`, so the app can
 tell a stale cache. The app still owns the presentation flags ("announced", "unseen"; ADR-0008 §1).
+
+`current` is the metric value capped at the target in force, reported as is. A stored award never un-earns (U7), so after
+a staff edit raises a target an award can read `earned: true` with `current < target` (25 / 50 and earned). The
+Logbook and the app show it as earned and must not derive "earned" from `current >= target`. Targets are integers >= 1;
+the evaluator clamps a bad catalog value (`effectiveTarget`), and the T4 publish check rejects one.
 
 ## 7. Manifest, versions and caching
 
@@ -388,7 +413,9 @@ stay below for the record.
 ### Client (Josh) decides
 
 - **J1** Go Around scope: one counter over every Arcade game (our reading, ADR-0008 "waiting on Josh"), or per game?
-- **J2** Military Card families: which variants are one Card (F/A-18 vs F/A-18E/F, the three C-130 answers)?
+- **J2** Military Card families: do the three C-130 answers (`Lockheed C-130 Hercules`, `Lockheed Martin C-130J Super
+  Hercules`, `Lockheed Martin HC-130J Combat King II`) share one Card? (The F/A-18 spellings are no longer a question:
+  only `Boeing F/A-18E/F Super Hornet` is a correct answer; `Boeing F/A-18 Super Hornet` is a wrong option.)
 - **J3** Do Military Cards count for Curator/Fleet Admiral/Executive Platinum, Quad-Engine Royalty (C-17), Heavy
   Metal and The Great Rivalry (Boeing military types)?
 - **J4** Beriev A-50 four-engine? A380 a heavy? (CLIENT_CONTENT_IMPORT)
@@ -403,6 +430,9 @@ stay below for the record.
 - **J10** Coast to Coast / Globe Trotter: Miles earned in completed Trips only (as High Flyer says), or every banked
   Round?
 - **J11** Study (untimed) mode: does it report to the backend, and can it ever earn Bogey Identified (Unity: never)?
+- **J12** Go Around says "a full green trip (10 green flights)": does "green" mean a perfect light (first pick, no hint),
+  or any correct Flight? (Unity paints only a perfect Flight green and a hinted or second-try Flight yellow, but counts
+  any correct Flight toward a green Trip; we follow the counting, A18.)
 
 ### ASSUMPTION tests (until ruled)
 
@@ -412,13 +442,39 @@ open · A4 `attempts` ≥ `errorCount` (≥ 1 when finished) is the only consist
 + 2 s · A6 retired Military item ids are accepted · A7 Cards only at `complete` · A8 a segment's rank is fixed at open
 even if Active Rank changes · A9 a re-issued Round keeps the flight number and the streak · A10 `identifier-full-trips`
 and the Ace streak count both Identifier modules · A11 pre-Trip Rounds (`trip_id` NULL, local dev data) count toward
-nothing · A12 Military tag awards count only Military Cards, the other tag awards count every Card.
+nothing · A12 Military tag awards count only Military Cards, the other tag awards count every Card · A13 Go Around: any
+module on both sides of the pair (J1); the previous outcome is that of the player's previous COMPLETED segment, so an
+abandoned segment neither sets nor clears it; the first completed segment never counts · A14 Card key normalisation (T1): Unicode NFC; remove every Unicode format character (category Cf: zero-width space,
+soft hyphen, BOM, joiners, bidi marks); fold the dash variants U+2010-U+2015, U+2212, U+FE58, U+FE63, U+FF0D to `-`;
+every run of Unicode whitespace (JS `\s` plus U+0085) becomes one space; spaces around `/` are removed; trim; simple
+`toLowerCase`; NFC again. Other punctuation is kept and there is no full case folding (`ß` stays `ß`). The Military key
+is this text behind the `mil:` prefix, computed once at first import and frozen on the content item (section 3.5), so
+later edits and later changes to these steps never move an existing Card · A15 completing an empty segment is a caller
+bug and throws (Unity's `WithTrip` ignores it) · A16 a Military Card counts once in perfect-cards through its own
+`everPerfect`; Unity's separate `MilitaryPerfect` set is dropped · A17 the evaluator relies on one Card row per key (the
+table's primary key) and on `fastestCorrectMs` being the fastest correct answer of any hint state (Unity Bogey takes the
+minimum over correct Flights) · A18 Go Around "green": the client wrote "a full green trip (10 green fligfhts)"; Unity
+paints only a perfect Flight green (first pick, no hint) and a hinted or second-try Flight yellow, but its
+`AwardCounters` counts any correct Flight toward a green Trip. We keep the counting rule: a Trip is green when all ten
+Flights are correct, hints and second tries included, so 10 hinted-but-correct Flights after a non-full Trip earn Go
+Around (client question J12; only `tripOutcome` changes if the client says "perfect") · A19 Red-Eye is 22:00 inclusive to
+05:00 exclusive on the segment's local clock (the sheet says "between 10:00 PM and 5:00 AM"; the boundary is Unity's
+reading) · A20 Military Card keys carry a `mil:` prefix so they can never collide with a commercial family key; the tag
+table is keyed the same way. Also tested as ASSUMPTION (J-items): J10 the Miles awards count Miles earned in COMPLETED
+segments only (Globe Trotter's "lifetime Miles earned" could include abandoned-segment Rounds); A10 both Identifiers share
+the Ace streak and the full-Trip count; A2 and A13-"completed only" have placeholder unit tests that the T2/T3 e2e tests
+replace. A13-A20 are named `ASSUMPTION` tests in `test/trips.test.ts` and `test/field-awards.test.ts`.
+
+**Known limitation (A3, DST).** A segment reports one `utcOffsetMinutes` at open and the server applies it to every
+Round and to the completion time. A segment that spans a daylight-saving change, or a player who travels across zones
+mid-segment, is judged on the opening offset: Red-Eye and the local day can be an hour or more off for that segment.
+The offset is fixed per segment on purpose (one clock per Trip); the next segment reports a fresh offset.
 
 ## 13. Implementation slices
 
 | # | Slice | Size | Contents | Gate |
 |---|---|---|---|---|
-| T1 | Pure rules | S | `src/rules/trips.ts` (day-streak step, `withTrip` counters, outcome, Go Around, night window, hint cadence), `src/rules/field-awards.ts` (28 ids, metric evaluation, Card key normalisation); test names aligned with Unity EditMode tests (`FieldAwardsTests`, `AchievementBoardTests`, `HintBankTests`, `DailyFlightLogTests`, `LifetimeFlightStatsTests`, `LogbookCollectionTests`); ASSUMPTION tests | `npm test` |
+| T1 | Pure rules | S | `src/rules/trips.ts` (day-streak step, `withTrip` counters, outcome, Go Around, night window, hint cadence), `src/rules/field-awards.ts` (28 ids, metric evaluation, Card key normalisation); test names aligned with Unity EditMode tests (`FieldAwardsTests`, `AchievementBoardTests`, `HintBankTests`, `DailyFlightLogTests`, `LifetimeFlightStatsTests`, `LogbookCollectionTests`); ASSUMPTION tests | `npm test`. **Built 2026-10-29** (see "T1 as built" below) |
 | T2 | Segments and Rounds | M | migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
 | T3 | Complete | M | migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
 | T4 | Content documents and manifest | M | migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
@@ -427,3 +483,30 @@ nothing · A12 Military tag awards count only Military Cards, the other tag awar
 
 Then the dealer slices B1–B5 (brief), then server answer checks with releases (§10). Each slice: focused commit,
 independent review for T2–T4 and T6, verification recorded in `docs/TASKS.md`.
+
+### T1 as built (2026-10-29)
+
+Pure TypeScript only: no route, no Nest provider, no migration; `bankRound` and every built route are unchanged
+(the per-segment Perfect Streak needs no `bankRound` change: it already takes `state.perfectStreak`, so T2 passes the
+segment's streak and resets the stored one at open/complete/abandon).
+
+| File | Contents |
+|---|---|
+| `src/rules/trips.ts` | `FLIGHTS_PER_TRIP` 10, `nextTripStreak` / `OPENING_TRIP_STREAK` / `bestTripStreak` (D-3), `flightFact`, `tripOutcome`, `localDateTimeOf` / `addDays` / `daysBetween`, `isNightHour`, `PlayerCounters` + `EMPTY_COUNTERS` (the `player_counters` row), `recordPlayedDay` (+ 7-day hint), `flightsToday`, `liveDayStreak`, `tripHintGrant` (+1 per 4), `applyCompletedTrip` / `withTrip` (Unity `WithTrip`, Go Around, Red-Eye), `deriveDayLog` / `deriveTripCounters` (T3 re-derivation) |
+| `src/rules/clipper-cards.ts` | Card keys (`commercialCardKey`, `militaryCardKey` = `mil:` + `normalizeAnswerText`, `cardKeyFor(module, value, commercialCatalog)` -> card / no_card / unknown_aircraft, `cardKeySource`) and `recordSighting` (the `player_clipper_cards` upsert as a pure function) |
+| `src/rules/aircraft-tags.ts` | `AircraftTagEntry` / table type and the seed from Unity `AircraftTags.cs`, keyed by Card key, every manufacturer and tag `provisional` except the two client-ruled tags (quad-engine, heavy) |
+| `src/rules/field-award-catalog.ts` | the 28 definitions as data: Unity code ids, sheet title / criteria / threshold cell verbatim from the snapshot, target, metric, `hidden`, `provisional` (the eight tag awards), rulings |
+| `src/rules/field-awards.ts` | `FIELD_AWARD_IDS` / `FIELD_AWARD_METRICS`, `metricValue`, `evaluateFieldAwards(catalog, {counters, cards, tags}, alreadyEarned)`, `nearlyThere`, `awardCountLabel` |
+
+Differences from Unity found while porting (design and Unity disagree; the design wins, Unity changes):
+1. Military Cards count in cards-collected, perfect-cards and the tag metrics (Unity: "Military gives no cards" and a
+   separate `MilitaryPerfect` set). Already listed in section 11 item 5.
+2. Bogey, Top Gun, Rotorhead and Vertical Horizon read Military Cards (`fastestCorrectMs`, `everHintFree`, tags) instead
+   of Unity's per-name sets in `AwardCounters`; same results for the same history.
+3. `AwardCounters.WithTrip` takes per-Flight modules; a segment has one module, so `applyCompletedTrip` takes the
+   segment's module.
+4. Unity's `PilotRecord` falls back to legacy totals for an old save (`IdentifierFullTrips`, Ace streak); the server has
+   no legacy data, so there is no fallback.
+5. Unity's tag lookup normalises to letters and digits and prefix-matches; here tags are keyed by Card key and looked up
+   exactly (section 3.5 note).
+

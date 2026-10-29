@@ -19,6 +19,8 @@ export default defineConfig({
       "test/mirror-worker.test.ts",
       "test/balance-guard.test.ts",
       "test/schema-parity.test.ts",
+      "test/trips.test.ts",
+      "test/field-awards.test.ts",
     ],
   },
 });
