@@ -498,11 +498,12 @@ describe("mirror worker (stubbed UGS)", () => {
     expect(call.body).not.toHaveProperty("writeLock");
     const progress = (await request(server).get("/v1/me/progress").set(player.auth)).body.progress;
     expect(Object.keys(call.body.value)).toEqual([
-      "schemaVersion", "version", "statusPoints", "miles", "hints", "perfectStreak",
+      "schemaVersion", "uid", "version", "statusPoints", "miles", "hints", "perfectStreak",
       "certifiedRank", "activeRank", "firstClassUntil", "updatedAt",
     ]);
     expect(call.body.value).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      uid: player.uid,
       version: 2,
       statusPoints: progress.statusPoints,
       miles: progress.miles,

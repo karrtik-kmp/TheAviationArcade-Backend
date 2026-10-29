@@ -14,6 +14,7 @@ import {
   backoffMs,
   mirrorDeletionDueAt,
   mirrorSnapshot,
+  uidOfPrincipal,
 } from "../src/ugs/mirror-policy.js";
 import { REQUEST_TIMEOUT_MS, UGS_API_BASE, UgsClient, parseRetryAfter } from "../src/ugs/ugs-client.js";
 import { InvalidUgsTokenError, UGS_ISSUER, verifyUgsToken } from "../src/ugs/ugs-token.js";
@@ -281,11 +282,12 @@ describe("mirror policy", () => {
     };
     const snapshot = mirrorSnapshot(player, new Date("2026-10-28T13:00:00.000Z"));
     expect(Object.keys(snapshot)).toEqual([
-      "schemaVersion", "version", "statusPoints", "miles", "hints", "perfectStreak",
+      "schemaVersion", "uid", "version", "statusPoints", "miles", "hints", "perfectStreak",
       "certifiedRank", "activeRank", "firstClassUntil", "updatedAt",
     ]);
     expect(snapshot).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      uid: "u",
       version: 9,
       statusPoints: 5_000,
       miles: 120,
@@ -297,6 +299,13 @@ describe("mirror policy", () => {
     });
     expect(typeof snapshot.certifiedRank).toBe("string");
     expect(mirrorSnapshot({ ...player, firstClassUntil: null }, new Date()).firstClassUntil).toBeNull();
+  });
+
+  it("the copy's uid is the Firebase uid in the principal, and a non-Firebase principal is refused", () => {
+    expect(uidOfPrincipal("firebase:airplane-games-auth-20261022:AbC123xyz")).toBe("AbC123xyz");
+    expect(uidOfPrincipal("firebase:p:with:colon")).toBe("with:colon");
+    expect(() => uidOfPrincipal("ugs:p:u")).toThrow();
+    expect(() => uidOfPrincipal("firebase:p:")).toThrow();
   });
 });
 

@@ -98,14 +98,16 @@ describe("openapi contract parity", () => {
     ajv.addSchema({ $id: "spec", components: spec.components });
     const validate = ajv.compile({ $ref: "spec#/components/schemas/UgsMirrorProgress" });
     const player = {
-      id: "p", statusPoints: 1200, miles: 30, hints: 5, perfectStreak: 2, activeRank: null,
+      id: "firebase:demo-airplane-games:u1", statusPoints: 1200, miles: 30, hints: 5, perfectStreak: 2, activeRank: null,
       firstClassUntil: null, version: 4, createdAt: new Date(), updatedAt: new Date(),
     };
     const value = mirrorSnapshot(player, new Date());
     expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
     expect(validate(mirrorSnapshot({ ...player, firstClassUntil: new Date() }, new Date()))).toBe(true);
     expect(validate({ ...value, extra: 1 })).toBe(false);
-    expect(validate({ ...value, schemaVersion: 2 })).toBe(false);
+    expect(validate({ ...value, schemaVersion: 1 })).toBe(false);
+    const { uid: _uid, ...withoutOwner } = value;
+    expect(validate(withoutOwner)).toBe(false);
   });
 
   it("rank and module enums match src/rules", () => {

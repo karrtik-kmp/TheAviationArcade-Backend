@@ -166,6 +166,10 @@ verified email for ranked play).
   server Trip work (B5). D-2: game content for Military, Aircraft Identifier and Plane of the Day moves to this admin
   store (photographer submissions stay in website D1), so the website will need admin endpoints for those modules.
 - 2026-10-29 (user): this session owns the Backend repo (one session per repo); other backend sessions are read-only.
+- 2026-10-29 (user, from the S3 review): the UGS copy names its owner. Snapshot `schemaVersion` 2 adds `uid` (the
+  Firebase uid); the game uses a copy only when `uid` is the signed-in user, and compares `version` only between copies
+  of one owner. Reason: after a link move or an erase + re-link, the UGS item can hold the previous owner's copy (with
+  a higher version) until the worker rewrites it.
 
 ## Open questions for Josh
 

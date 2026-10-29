@@ -1180,10 +1180,13 @@ components:
         and values as `Progress` where they overlap. It is a fallback: prefer the server when it is reachable, and
         expect the copy to lag by seconds to minutes. Never write it. Order two copies, or a copy and a server answer,
         by `version`: it goes up by one with every visible change, Active Rank changes included, and `Progress.version`
-        is the same counter.
-      required: [schemaVersion, version, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
+        is the same counter. Use the copy only when `uid` is the signed-in Firebase user: after a UGS link moves, or an
+        account is deleted and the UGS player re-linked, the item can still hold the previous owner's copy until the
+        server rewrites it, and versions of different owners are not comparable.
+      required: [schemaVersion, uid, version, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
       properties:
-        schemaVersion: { type: integer, const: 1 }
+        schemaVersion: { type: integer, const: 2, description: "2 since 2026-10-29 (adds `uid`)." }
+        uid: { type: string, minLength: 1, maxLength: 128, description: Firebase uid of the player this copy belongs to. }
         version: { type: integer, minimum: 1, description: "The server's player version at the time of the snapshot." }
         statusPoints: { type: integer, minimum: 0 }
         miles: { type: integer, minimum: 0 }

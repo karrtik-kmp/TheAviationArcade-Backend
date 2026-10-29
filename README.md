@@ -168,9 +168,11 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   same UGS player is a 200 no-op answered without calling UGS; pointing at another UGS player replaces the link, bumps `version` once and
   queues deletion of the old copy. Link proofs are limited to 5 per hour per player and a server-wide 12/min (burst
   10), because UGS allows only 500 Player Auth admin calls per 30 min per project.
-- **What is mirrored.** The Cloud Save **Protected** item `progress`: `{ schemaVersion: 1, version, statusPoints, miles,
-  hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt }` (see `UgsMirrorProgress` in
-  `docs/openapi.yaml`). Field names and values match `GET /v1/me/progress`.
+- **What is mirrored.** The Cloud Save **Protected** item `progress`: `{ schemaVersion: 2, uid, version, statusPoints,
+  miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt }` (see `UgsMirrorProgress` in
+  `docs/openapi.yaml`). Field names and values match `GET /v1/me/progress`. `uid` is the owner's Firebase uid (user
+  ruling 2026-10-29): after a link moves or an account is deleted and re-linked, the item can briefly hold the previous
+  owner's copy, so the game uses a copy only when `uid` matches the signed-in user.
 - **How.** Every transaction that changes progress (Round result, hint spend, hint pack, Active Rank change) writes a
   coalesced `ugs_mirror_outbox` row (one per player) in the same transaction, for linked players only. An in-process
   worker claims due rows (`FOR UPDATE SKIP LOCKED`, so several instances are safe), writes them to Cloud Save, and
