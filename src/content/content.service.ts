@@ -12,6 +12,7 @@ import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
 import { compareIds } from "./content-modules.js";
 import { planHash, planImport } from "./import-plan.js";
+import { CONTENT_STATUSES, type ContentStatus } from "../db/enums.js";
 import type { ExistingItem, FieldDiff, ImportPlan } from "./import-plan.js";
 import { SpreadsheetError, XLSX_MIME, readFirstSheet, writeSheet } from "./xlsx.js";
 
@@ -19,8 +20,8 @@ const BATCH = 500;
 const PLAN_CHANGED_MESSAGE =
   "Stored content changed since the dry run, so the confirmed plan no longer applies. Run a new dry run and review it. Nothing was imported.";
 
-function isStatus(value: string): value is "approved" | "retired" {
-  return value === "approved" || value === "retired";
+function isStatus(value: string): value is ContentStatus {
+  return (CONTENT_STATUSES as readonly string[]).includes(value);
 }
 
 export type ImportSummary = {
@@ -221,7 +222,7 @@ export class ContentService {
             module,
             id: r.id,
             rank: r.rank,
-            status: "approved",
+            status: "approved" as const,
             source: locked.source,
             data: r.data,
             version: 1,

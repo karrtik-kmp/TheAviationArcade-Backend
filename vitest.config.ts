@@ -17,6 +17,7 @@ export default defineConfig({
       "test/import-plan.test.ts",
       "test/ugs.test.ts",
       "test/balance-guard.test.ts",
+      "test/schema-parity.test.ts",
     ],
   },
 });

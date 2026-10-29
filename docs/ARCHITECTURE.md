@@ -145,7 +145,8 @@ Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only ke
   no CORS configuration (none is added).
 - **Not built (follow-ups).** Releases and versioned packages, player content delivery, server answer checks,
   photo upload and serving, edit-in-place endpoints, importers for the other seven modules, Field
-  Awards (Unity owns that catalog), website integration.
+  Awards (the backend owns the catalog, thresholds and progress since C12, 2026-10-28; built after the Trips contract),
+  website integration.
 
 ## Purchases (design for the purchases slice)
 

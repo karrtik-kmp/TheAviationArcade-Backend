@@ -15,6 +15,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { AdminAuditAction, ContentSource, ContentStatus, RoundCompletion, RoundStatus } from "./enums.js";
 
 /**
  * Player progress. One row per server principal: firebase:<project>:<uid>.
@@ -66,7 +67,7 @@ export const rounds = pgTable(
     module: text("module").notNull(),
     rank: text("rank").notNull(),
     pleasureCruise: boolean("pleasure_cruise").notNull(),
-    status: text("status").notNull().default("open"),
+    status: text("status").$type<RoundStatus>().notNull().default("open"),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     completionId: text("completion_id"),
@@ -78,7 +79,7 @@ export const rounds = pgTable(
     // Set by POST /v1/rounds/:roundId/hint when a hint was paid for. A paid hint cannot be hidden at submit.
     hintUsed: boolean("hint_used").notNull().default(false),
     timeRemaining: doublePrecision("time_remaining"),
-    completion: text("completion"),
+    completion: text("completion").$type<RoundCompletion>(),
     speedBonus: boolean("speed_bonus"),
     streakMiles: integer("streak_miles"),
     firstClassPass: boolean("first_class_pass"),
@@ -216,8 +217,8 @@ export const contentItems = pgTable(
     id: text("id").notNull(),
     rank: text("rank").notNull(),
     // approved | retired. A client-sheet import retires rows its file no longer lists; drafts come later.
-    status: text("status").notNull(),
-    source: text("source").notNull(),
+    status: text("status").$type<ContentStatus>().notNull(),
+    source: text("source").$type<ContentSource>().notNull(),
     data: jsonb("data").notNull(),
     version: integer("version").notNull().default(1),
     importId: text("import_id").references(() => contentImports.id),
@@ -241,7 +242,7 @@ export const adminAudit = pgTable(
   {
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
     actor: text("actor").notNull(),
-    action: text("action").notNull(),
+    action: text("action").$type<AdminAuditAction>().notNull(),
     target: text("target").notNull(),
     detail: jsonb("detail").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
