@@ -27,6 +27,11 @@ export function rankIndex(rank: Rank): number {
   return RANKS.indexOf(rank);
 }
 
+/** Mirrors Unity PilotProgression.IsPleasureCruise: Active Rank below Certified Rank. */
+export function isPleasureCruise(certified: Rank, active: Rank): boolean {
+  return rankIndex(active) < rankIndex(certified);
+}
+
 /** Certified Rank is derived from lifetime SP. SP never decreases, so this never drops. */
 export function certifiedRankFor(statusPoints: number): Rank {
   let certified: Rank = "trainee";

@@ -1,5 +1,6 @@
 import type { PlayerRow } from "../db/schema.js";
-import { activeRankFor, certifiedRankFor, nextRankFor, rankIndex, RANKS } from "../rules/ranks.js";
+import { hasFirstClassPass } from "../rules/first-class.js";
+import { activeRankFor, certifiedRankFor, isPleasureCruise, nextRankFor, rankIndex, RANKS } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 
 export type ProgressView = {
@@ -19,10 +20,6 @@ export type ProgressView = {
   firstClassPass: boolean;
 };
 
-export function hasFirstClassPass(player: PlayerRow, now: Date): boolean {
-  return player.firstClassUntil !== null && player.firstClassUntil.getTime() > now.getTime();
-}
-
 export function progressView(player: PlayerRow, now: Date): ProgressView {
   const certifiedRank = certifiedRankFor(player.statusPoints);
   const activeRank = activeRankFor(player.statusPoints, player.activeRank);
@@ -33,10 +30,10 @@ export function progressView(player: PlayerRow, now: Date): ProgressView {
     hints: player.hints,
     certifiedRank,
     activeRank,
-    pleasureCruise: rankIndex(activeRank) < rankIndex(certifiedRank),
+    pleasureCruise: isPleasureCruise(certifiedRank, activeRank),
     selectableRanks: RANKS.slice(0, rankIndex(certifiedRank) + 1).reverse(),
     nextRank: nextRankFor(player.statusPoints),
     perfectStreak: player.perfectStreak,
-    firstClassPass: hasFirstClassPass(player, now),
+    firstClassPass: hasFirstClassPass(player.firstClassUntil, now),
   };
 }

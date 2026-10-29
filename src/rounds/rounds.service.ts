@@ -4,12 +4,11 @@ import { and, eq } from "drizzle-orm";
 import { PlayerBalance } from "../balance/player-balance.js";
 import { rounds } from "../db/schema.js";
 import type { PlayerRow, RoundRow } from "../db/schema.js";
-import { hasFirstClassPass } from "../players/progress-view.js";
 import type { ModuleId } from "../rules/modules.js";
 import { HINTS_PER_ROUND } from "../rules/hints.js";
-import { activeRankFor, certifiedRankFor, rankIndex } from "../rules/ranks.js";
+import { bankRound } from "../rules/banking.js";
+import { activeRankFor, certifiedRankFor, isPleasureCruise } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
-import { nextPerfectStreak, scoreRound } from "../rules/scoring.js";
 import type { Completion, RoundAward } from "../rules/scoring.js";
 
 export const ROUND_TTL_SECONDS = 30 * 60;
@@ -87,7 +86,7 @@ export class RoundsService {
   async issueRound(principal: string, module: ModuleId, now: Date): Promise<IssuedRound | null> {
     const result = await this.balance.update<IssuedRound>(principal, now, async ({ player, tx }) => {
       const rank = activeRankFor(player.statusPoints, player.activeRank);
-      const pleasureCruise = rankIndex(rank) < rankIndex(certifiedRankFor(player.statusPoints));
+      const pleasureCruise = isPleasureCruise(certifiedRankFor(player.statusPoints), rank);
       const roundId = randomUUID();
       const expiresAt = new Date(now.getTime() + ROUND_TTL_SECONDS * 1000);
 
@@ -153,22 +152,19 @@ export class RoundsService {
       // Refused without closing the Round, so the client can retry after a moment.
       if (now.getTime() < round.issuedAt.getTime() + MIN_ROUND_MS) return { value: { kind: "too_fast" } };
 
-      const firstClassPass = hasFirstClassPass(player, now);
-      // A hint the player paid for cannot be hidden by the client; claiming one that was never paid for
-      // only lowers the player's own award.
-      const usedHint = input.usedHint || round.hintUsed;
-      const award = scoreRound({
-        ...input,
-        usedHint,
-        perfectStreak: player.perfectStreak,
-        firstClassPass,
-        pleasureCruise: round.pleasureCruise,
-      });
-      const streak = nextPerfectStreak(player.perfectStreak, award.completion);
-      // The player row is locked, so the balance read above is the balance this credit lands on.
-      const from = certifiedRankFor(player.statusPoints);
-      const to = certifiedRankFor(player.statusPoints + award.statusPoints);
-      const promotion = from === to ? null : { from, to };
+      const banked = bankRound(
+        { statusPoints: player.statusPoints, perfectStreak: player.perfectStreak, firstClassUntil: player.firstClassUntil },
+        {
+          finished: input.finished,
+          errorCount: input.errorCount,
+          usedHint: input.usedHint,
+          timeRemainingFraction: input.timeRemainingFraction,
+          pleasureCruise: round.pleasureCruise,
+          hintPaid: round.hintUsed,
+        },
+        now,
+      );
+      const { award, promotion } = banked;
 
       await tx
         .update(rounds)
@@ -178,12 +174,12 @@ export class RoundsService {
           completedAt: now,
           finished: input.finished,
           errorCount: input.errorCount,
-          usedHint,
+          usedHint: banked.usedHint,
           timeRemaining: input.timeRemainingFraction,
           completion: award.completion,
           speedBonus: award.speedBonus,
           streakMiles: award.streakMiles,
-          firstClassPass,
+          firstClassPass: award.firstClassPass,
           spAwarded: award.statusPoints,
           milesAwarded: award.miles,
           promotedFrom: promotion?.from ?? null,
@@ -195,16 +191,16 @@ export class RoundsService {
         value: {
           kind: "completed",
           result: {
-            award: { ...award, firstClassPass, pleasureCruise: round.pleasureCruise },
+            award,
             promotion,
             replayed: false,
           },
         },
         // One ledger entry per Round (the unique key makes a double pay impossible); a zero award writes none.
         change: {
-          postings: [{ account: "miles", delta: award.miles, kind: "round_award", ref: roundId }],
-          statusPoints: award.statusPoints,
-          perfectStreak: streak,
+          postings: [{ account: "miles", delta: banked.balanceDelta.miles, kind: "round_award", ref: roundId }],
+          statusPoints: banked.balanceDelta.statusPoints,
+          perfectStreak: banked.streak,
         },
       };
     });

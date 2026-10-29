@@ -50,7 +50,7 @@ src/config/               env parsed once with zod; fail fast
 src/db/                   drizzle schema + pg Pool provider; migrations in drizzle/
 src/common/               ApiError + ErrorCode, exception filter, ZodValidationPipe, request-id middleware
 src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal()
-src/rules/                pure, Unity-mirrored logic (+ products.ts catalog later)
+src/rules/                pure, Unity-mirrored logic: scoring, ranks (isPleasureCruise), first-class, banking (bankRound) (+ products.ts catalog later)
 src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
 src/players/, src/rounds/ feature modules: controller (HTTP) + service (transactions, domain outcomes)
 src/storage/              BlobStore (Bunny / memory / none), key validation
@@ -64,6 +64,10 @@ destroyed on an unexpected failure; a deliberate rollback such as a refused spen
 Round, hint and shop writes (and the Active Rank change) all go through `PlayerBalance.update` in `src/balance/`,
 which owns the lock, the ledger postings, the relative balance update, the version bump and the mirror enqueue (its
 invariants are written on the class); callers keep their own SQL for their own tables inside the same transaction.
+`bankRound` (`src/rules/banking.ts`) is the pure composition RoundsService calls inside that transaction: award (scoreRound + First Class Pass +
+Pleasure Cruise), paid-or-claimed hint, new Perfect Streak and promotion in one result. No DB types. The Perfect Streak is still
+global; the per-Trip streak (D-3) will hook in at `bankRound` (what `state.perfectStreak` means and when `streak` resets).
+
 `PlayerBalance` is a deep module with one Postgres adapter, not a seam. Player creation (`open`: INSERT ... ON CONFLICT
 DO NOTHING, the one write that cannot lock first), deletion (`erase`) and the UGS link records (`linkUgs`) live in it too.
 `enqueueMirror` and the `ugs_mirror_deletions` writes sit in `src/balance/mirror-outbox.ts`, private to the module:

@@ -83,7 +83,8 @@ contract (see Decisions).
 | S1 | Active Rank 404 race fix | Done (committed b1ca340) | |
 | S2 | `PlayerBalance` core | Done (local, uncommitted, not independently reviewed) | `src/balance/` (`player-balance.ts`, `balance.module.ts`, `ledger-kinds.ts`). `RoundsService` (issue, complete, hint), `ShopService` and `PlayersService.setActiveRank` go through `PlayerBalance.update`; none of them import `players`, the ledgers or `enqueueMirror` for those writes any more. D-1 applied: an Active Rank change bumps `version` and enqueues (same value = no-op); `version` added to `Progress` (openapi, `progressView`). A completed Round keeps its unconditional bump, even when it pays nothing. No new ledger kind, no schema change, no migration. Still direct: `ensurePlayer`, `deletePlayer`, `UgsLinkService` (S3) |
 | S3 | Player lifecycle and UGS link through `PlayerBalance` | Done (local, uncommitted, not independently reviewed) | `PlayerBalance.open` (ensurePlayer; INSERT ... ON CONFLICT DO NOTHING, only the creator writes the starter ledger row and enqueues at version 1), `erase` (deletePlayer; lock first, records the UGS deletion row, uses the request clock, idempotent) and `linkUgs` (link / re-link / stale-holder move; the network proof stays outside the transaction). D-1 for links: a FIRST link enqueues at the current version with no bump; a re-link to a DIFFERENT UGS player bumps `version` and enqueues; re-linking the SAME UGS player changes nothing (shortcut kept, no admin call); a stale-holder move bumps the caller, not the old holder. `src/ugs/outbox.ts` moved to `src/balance/mirror-outbox.ts` (`enqueueMirror`, `queueMirrorDeletion`, `cancelMirrorDeletion`, `dropMirror`), private to the module. `test/balance-guard.test.ts` (unit): no file outside `src/balance/` locks `players` FOR UPDATE, calls the helpers or inserts into the mirror queue/ledgers, and no test imports the module; multiline regex over comment-stripped source, with the checker proven on seeded violations. `ugs.e2e` keeps the hint-spend and hint-pack replay tests (replay leaves outbox generation and version unchanged); the rolled-back enqueue test moved to `player-balance.e2e`. Review fixes: the guard also covers interpolated/quoted/qualified raw SQL tables, direct writes to players/ugs_links/ledgers, `.for(` with any argument, dynamic/ext-less imports of mirror-outbox, `;` inside literals, table imports (allowlist: mirror worker) and table aliasing; the opposite stale-holder test now uses a real lock barrier. No schema change, no migration |
-| S4+ | `bankRound`, parity test, MirrorQueue, shared budget | Not started | |
+| S4 | Pure `bankRound`; Pleasure Cruise and First Class rules into `src/rules` | Done (local, uncommitted, not independently reviewed) | `src/rules/banking.ts` (`bankRound(state, input, now)`), `first-class.ts` (`hasFirstClassPass(firstClassUntil, now)`, strictly after now), `isPleasureCruise` in `ranks.ts`; `completeRound`, `issueRound` and `progressView` use them. No behaviour change; `completeRound` still bumps unconditionally (D-1). Perfect Streak unchanged (D-3 hooks in at `bankRound`). Unit tests in `test/rules.test.ts` |
+| S5+ | Parity test, MirrorQueue, shared budget | Not started | |
 
 ### Phase 6 — Hosting and launch
 
@@ -178,6 +179,13 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-10-29 (S4, pure `bankRound`): from PowerShell in `H:\Work\TheAviationArcade\Backend` with Postgres up:
+  `npm run typecheck` clean; `npm test` 13 files, 244/244 (`rules.test.ts` 23 → 37 tests: isPleasureCruise,
+  hasFirstClassPass, bankRound branches; the rest of the +26 since the S3 log came with S3's review fixes and the uid
+  change); `npm run test:e2e` 6 files, 228/228, unchanged tests; `npm run build` clean. Independent Opus review: pure
+  refactor, a differential run of HEAD vs new over 241,920 input combinations (rank boundaries, streaks, pass expiry
+  at ±1 ms, hints paid/claimed, time fractions, Pleasure Cruise) found 0 differences; fixed its nits (test title,
+  `ASSUMPTION:` prefix on two server rulings not in points-progression.md). Local only.
 - 2026-10-29 (S3, PlayerBalance owns player lifecycle and the UGS link): from PowerShell in
   `H:\Work\TheAviationArcade\Backend` with Postgres up: `npm run typecheck` clean; `npm test` 13 files, 218/218;
   `npm run test:e2e` 6 files, 226/226 (new: open() under 6 concurrent calls = one starter row, erase() linked / unlinked /
