@@ -1,10 +1,17 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **API review fixes (2026-10-29, version 0.6.0).** Progress and new UGS snapshots include `evaluatedAt`.
+    Compare stored `version` first, then `evaluatedAt` at equal versions; lazy expiry can change the view without
+    writing progress. Old UGS copies may omit the new field: at equal versions prefer the direct API response,
+    and otherwise keep the current value until a timestamped snapshot arrives. Never substitute `updatedAt`.
+    Trip-key reuse with any changed request field now returns 422 `idempotency_key_reused` (previously only
+    `module` was compared). Persist the entire original request with its key and replay it unchanged.
 
     **Trip completion (slice T3, built 2026-10-29, version 0.5.0) adds a route and changes one behaviour.** `POST /v1/trips/{tripId}/complete`
     (after the 10th banked Round) returns the segment's outcome, the Field Awards it earned, the Clipper Cards it
@@ -617,7 +624,9 @@ paths:
         Requires an `Idempotency-Key` header (1-128 of `A-Z a-z 0-9 _ -`, U14, 2026-10-29): repeating a key this
         player already used answers 200 with the segment that key opened (and its current state) instead of opening
         another, so a retry after a dropped response never abandons the segment it just opened. Mint a new key per
-        new segment. A key that already opened a segment for a different `module` is 422 `idempotency_key_reused`. A segment expires 30 minutes after its last activity (open, Round issue or Round result); see
+        new segment. Reusing a key with different `module`, `localDate`, `utcOffsetMinutes` or `contentVersion` is
+        422 `idempotency_key_reused`; `flightCount` is always 10. The comparison precedes date freshness, so an
+        identical retry still replays after midnight. A segment expires 30 minutes after its last activity (open, Round issue or Round result); see
         `expiresAt`.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
@@ -653,7 +662,7 @@ paths:
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
-          description: "`local_date_mismatch`: `localDate` does not match server time plus `utcOffsetMinutes`. `idempotency_key_reused`: the key already opened a segment for a different `module`."
+          description: "`local_date_mismatch`: `localDate` does not match server time plus `utcOffsetMinutes`. `idempotency_key_reused`: the key already opened a segment with a different request."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1568,6 +1577,7 @@ components:
       type: object
       additionalProperties: false
       required:
+        - evaluatedAt
         - version
         - statusPoints
         - miles
@@ -1584,9 +1594,18 @@ components:
           type: integer
           minimum: 1
           description: |
-            The server's player version. It goes up by one with every change visible in this object or in the UGS
-            copy (a Round result, a hint spend, a hint pack, a changed Active Rank), so a higher `version` is
-            always newer. Compare it with `UgsMirrorProgress.version` to order a server answer against the UGS copy.
+            The server's stored player revision. It goes up by one for stored progress changes (a Round result,
+            hint spend, hint pack or changed Active Rank). A higher version wins regardless of evaluation time.
+            At the same version, use the later evaluatedAt: time-derived fields can change without a write.
+        evaluatedAt:
+          type: string
+          format: date-time
+          description: |
+            Server instant used to evaluate this view, including lazy Trip expiry and firstClassPass.
+            For snapshots of the same player, compare version first, then this instant at equal versions.
+            Equal pairs are equivalent evaluations. Compare parsed instants, not locale-formatted strings.
+            Reads do not bump version. A legacy UGS copy without evaluatedAt loses to a direct API answer
+            at the same version; otherwise keep the current value until a timestamped snapshot arrives.
         statusPoints: { type: integer, minimum: 0, description: Lifetime Status Points. }
         miles: { type: integer, minimum: 0 }
         hints: { type: integer, minimum: 0, description: Co-Pilot hints left. }
@@ -1649,14 +1668,18 @@ components:
         server for each linked player (the player can read their own, only the server can write). Same field names
         and values as `Progress` where they overlap. It is a fallback: prefer the server when it is reachable, and
         expect the copy to lag by minutes (at most one write per player per UGS_MIRROR_MIN_INTERVAL_SEC, default 5 minutes). Never write it. Order two copies, or a copy and a server answer,
-        by `version`: it goes up by one with every visible change, Active Rank changes included, and `Progress.version`
-        is the same counter. Use the copy only when `uid` is the signed-in Firebase user: after a UGS link moves, or an
+        by `version` first (the same stored counter as `Progress.version`), then `evaluatedAt` at equal versions.
+        Time-derived lazy Trip expiry can change perfectStreak without a stored version change.
+        New writes always carry evaluatedAt; legacy copies may omit it. At equal versions prefer a direct API
+        response over an untimestamped copy; otherwise keep the current value until a timestamped snapshot arrives.
+        Never use updatedAt as an evaluation timestamp. Use the copy only when `uid` is the signed-in Firebase user: after a UGS link moves, or an
         account is deleted and the UGS player re-linked, the item can still hold the previous owner's copy until the
         server rewrites it, and versions of different owners are not comparable.
       required: [schemaVersion, uid, version, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
       properties:
         schemaVersion: { type: integer, const: 2, description: "2 since 2026-10-29 (adds `uid`)." }
         uid: { type: string, minLength: 1, maxLength: 128, description: Firebase uid of the player this copy belongs to. }
+        evaluatedAt: { type: string, format: date-time, description: "Server instant used to evaluate this snapshot. Present on new writes; optional only for legacy copies." }
         version: { type: integer, minimum: 1, description: "The server's player version at the time of the snapshot." }
         statusPoints: { type: integer, minimum: 0 }
         miles: { type: integer, minimum: 0 }

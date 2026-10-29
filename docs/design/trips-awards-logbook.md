@@ -565,8 +565,9 @@ Deviations from the plan above, all deliberate:
 6. **Idempotency-Key replay answers before any other check**, so a retry after a dropped response is answered even when its
    `localDate` aged out of the tolerance or a newer segment has since replaced it (the replay reports the segment as it stands:
    abandoned if it was replaced).
-7. **Idempotency-Key reuse:** a key that already opened a segment for a different module is 422 `idempotency_key_reused`
-   (compared with `trips.module`; the other body fields are not compared).
+7. **Idempotency-Key reuse (API review fix, 2026-10-29):** compare module, localDate, utcOffsetMinutes and
+   contentVersion with the stored opening intent; any mismatch is 422 `idempotency_key_reused`. flightCount is fixed
+   at ten by validation. Compare before date freshness so unchanged requests still replay after midnight.
 8. **Progress views** (every route and the UGS mirror snapshot) read the Perfect Streak through `withLiveStreak`, so they agree with
    GET /v1/me/progress.
 9. `aircraftKey` for `aircraft-identifier-military` is the content item id (U3, resolved). Commercial keys are gated against

@@ -6,7 +6,8 @@ import { REQUEST_TIMEOUT_MS } from "./ugs-client.js";
 /**
  * The value of the Protected Cloud Save item `progress`. Field names and values match GET /v1/me/progress
  * where they overlap. There is no writeLock: Postgres is the only writer. The game orders two copies (or a copy and
- * a server answer) by `version`: it goes up by one with every change visible here, Active Rank changes included (D-1).
+ * a server answer) by (version, evaluatedAt): version orders stored changes (D-1); evaluatedAt orders time-derived changes
+ * such as lazy Trip expiry at the same version. evaluatedAt is the server instant used to build this view.
  * `updatedAt` is informational. `uid` names the owner (schemaVersion 2, user ruling 2026-10-29): a UGS player can
  * still hold a previous owner's copy after a link moves or an account is deleted and re-linked, so the game shows a
  * copy only when `uid` is the signed-in Firebase user, and `version` is compared only between copies of one owner.
@@ -16,6 +17,7 @@ export type MirrorSnapshot = {
   /** Firebase uid of the player this copy belongs to. */
   uid: string;
   version: number;
+  evaluatedAt: string;
   statusPoints: number;
   miles: number;
   hints: number;
@@ -24,7 +26,7 @@ export type MirrorSnapshot = {
   activeRank: Rank;
   /** ISO 8601 or null. The time-dependent `firstClassPass` flag is not mirrored; derive it from this. */
   firstClassUntil: string | null;
-  /** ISO 8601, the server time of the player's last change. Informational; order by `version`. */
+  /** ISO 8601, the server time of the player's last change. Informational; order by version, then evaluatedAt. */
   updatedAt: string;
 };
 
@@ -41,6 +43,7 @@ export function mirrorSnapshot(player: PlayerRow, now: Date): MirrorSnapshot {
     schemaVersion: 2,
     uid: uidOfPrincipal(player.id),
     version: player.version,
+    evaluatedAt: view.evaluatedAt,
     statusPoints: view.statusPoints,
     miles: view.miles,
     hints: view.hints,

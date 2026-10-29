@@ -152,6 +152,9 @@ describe("openapi contract parity", () => {
     expect(validate(mirrorSnapshot({ ...player, firstClassUntil: new Date() }, new Date()))).toBe(true);
     expect(validate({ ...value, extra: 1 })).toBe(false);
     expect(validate({ ...value, schemaVersion: 1 })).toBe(false);
+    expect(value.evaluatedAt).toEqual(expect.any(String));
+    const { evaluatedAt: _evaluatedAt, ...legacy } = value;
+    expect(validate(legacy)).toBe(true); // Cloud Save may still hold a pre-0.6.0 copy.
     const { uid: _uid, ...withoutOwner } = value;
     expect(validate(withoutOwner)).toBe(false);
   });
@@ -344,7 +347,12 @@ describe("openapi contract: real responses validate against the spec", () => {
     expect(done.body.fieldAwards.length).toBeGreaterThan(0);
     const replay = await request(server).post(`/v1/trips/${tripId}/complete`).set(player);
     check("FlightSegmentCompletion", replay.body);
-    expect(replay.body).toEqual({ ...done.body, replayed: true });
+    expect(replay.body).toEqual({
+      ...done.body,
+      replayed: true,
+      progress: { ...done.body.progress, evaluatedAt: replay.body.progress.evaluatedAt },
+    });
+    expect(Date.parse(replay.body.progress.evaluatedAt)).toBeGreaterThanOrEqual(Date.parse(done.body.progress.evaluatedAt));
     expect(done.headers["cache-control"]).toBe("no-store");
     rejects("FlightSegmentCompletion", { ...done.body, extra: 1 });
     rejects("FlightSegmentCompletion", { ...done.body, fieldAwards: [{ id: "made-up", earnedAt: "2026-10-29T12:00:00Z" }] });
@@ -534,7 +542,7 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
 
   it("planned response samples validate", () => {
     const progress = {
-      version: 3, statusPoints: 1200, miles: 300, hints: 6, certifiedRank: "trainee", activeRank: "trainee", pleasureCruise: false,
+      evaluatedAt: "2026-10-29T12:00:00.000Z", version: 3, statusPoints: 1200, miles: 300, hints: 6, certifiedRank: "trainee", activeRank: "trainee", pleasureCruise: false,
       selectableRanks: ["trainee"], nextRank: { rank: "first-officer", statusPoints: 10000 }, perfectStreak: 0, firstClassPass: false,
     };
     const trip = {

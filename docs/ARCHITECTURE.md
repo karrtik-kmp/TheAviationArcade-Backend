@@ -250,7 +250,8 @@ count of enqueues, `due_at`, `attempts`, short `last_error`). `PlayerBalance.upd
 (`enqueueMirror`, private to `src/balance/`) inside the same transaction, after the player row is locked and updated, for every write that changes
 what the mirror shows: Round result, hint spend, hint pack, Active Rank change, UGS link records (`PUT /v1/me` creation calls it
 too, a no-op because a new player has no link). Every such change bumps `players.version` (D-1, 2026-10-29), so
-`version` is the total order of copies and `GET /v1/me/progress` returns it; the row also carries a `generation` drawn from a sequence (never repeats, even
+`version` orders stored progress revisions and `GET /v1/me/progress` returns it. API 0.6.0 adds `evaluatedAt`
+to API and UGS snapshots: equal versions are ordered by evaluation time because lazy expiry is read-only; the row also carries a `generation` drawn from a sequence (never repeats, even
 after the row is deleted and re-inserted) and each claim stamps a `claim_id`; the worker deletes or releases a row only if
 both still match its claim, otherwise it is due again at once (migration 0007). The in-process worker (`src/ugs/`, only when
 configured) is policy only (pacing, pauses, backoff, logging) and drives two `MirrorQueue` adapters in `src/ugs/mirror-queue.ts`, deletions first:

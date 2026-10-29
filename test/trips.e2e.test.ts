@@ -1289,7 +1289,8 @@ describe("T3: complete a Flight Segment", () => {
     const { replayed: _a, progress: _b, ...firstLists } = first;
     const { replayed: _c, progress: _d, ...replayLists } = replay;
     expect(replayLists).toEqual(firstLists);
-    expect(replay.progress).toEqual(first.progress);
+    expect(replay.progress).toEqual({ ...first.progress, evaluatedAt: replay.progress.evaluatedAt });
+    expect(Date.parse(replay.progress.evaluatedAt)).toBeGreaterThanOrEqual(Date.parse(first.progress.evaluatedAt));
     expect(await versionOf(p)).toBe(before + 1);
     expect(await count("SELECT COUNT(*) AS n FROM player_field_awards WHERE player_id = $1", [p.principal])).toBe(1);
     await expectLedgersBalanced(p);

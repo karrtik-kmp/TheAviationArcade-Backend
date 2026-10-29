@@ -288,13 +288,14 @@ describe("mirror policy", () => {
     };
     const snapshot = mirrorSnapshot(player, new Date("2026-10-28T13:00:00.000Z"));
     expect(Object.keys(snapshot)).toEqual([
-      "schemaVersion", "uid", "version", "statusPoints", "miles", "hints", "perfectStreak",
+      "schemaVersion", "uid", "version", "evaluatedAt", "statusPoints", "miles", "hints", "perfectStreak",
       "certifiedRank", "activeRank", "firstClassUntil", "updatedAt",
     ]);
     expect(snapshot).toMatchObject({
       schemaVersion: 2,
       uid: "u",
       version: 9,
+      evaluatedAt: "2026-10-28T13:00:00.000Z",
       statusPoints: 5_000,
       miles: 120,
       hints: 7,

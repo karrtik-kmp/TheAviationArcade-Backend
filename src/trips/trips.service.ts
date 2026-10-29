@@ -37,7 +37,7 @@ export type OpenTripOutcome =
   | { kind: "opened" | "replayed"; trip: TripView; player: PlayerRow }
   | { kind: "no_player" }
   | { kind: "local_date_mismatch" }
-  /** The Idempotency-Key was used before for a different module (U14: a key names one request). */
+  /** The Idempotency-Key was used before with a different request (U14: a key names one intent). */
   | { kind: "idempotency_key_reused" };
 
 export type AbandonTripOutcome =
@@ -100,7 +100,14 @@ export class TripsService {
         .where(and(eq(trips.playerId, principal), eq(trips.idempotencyKey, idempotencyKey)))
         .for("update");
       if (existing) {
-        if (existing.module !== input.module) return { value: { kind: "idempotency_key_reused" } };
+        // Compare the immutable intent before date freshness: unchanged retries still replay after midnight.
+        // flightCount is fixed by the boundary schema; the remaining request fields are stored on the Trip.
+        if (
+          existing.module !== input.module ||
+          existing.localDate !== input.localDate ||
+          existing.utcOffsetMinutes !== input.utcOffsetMinutes ||
+          existing.contentVersion !== input.contentVersion
+        ) return { value: { kind: "idempotency_key_reused" } };
         return { value: { kind: "replayed", trip: await tripView(tx, existing, player.perfectStreak, now) } };
       }
 

@@ -4,8 +4,10 @@ import { activeRankFor, certifiedRankFor, isPleasureCruise, nextRankFor, rankInd
 import type { Rank } from "../rules/ranks.js";
 
 export type ProgressView = {
-  /** players.version: bumped by every change visible here or in the UGS copy, so it totally orders them (D-1). */
+  /** Stored progress revision. Order equal-version evaluations by evaluatedAt. */
   version: number;
+  /** Server instant used to evaluate time-derived fields, including lazy Trip expiry. */
+  evaluatedAt: string;
   statusPoints: number;
   miles: number;
   /** Co-Pilot hints left. */
@@ -25,6 +27,7 @@ export function progressView(player: PlayerRow, now: Date): ProgressView {
   const activeRank = activeRankFor(player.statusPoints, player.activeRank);
   return {
     version: player.version,
+    evaluatedAt: now.toISOString(),
     statusPoints: player.statusPoints,
     miles: player.miles,
     hints: player.hints,

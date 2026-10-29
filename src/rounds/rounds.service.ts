@@ -377,7 +377,12 @@ export class RoundsService {
     // A Round result for a deleted player is a missing Round (asserted contract: 404 round_not_found).
     if (result.kind !== "ok") return { kind: "not_found" };
     const value = result.value;
-    if (value.kind === "completed") return { kind: "completed", result: { ...value.result, player: result.player } };
+    if (value.kind === "completed") {
+      return {
+        kind: "completed",
+        result: { ...value.result, player: await withLiveStreak(this.database.db, result.player, now) },
+      };
+    }
     return value;
   }
 

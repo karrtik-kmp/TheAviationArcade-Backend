@@ -499,7 +499,8 @@ describe("mirror worker (stubbed UGS)", () => {
     // mirror (like every Progress view) reads the Perfect Streak as 0 once the segment has expired.
     await sql.query("UPDATE trips SET expires_at = now() + interval '10 years' WHERE player_id = $1", [player.principal]);
     calls.length = 0;
-    const summary = await worker.tick(nextNow());
+    const evaluatedAt = nextNow();
+    const summary = await worker.tick(evaluatedAt);
     expect(summary).toMatchObject({ written: 1, retried: 0, rateLimited: false });
     expect(writes()).toHaveLength(1);
     const call = writes()[0]!;
@@ -509,7 +510,7 @@ describe("mirror worker (stubbed UGS)", () => {
     expect(call.body).not.toHaveProperty("writeLock");
     const progress = (await request(server).get("/v1/me/progress").set(player.auth)).body.progress;
     expect(Object.keys(call.body.value)).toEqual([
-      "schemaVersion", "uid", "version", "statusPoints", "miles", "hints", "perfectStreak",
+      "schemaVersion", "uid", "version", "evaluatedAt", "statusPoints", "miles", "hints", "perfectStreak",
       "certifiedRank", "activeRank", "firstClassUntil", "updatedAt",
     ]);
     expect(call.body.value).toMatchObject({
@@ -524,6 +525,7 @@ describe("mirror worker (stubbed UGS)", () => {
       activeRank: progress.activeRank,
       firstClassUntil: null,
     });
+    expect(call.body.value.evaluatedAt).toBe(new Date(evaluatedAt).toISOString());
     expect(call.body.value.updatedAt).toEqual(expect.any(String));
     expect(await outbox(player.principal)).toBeUndefined();
   });

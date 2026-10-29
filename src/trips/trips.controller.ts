@@ -90,7 +90,7 @@ export class TripsController {
         throw new ApiError(
           422,
           "idempotency_key_reused",
-          "This Idempotency-Key already opened a Flight Segment for a different module; use a new key.",
+          "This Idempotency-Key already opened a Flight Segment with a different request; use a new key.",
         );
       case "opened":
       case "replayed":

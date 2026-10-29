@@ -85,6 +85,13 @@ timeout; see `src/platform/server-timeouts.ts`.
 
 ## API
 
+API 0.6.0: Progress and new UGS copies carry `evaluatedAt`, the server instant used to evaluate time-derived
+fields. For one player, compare `version` first and `evaluatedAt` second at equal versions; expiry reads do not
+bump the stored version. For an old UGS copy without this field, prefer a direct API answer at the same version;
+otherwise keep the current value until a timestamped snapshot arrives. `updatedAt` is not an evaluation time.
+Trip opens now reject reuse of a key with any different request field (422 `idempotency_key_reused`): persist the
+original body with the key and retry both unchanged, including across midnight.
+
 The contract is [docs/openapi.yaml](docs/openapi.yaml), kept in step with the code by a parity test.
 The table lists only what is built. Flight Segments (Unity Trips: open, abandon, Rounds inside a segment) are built
 (slice T2), and so is completing one (slice T3, API 0.5.0: outcome, Field Awards, Clipper Cards, the Trip hint). The rest
@@ -111,7 +118,7 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | GET | `/v1/health` | Liveness, public. No database, not rate limited |
 | GET | `/v1/health/ready` | Readiness, public, not rate limited: `SELECT 1` within 2 s (cached ~1 s), else (or while shutting down) 503 `service_unavailable` |
 | PUT | `/v1/me` | Sign-in handshake. Creates the player on first call (201), else 200. Returns progress |
-| GET | `/v1/me/progress` | Progress, including `version` (it goes up by one with every change visible in the progress or the UGS copy). 404 `player_not_found` until `PUT /v1/me` |
+| GET | `/v1/me/progress` | Progress, including `version` (it orders stored changes; use evaluatedAt at equal versions). 404 `player_not_found` until `PUT /v1/me` |
 | PUT | `/v1/me/active-rank` | `{ rank }`. Dial Active Rank down (Pleasure Cruise) or back to Certified. A changed value bumps `version`; the value already in force changes nothing. 403 above Certified |
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
 | POST | `/v1/trips` | `{ module, flightCount: 10, localDate, utcOffsetMinutes, contentVersion }` and a required `Idempotency-Key`. Opens a Flight Segment at Active Rank (abandons the player's open one; its Perfect Streak starts at 0). 201 opened, 200 replay of a key already used, 422 `local_date_mismatch` (beyond 15 minutes of server time plus the offset). A full open segment is completed first (same transaction), not abandoned |
@@ -204,8 +211,8 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   **all** instances for `Retry-After`; 401/403 (our credentials) pause all of them for 15 min with one error log. **The pause is stored in the shared row, so it survives restarts of every instance.** After fixing the credentials, clear it instead of waiting out the 15 minutes: `UPDATE ugs_budget SET paused_until = NULL WHERE name = 'cloud_save_admin'` (the worker picks it up on its next tick); 5xx/network failures back off per row (5 s doubling to 15 min); another 4xx is retried
   and a write is dropped after 3 rejections (the next progress change queues it again), while a deletion keeps
   retrying daily. Every tick with due rows logs backlog and lag (never values). `/v1/health/ready` ignores UGS.
-- **Ordering.** The game orders UGS copies (and a copy against a server answer) by `version`: it goes up by one with every
-  change visible in the copy, an Active Rank change included, and `GET /v1/me/progress` returns the same counter (D-1,
+- **Ordering.** The game orders UGS copies (and a copy against a server answer) by `version` first, then `evaluatedAt` at equal versions. The version goes up for stored
+  progress changes, an Active Rank change included, and `GET /v1/me/progress` returns the same counter (D-1,
   2026-10-29). `updatedAt` is informational. A UGS re-link to a different UGS player and a stale-holder link move bump it (D-1); a first link enqueues at the current
   version without bumping it, and re-linking the same UGS player changes nothing.
 - **Lag.** Writes are paced to stay inside UGS's admin rate limit (60 req/s and 1,000 per 30 min per project and IP, about

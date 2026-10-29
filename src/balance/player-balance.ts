@@ -88,7 +88,8 @@ class InsufficientBalance extends ExpectedRollback {
  *    depth if the lock were ever lost); the Perfect Streak and firstClassUntil are absolute writes under the same lock.
  * 3. players.version += 1 when the step carries a `change` (even an all-zero one: a completed Round is a progress
  *    event whether or not it pays), or a `profile` whose value differs from the stored one (D-1: every change visible
- *    in the UGS copy bumps the version, so it is a total order). A step with neither changes nothing.
+ *    in stored progress bumps the version). Time-derived views also carry evaluatedAt for equal-version ordering.
+ *    A step with neither changes nothing.
  * 4. One ledger row per nonzero posting. Zero deltas are skipped. UNIQUE (player, kind, ref) violations propagate.
  * 5. Any applied change, or `republish`, calls enqueueMirror(tx, id, newVersion, now) in the same transaction.
  * 6. A posting that would take a balance below 0 rolls back the whole transaction, including the caller's own

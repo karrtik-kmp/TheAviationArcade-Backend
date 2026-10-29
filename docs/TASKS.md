@@ -249,6 +249,22 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-10-29 (API/interface review fixes, API 0.6.0): completed-Flight replays now pass the returned player through
+  withLiveStreak, so an expired Trip reports zero in both progress and trip. Progress and new UGS snapshots add
+  evaluatedAt: version orders stored changes; evaluation time orders time-derived views at equal versions. Reads
+  stay read-only, and legacy UGS copies without the additive field remain valid (prefer the direct API answer at
+  equal versions; never substitute updatedAt). Trip opening compares all mutable request fields with the stored
+  intent (module, localDate, utcOffsetMinutes, contentVersion; flightCount is fixed at ten); changed-body reuse is
+  422 idempotency_key_reused before date freshness, and identical retries still work across midnight. New
+  test/api-interface-review.e2e.test.ts: 8 cases, including each changed field, concurrent conflicting payloads,
+  expired result replay, cross-API/UGS evaluation ordering and First Class expiry. Six initial regression cases
+  failed before the fixes. Mutation: removing the contentVersion comparison failed its regression (200 vs 422);
+  the implementation was restored byte for byte. Verification from this folder: npm test 21 files, 502/502;
+  npm run test:e2e 10 files, 367/367; npm run typecheck and npm run build clean; git diff --check clean. The first
+  full e2e pass exposed an old strict UGS field-list assertion; updated it to assert the worker's exact evaluatedAt,
+  then reran the full suite green. No migration or cloud call. Consumers must adopt the ordering pair and retain
+  the original Trip-open body with its key; README, OpenAPI and architecture/design notes document the contract.
+
 - 2026-10-29 (T3 complete, implementer's run, before review): from PowerShell in `H:\Work\TheAviationArcade\Backend` (uppercase H),
   Postgres on 5433 up. `npm run db:generate` produced `0010_trip_completion` with only T3's DDL (renamed with `--name`; a second run:
   "No schema changes"); `npm run typecheck` clean; `npm test` 20 files, 443/443; `npm run db:migrate` applied 0010 to the dev database;
