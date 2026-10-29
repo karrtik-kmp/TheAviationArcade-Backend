@@ -31,6 +31,7 @@ npm run typecheck             # tsc --noEmit
 npm test                      # unit tests: rules + token verification (no database)
 npm run test:e2e              # API tests against airplane_games_test (refuses any db not ending _test)
 npm run db:generate           # new migration from src/db/schema.ts (never edit an applied one)
+npm run contracts:write       # builds, then regenerates contracts/*.json (see contracts/README.md); commit the result
 npm run bunny:check           # builds, then probes Bunny Storage (upload/read/delete one object). Needs real credentials: only with the owner's sign-off
 ```
 

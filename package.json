@@ -15,6 +15,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "contracts:write": "nest build && node scripts/write-contracts.mjs",
     "bunny:check": "nest build && node scripts/bunny-check.mjs"
   },
   "dependencies": {

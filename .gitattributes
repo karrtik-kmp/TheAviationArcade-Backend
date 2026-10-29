@@ -1,0 +1,2 @@
+# Generated contracts are byte-compared by tests and copied verbatim by consumers: always LF.
+contracts/*.json text eol=lf

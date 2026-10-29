@@ -15,6 +15,7 @@ export default defineConfig({
       "test/xlsx.test.ts",
       "test/military-mapping.test.ts",
       "test/catalog.test.ts",
+      "test/contracts.test.ts",
       "test/import-plan.test.ts",
       "test/ugs.test.ts",
       "test/mirror-worker.test.ts",

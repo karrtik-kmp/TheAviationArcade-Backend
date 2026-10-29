@@ -1,4 +1,4 @@
-import { RANKS, type Rank } from "./ranks.js";
+import { RANKS, RANK_THRESHOLDS, type Rank } from "./ranks.js";
 import { MODULE_IDS, type ModuleId } from "./modules.js";
 import { FLIGHTS_PER_TRIP } from "./trips.js";
 
@@ -61,4 +61,33 @@ export function rankFromDisplayName(text: string): Rank | undefined {
 /** Module ids in Unity ticket order. */
 export function modulesInTicketOrder(): readonly ModuleId[] {
   return [...MODULE_IDS].sort((a, b) => MODULE_CATALOG[a].ticket - MODULE_CATALOG[b].ticket);
+}
+
+/** The contract format tag. A breaking change (rename, removal, reorder) becomes `catalog.v2`, a new file. */
+export const CATALOG_FORMAT = "catalog.v1";
+
+/**
+ * The published catalog contract (`contracts/catalog.v1.json`), derived only from `RANKS`, `RANK_THRESHOLDS`,
+ * `RANK_CATALOG`, `MODULE_CATALOG` and the trip constants. Ranks go lowest first and modules in Unity ticket
+ * order; both orders are load-bearing for consumers. Stable key order, 2-space indent, trailing newline.
+ */
+export function renderCatalogJson(): string {
+  const catalog = {
+    format: CATALOG_FORMAT,
+    modules: modulesInTicketOrder().map((id) => ({
+      id,
+      unity: MODULE_CATALOG[id].unity,
+      slug: MODULE_CATALOG[id].slug,
+      ticket: MODULE_CATALOG[id].ticket,
+    })),
+    ranks: RANKS.map((id) => ({
+      id,
+      unity: RANK_CATALOG[id].unity,
+      name: RANK_CATALOG[id].name,
+      statusPoints: RANK_THRESHOLDS[id],
+    })),
+    trip: { flightsPerTrip: FLIGHTS_PER_TRIP, maxFlightsAtOwnRank: MAX_FLIGHTS_AT_OWN_RANK },
+  };
+  return `${JSON.stringify(catalog, null, 2)}
+`;
 }

@@ -1,0 +1,89 @@
+{
+  "format": "catalog.v1",
+  "modules": [
+    {
+      "id": "identifier",
+      "unity": "AircraftIdentifier",
+      "slug": "aircraft-identifier",
+      "ticket": 1
+    },
+    {
+      "id": "aircraft-identifier-military",
+      "unity": "AircraftIdentifierMilitary",
+      "slug": "aircraft-identifier-military",
+      "ticket": 2
+    },
+    {
+      "id": "tail-identifier",
+      "unity": "TailIdentifier",
+      "slug": "tail-identifier",
+      "ticket": 3
+    },
+    {
+      "id": "airport-spotter",
+      "unity": "AirportSpotter",
+      "slug": "airport-spotter",
+      "ticket": 4
+    },
+    {
+      "id": "atc-match",
+      "unity": "AtcMatch",
+      "slug": "atc-match",
+      "ticket": 5
+    },
+    {
+      "id": "call-sign-match",
+      "unity": "CallSignMatch",
+      "slug": "call-sign-match",
+      "ticket": 6
+    },
+    {
+      "id": "code-search",
+      "unity": "CodeSearch",
+      "slug": "code-search",
+      "ticket": 7
+    },
+    {
+      "id": "runway-identifier",
+      "unity": "RunwayIdentifier",
+      "slug": "runway-identifier",
+      "ticket": 8
+    }
+  ],
+  "ranks": [
+    {
+      "id": "trainee",
+      "unity": "Trainee",
+      "name": "Trainee",
+      "statusPoints": 0
+    },
+    {
+      "id": "first-officer",
+      "unity": "FirstOfficer",
+      "name": "First Officer",
+      "statusPoints": 10000
+    },
+    {
+      "id": "captain",
+      "unity": "Captain",
+      "name": "Captain",
+      "statusPoints": 50000
+    },
+    {
+      "id": "check-airman",
+      "unity": "CheckAirman",
+      "name": "Check Airman",
+      "statusPoints": 100000
+    },
+    {
+      "id": "chief-pilot",
+      "unity": "ChiefPilot",
+      "name": "Chief Pilot",
+      "statusPoints": 400000
+    }
+  ],
+  "trip": {
+    "flightsPerTrip": 10,
+    "maxFlightsAtOwnRank": 6
+  }
+}

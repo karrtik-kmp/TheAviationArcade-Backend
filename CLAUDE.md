@@ -30,6 +30,8 @@ sign-off.
   **Flight** and a **Flight Segment** is a **Trip**. Keep the backend type names; use the mapping in contracts
   and messages to other repos.
 - Applied migrations are immutable: generate a new one.
+- `contracts/` is generated (`npm run contracts:write`), never hand-edited; consumers vendor it verbatim. See
+  `contracts/README.md`.
 
 ## Workflow
 
