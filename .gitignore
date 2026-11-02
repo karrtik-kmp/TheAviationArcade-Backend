@@ -18,3 +18,4 @@ npm-debug.log*
 # Service-account keys (never commit)
 *service-account*.json
 *-adminsdk-*.json
+firebase-token.txt

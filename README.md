@@ -66,7 +66,7 @@ keys. Players created this way live in your local database only.
 | `BLOB_STORE` | `none` / `memory` / `bunny`. Where staff-uploaded files go. Default `memory` locally and in tests (lost on restart), `none` in production (uploads answer 503 `storage_unavailable`); production refuses `memory` |
 | `BUNNY_STORAGE_ZONE` / `BUNNY_STORAGE_PASSWORD` | Required when `BLOB_STORE=bunny`. Zone `aviation-arcade-website` (shared with the website) and its read-write zone password, used exactly as given (not trimmed); a secret, never logged or echoed in config errors. Any `BUNNY_STORAGE_*` set while `BLOB_STORE` is not `bunny` fails at startup |
 | `BUNNY_STORAGE_REGION` / `BUNNY_STORAGE_PREFIX` | Default `de` (endpoint `https://de-s3.storage.bunnycdn.com`) and `backend/`. The prefix keeps this backend's objects apart from the website's: lowercase `[a-z0-9_-]` segments, ending in `/`, no leading `/` or `..` |
-| `UGS_PROJECT_ID` / `UGS_ENVIRONMENT_ID` / `UGS_SERVICE_ACCOUNT_KEY_ID` / `UGS_SERVICE_ACCOUNT_SECRET` / `UGS_OIDC_PROVIDER` | Optional, **all five or none** (a partial set fails at startup, naming the missing variables only). Turns on the UGS progress mirror and `PUT /v1/me/ugs-link`. The secret is a service account secret, never logged or echoed. `UGS_OIDC_PROVIDER` is the Player Auth OIDC provider id (`oidc-` + up to 15 of `a-z0-9_-`, for example `oidc-firebase`) |
+| `UGS_PROJECT_ID` / `UGS_ENVIRONMENT_ID` / `UGS_SERVICE_ACCOUNT_KEY_ID` / `UGS_SERVICE_ACCOUNT_SECRET` / `UGS_OIDC_PROVIDER` | Optional, **all five or none** (a partial set fails at startup, naming the missing variables only). Refused at startup with a `demo-` `FIREBASE_PROJECT_ID` (except `APP_ENV=test`, whose values are fake), so a demo player can never write to real UGS. Turns on the UGS progress mirror and `PUT /v1/me/ugs-link`. The secret is a service account secret, never logged or echoed. `UGS_OIDC_PROVIDER` is the Player Auth OIDC provider id (`oidc-` + up to 15 of `a-z0-9_-`, for example `oidc-firebase`) |
 | `UGS_MIRROR_MAX_PER_MIN` | Default 25, 1–33. Cloud Save calls per minute (token bucket, burst ≤ 10), **shared by all instances** through one Postgres row (`ugs_budget`), so run every instance with the same value. UGS allows about 33/min sustained per project and IP. Setting it without the other `UGS_*` variables fails at startup |
 | `UGS_MIRROR_MIN_INTERVAL_SEC` | Default 300, 0–3600; 0 turns the delay off. The least time between two copy writes for one player (C3): Rounds inside the interval coalesce into one write of the latest version. The first write after a link or re-link is not delayed (a Round that was already waiting when the player re-linked becomes due at once), and deletions are never delayed. Optional like `UGS_MIRROR_MAX_PER_MIN`, so it is not one of the five required variables, but setting it without them also fails at startup |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
@@ -272,9 +272,10 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   in `ugs_mirror_deletions`, due only after any in-flight write could have finished (lease + request timeout); the
   worker deletes the Cloud Save item afterwards, best effort and retried. No network call happens inside the player
   lock.
-- **Not verified yet** (needs a real UGS project and token): the project/environment claim names in the UGS token
-  (`project_id` or `upid`, `envId`), and that the OIDC link's `externalId` equals the Firebase uid. Both are covered by
-  `ASSUMPTION` tests against stubs; nothing in the tests contacts UGS.
+- **Verified on `development`, 2026-11-02** (`npm run ugs:check -- --live`, one test player, token exchanged by the
+  script): the token claims, `externalId` = Firebase uid, the link, and the Cloud Save copy after the link and after a
+  banked Round. **Not verified:** a sign-in from the game, `production`, the Cloud Save delete, load or rate limits.
+  Nothing in the tests contacts UGS: `vitest.e2e.config.ts` drops any `UGS_*` value read from `.env`.
 
 ## Design rules
 

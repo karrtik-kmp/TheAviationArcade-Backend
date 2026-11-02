@@ -379,7 +379,7 @@ describe("PUT /v1/me/ugs-link", () => {
     expect((await player.link()).status).toBe(201);
   });
 
-  it("ASSUMPTION (UNVERIFIED): the OIDC link's externalId is the Firebase uid, and providerId is UGS_OIDC_PROVIDER", async () => {
+  it("the OIDC link's externalId is the Firebase uid, and providerId is UGS_OIDC_PROVIDER (seen on one real player, 2026-11-02)", async () => {
     const player = await newPlayer();
     identities.set(player.ugsId, [{ externalId: player.principal, providerId: PROVIDER }]); // the full principal is NOT the uid
     const res = await request(server).put("/v1/me/ugs-link").set(player.auth).send({ ugsToken: await ugsToken(player.ugsId) });

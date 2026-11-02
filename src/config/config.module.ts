@@ -288,6 +288,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_MIRROR_MAX_PER_MIN,
     UGS_MIRROR_MIN_INTERVAL_SEC,
   });
+  // UGS settings point at a real project: a demo player must never write a copy there. Tests use fake settings and a
+  // stubbed fetcher, and vitest.e2e.config.ts drops any real ones read from .env. Names only.
+  if (ugs !== undefined && APP_ENV !== "test" && FIREBASE_PROJECT_ID.startsWith("demo-")) {
+    throw new Error("Invalid environment configuration: UGS_* settings are not allowed with a demo- FIREBASE_PROJECT_ID");
+  }
   return {
     appEnv: APP_ENV,
     databaseUrl: DATABASE_URL,

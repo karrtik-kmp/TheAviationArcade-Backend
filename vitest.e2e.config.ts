@@ -7,6 +7,9 @@ try {
   // Fine: fall back to the local default below.
 }
 
+// Tests never reach real UGS: the UGS suites set their own fake values, so nothing real from .env may stay.
+for (const name of Object.keys(process.env)) if (name.startsWith("UGS_")) delete process.env[name];
+
 // Local throwaway default (matches docker-compose.yml). Never the dev database.
 const DEFAULT_TEST_DATABASE_URL =
   "postgres://airplane:airplane_local_only@127.0.0.1:5433/airplane_games_test";

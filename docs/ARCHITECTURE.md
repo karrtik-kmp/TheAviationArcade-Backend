@@ -219,18 +219,18 @@ sample. Nothing existed to sync.
 - UGS player tokens: RS256, JWKS `https://player-auth.services.api.unity.com/.well-known/jwks.json` (kid `public:<uuid>`), `iss`
   `https://player-auth.services.api.unity.com`, `sub` = the UGS player id, `exp`/`nbf`.
 - Player Auth admin: `GET https://services.api.unity.com/player-identity/v1/projects/{projectId}/users/{playerId}` (Basic
-  service account with scope `player_auth.users.get`; the API must be enabled in the dashboard; the docs name no role for that
-  scope, re-checked 2026-11-02, so read it off the role list) returns `externalIds[] { externalId, providerId }`. Rate limit
+  service account with scope `player_auth.users.get`, given by the project role Authentication Viewer, confirmed 2026-11-02; the docs
+  name no role for it; the API must be enabled in the dashboard) returns `externalIds[] { externalId, providerId }`. Rate limit
   10 req/s and 500 per 30 minutes.
 
-**UNVERIFIED (kept as `ASSUMPTION` tests; `npm run ugs:check -- --live` settles both against the real project, with the owner's
-sign-off):**
+**Verified against a real `development` token, 2026-11-02 (`npm run ugs:check -- --live`):**
 
-1. The token claims `project_id` / `upid`, `envId` and `idd` are described only in a support article. The code requires a
-   project claim (either name), checks `envId` when present, and ignores `idd`.
-2. That the `externalId` of the OIDC link equals the Firebase uid, and that `providerId` equals the provider id configured
-   in `UGS_OIDC_PROVIDER` (for example `oidc-firebase`). If the service account credential is rejected, link answers 503
-   `service_unavailable`.
+1. The token has `project_id` and `idd`, no top-level `upid` or `envId`; `aud` is an array with `idd`, `envName`, `envId` and `upid`
+   entries. The code requires a project claim (either name) and an environment (from `aud` or a top-level `envId`), and ignores `idd`.
+2. The `externalId` of the OIDC link equals the Firebase uid, and `providerId` equals `UGS_OIDC_PROVIDER` (`oidc-firebase`).
+   If the service account credential is rejected, link answers 503 `service_unavailable`.
+
+Both were seen on one player from a server-side token exchange, not yet from a game sign-in.
 
 **Identity link (`PUT /v1/me/ugs-link`).** UGS Authentication with Firebase as an OpenID Connect provider (issuer
 `https://securetoken.google.com/<projectId>`); the game signs in with the Firebase ID token and sends the resulting UGS token.

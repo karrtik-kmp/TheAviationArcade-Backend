@@ -5,9 +5,9 @@ import { AuthUnavailableError, failClosedKeys } from "../auth/firebase.js";
 /**
  * UGS (Unity Authentication) player token verification. Verified 2026-10-28 from the UGS docs: RS256, JWKS at
  * the URL below (kid `public:<uuid>`), iss `https://player-auth.services.api.unity.com`, `sub` = the UGS player
- * id, `exp`/`nbf`. UNVERIFIED until a real token is decoded: the project and environment claim names
- * (`project_id` or `upid`, `envId`) and the `idd` claim, which only a support article describes. The code
- * therefore requires a project claim from either name, checks `envId` whenever it is present, and ignores `idd`.
+ * id, `exp`/`nbf`. A real `development` token (2026-11-02) carries `project_id` and an `aud` array with `idd`, `envName`,
+ * `envId` and `upid` entries, with no top-level `envId` or `upid`. The code requires a project claim from either name
+ * and an environment from an `envId:` entry in `aud` or a top-level `envId`; every one read must match. `idd` is ignored.
  */
 export const UGS_ISSUER = "https://player-auth.services.api.unity.com";
 const UGS_JWKS = new URL("https://player-auth.services.api.unity.com/.well-known/jwks.json");
@@ -65,15 +65,19 @@ export async function verifyUgsToken(
     throw new InvalidUgsTokenError("signature or claims invalid");
   }
 
-  // A project claim is mandatory (either name); every one present must match. envId is checked when present.
+  // A project claim (either name) and an environment are mandatory; every one read must match. The `upid:` entry in `aud` is not read.
   const projectClaims = [stringClaim(payload, "project_id"), stringClaim(payload, "upid")].filter(
     (value): value is string => value !== undefined,
   );
   if (projectClaims.length === 0) throw new InvalidUgsTokenError("no project claim");
   if (projectClaims.some((value) => value !== options.projectId)) throw new InvalidUgsTokenError("wrong project");
-  if ("envId" in payload && stringClaim(payload, "envId") !== options.environmentId) {
-    throw new InvalidUgsTokenError("wrong environment");
-  }
+  const audiences = [payload.aud].flat().filter((value): value is string => typeof value === "string");
+  const environmentClaims = [
+    ...audiences.filter((value) => value.startsWith("envId:")).map((value) => value.slice("envId:".length)),
+    ...("envId" in payload ? [stringClaim(payload, "envId")] : []),
+  ];
+  if (environmentClaims.length === 0) throw new InvalidUgsTokenError("no environment claim");
+  if (environmentClaims.some((value) => value !== options.environmentId)) throw new InvalidUgsTokenError("wrong environment");
 
   const sub = payload.sub;
   if (typeof sub !== "string" || !PLAYER_ID.test(sub)) throw new InvalidUgsTokenError("bad subject");

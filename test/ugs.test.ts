@@ -69,12 +69,16 @@ describe("verifyUgsToken", () => {
     await expect(verifyUgsToken(await ugsToken(), OPTIONS, keys)).resolves.toEqual({ ugsPlayerId: "ugsPlayer123" });
   });
 
-  it("ASSUMPTION (UNVERIFIED claim names): the project claim may be `upid` instead of `project_id`", async () => {
+  it("accepts a top-level `upid` as the project claim, a shape no real token has shown (2026-11-02 token: `project_id`)", async () => {
     await expect(verifyUgsToken(await ugsToken({ upid: PROJECT, envId: ENV }), OPTIONS, keys)).resolves.toBeTruthy();
   });
 
-  it("ASSUMPTION (UNVERIFIED): envId is checked when present and not required when absent", async () => {
-    await expect(verifyUgsToken(await ugsToken({ project_id: PROJECT }), OPTIONS, keys)).resolves.toBeTruthy();
+  it("the environment is read from aud, the shape of a real token (2026-11-02), and is required", async () => {
+    const aud = (env: string) => ["idd:abc", "envName:development", `envId:${env}`, `upid:${PROJECT}`];
+    await expect(verifyUgsToken(await ugsToken({ project_id: PROJECT, aud: aud(ENV) }), OPTIONS, keys)).resolves.toBeTruthy();
+    expect(await reason(await ugsToken({ project_id: PROJECT, aud: aud("another-env") }))).toBe("wrong environment");
+    expect(await reason(await ugsToken({ project_id: PROJECT }))).toBe("no environment claim");
+    expect(await reason(await ugsToken({ project_id: PROJECT, aud: ["idd:abc"] }))).toBe("no environment claim");
     expect(await reason(await ugsToken({ project_id: PROJECT, envId: "someone-elses-env" }))).toBe("wrong environment");
   });
 
@@ -318,7 +322,7 @@ describe("mirror policy", () => {
 });
 
 describe("UGS config", () => {
-  const base = { APP_ENV: "local", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/db", FIREBASE_PROJECT_ID: "demo-airplane-games" };
+  const base = { APP_ENV: "local", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/db", FIREBASE_PROJECT_ID: "airplane-games-auth-20261022" };
   const full = {
     UGS_PROJECT_ID: PROJECT,
     UGS_ENVIRONMENT_ID: ENV,
@@ -348,6 +352,14 @@ describe("UGS config", () => {
       mirrorMinIntervalSec: 300,
     });
     expect(loadConfig({ ...base, ...full, UGS_MIRROR_MAX_PER_MIN: "12" }).ugs?.mirrorMaxPerMin).toBe(12);
+  });
+
+  it("refuses real UGS settings with a demo Firebase project, naming no value", () => {
+    const message = failure({ ...base, ...full, FIREBASE_PROJECT_ID: "demo-airplane-games" });
+    expect(message).toContain("demo-");
+    expect(message).not.toContain("super-secret-value");
+    expect(loadConfig({ ...base, FIREBASE_PROJECT_ID: "demo-airplane-games" }).ugs).toBeUndefined();
+    expect(loadConfig({ ...base, ...full, APP_ENV: "test", FIREBASE_PROJECT_ID: "demo-airplane-games" }).ugs).toBeDefined();
   });
 
   it("UGS_MIRROR_MIN_INTERVAL_SEC (C3): default 300, 0 disables, range 0-3600, integers only", () => {

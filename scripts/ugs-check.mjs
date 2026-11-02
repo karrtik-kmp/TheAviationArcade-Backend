@@ -1,6 +1,6 @@
-// Smoke check of the real UGS setup with the backend's own UgsClient and verifyUgsToken. It settles the two UNVERIFIED items
-// in docs/ARCHITECTURE.md (the token claims; externalId = Firebase uid and providerId = UGS_OIDC_PROVIDER), then proves a
-// progress copy reaches Cloud Save after a banked Round.
+// Smoke check of the real UGS setup with the backend's own UgsClient and verifyUgsToken. It checks the token claims and
+// externalId = Firebase uid with providerId = UGS_OIDC_PROVIDER (docs/ARCHITECTURE.md), then proves a progress copy reaches
+// Cloud Save after a banked Round.
 //
 // Run `npm run ugs:check` (it builds first): that only checks the settings and prints the plan, and sends NOTHING.
 // `npm run ugs:check -- --live` contacts UGS. Use it only with the owner's sign-off: it writes a real copy, it can create a
@@ -52,9 +52,10 @@ function report(name, passed, detail = "") {
   results.push(passed);
   console.log(`${passed ? "PASS" : "FAIL"}  ${name}${detail ? `: ${detail}` : ""}`);
 }
+// Throws so the Trip cleanup in step 5 still runs; the handler at the end of the file reports it.
+class Stopped extends Error {}
 function stop(message) {
-  console.error(`Stopped: ${message}`);
-  process.exit(1);
+  throw new Stopped(message);
 }
 function readToken(name) {
   try {
@@ -70,6 +71,11 @@ function claimsOf(token) {
     stop("a token is not a JWT.");
   }
 }
+
+process.on("uncaughtException", (error) => {
+  console.error(error instanceof Stopped ? `Stopped: ${error.message}` : "Stopped: unexpected error.");
+  process.exit(1);
+});
 
 const firebaseToken = readToken("UGS_CHECK_FIREBASE_TOKEN_FILE");
 const uid = claimsOf(firebaseToken).sub;
@@ -90,7 +96,7 @@ if (env("UGS_CHECK_UGS_TOKEN_FILE")) {
   ugsToken = (await res.json()).idToken;
 }
 
-// 2. UNVERIFIED item 1: the token claims.
+// 2. The token claims.
 const { UgsClient } = await import("../dist/ugs/ugs-client.js");
 const { verifyUgsToken } = await import("../dist/ugs/ugs-token.js");
 let ugsPlayerId;
@@ -106,10 +112,14 @@ console.log(`      claim names: ${Object.keys(claims).sort().join(", ")}`);
 for (const name of ["project_id", "upid"]) {
   console.log(`      ${name}: ${name in claims ? (claims[name] === projectId ? "present, equals UGS_PROJECT_ID" : "present, DIFFERENT") : "absent"}`);
 }
-console.log(`      envId: ${"envId" in claims ? (claims.envId === environmentId ? "present, equals UGS_ENVIRONMENT_ID" : "present, DIFFERENT") : "absent (not checked by the code)"}`);
+console.log(`      envId: ${"envId" in claims ? (claims.envId === environmentId ? "present, equals UGS_ENVIRONMENT_ID" : "present, DIFFERENT") : "absent (the code reads it from aud)"}`);
 console.log(`      idd: ${"idd" in claims ? "present" : "absent"}`);
+const audiences = [claims.aud].flat().filter((entry) => typeof entry === "string");
+console.log(`      aud entries (names only): ${audiences.map((entry) => (entry.includes(":") ? entry.split(":")[0] : "(no name)")).join(", ") || "none"}`);
+console.log(`      aud names UGS_ENVIRONMENT_ID: ${audiences.includes(`envId:${environmentId}`)}`);
+console.log(`      aud upid equals UGS_PROJECT_ID (not enforced): ${audiences.includes(`upid:${projectId}`)}`);
 
-// 3. UNVERIFIED item 2: externalId and providerId. Also proves the Player Auth admin API is enabled and the role holds player_auth.users.get.
+// 3. externalId and providerId. Also proves the Player Auth admin API is enabled and the role holds player_auth.users.get.
 const client = new UgsClient(
   { projectId, environmentId, serviceAccountKeyId: env("UGS_SERVICE_ACCOUNT_KEY_ID"), serviceAccountSecret: env("UGS_SERVICE_ACCOUNT_SECRET") },
   (url, init) => fetch(url, init),
@@ -138,7 +148,7 @@ async function backend(method, path, body, headers = {}) {
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
-  });
+  }).catch(() => stop(`no answer from the backend at ${baseUrl}. Start it with the real FIREBASE_PROJECT_ID and the same UGS_* settings.`));
   const text = await res.text();
   let json = null;
   try {
