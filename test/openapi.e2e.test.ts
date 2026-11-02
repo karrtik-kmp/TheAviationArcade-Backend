@@ -417,6 +417,31 @@ describe("openapi contract: real responses validate against the spec", () => {
     rejects("AdminMe", { principal: "x", staff: false });
   });
 
+  it("content: the manifest and each served document validate against the spec, headers included (slice T4)", async () => {
+    const manifest = await request(server).get("/v1/content/manifest").set(auth);
+    expect(manifest.status).toBe(200);
+    check("ContentManifest", manifest.body);
+    expect(manifest.headers["cache-control"]).toBe(spec.components.headers.NoCache.schema.const);
+    expect(manifest.headers["etag"]).toMatch(new RegExp(spec.components.headers.ETag.schema.pattern));
+    const schemaOf: Record<string, string> = {
+      "field-awards": "FieldAwardCatalogDocument",
+      "clipper-cards": "ClipperCardCatalogDocument",
+      "aircraft-tags": "AircraftTagDocument",
+    };
+    expect(manifest.body.documents.length).toBeGreaterThanOrEqual(2);
+    for (const entry of manifest.body.documents as { name: string; url: string }[]) {
+      const served = await request(server).get(entry.url).set(auth);
+      expect(served.status, entry.url).toBe(200);
+      check(schemaOf[entry.name] as string, served.body);
+      expect(served.headers["cache-control"]).toBe(spec.components.headers.Immutable.schema.const);
+      expect(served.headers["etag"]).toMatch(new RegExp(spec.components.headers.ETag.schema.pattern));
+    }
+    const missing = await request(server).get("/v1/content/documents/field-awards/999").set(auth);
+    expect(missing.status).toBe(404);
+    check("Error", missing.body);
+    expect((await request(server).get("/v1/content/manifest")).status).toBe(401);
+  });
+
   it("request schemas accept and reject the same bodies as the server", async () => {
     const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.5, ...factsFor("atc-match") };
     const open = openBody("atc-match");

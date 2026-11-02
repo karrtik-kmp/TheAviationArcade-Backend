@@ -5,7 +5,7 @@ import { playerClipperCards, playerCounters, playerFieldAwards, rounds, trips } 
 import type { ClipperCardRow, PlayerRow, TripRow } from "../db/schema.js";
 import { recordSighting } from "../rules/clipper-cards.js";
 import type { CardModule, CardRecord } from "../rules/clipper-cards.js";
-import { evaluateFieldAwards } from "../rules/field-awards.js";
+import { FIELD_AWARD_IDS, evaluateFieldAwards } from "../rules/field-awards.js";
 import type { FieldAwardId } from "../rules/field-awards.js";
 import type { ModuleId } from "../rules/modules.js";
 import type { Rank } from "../rules/ranks.js";
@@ -124,7 +124,9 @@ async function readCompletion(
     .select()
     .from(playerFieldAwards)
     .where(and(eq(playerFieldAwards.playerId, principal), eq(playerFieldAwards.tripId, trip.id)));
-  const order = new Map(catalogInForce().awards.map((a, i) => [a.id as string, i]));
+  // Catalog (sheet) order, A23. The ids and their order are code (FIELD_AWARD_IDS), not the document in force, so a
+  // replay lists exactly what the first answer listed even after a newer catalog version was published.
+  const order = new Map(FIELD_AWARD_IDS.map((id, i) => [id as string, i]));
   return {
     trip: summaryOf(trip),
     fieldAwards: awards
@@ -254,7 +256,7 @@ export async function completeFullTrip(tx: Tx, principal: string, trip: TripRow,
   }
 
   // Field Awards (design 3.6): all 28 against the catalog in force; an earned row is never removed.
-  const catalog = catalogInForce();
+  const catalog = await catalogInForce(tx);
   const allCards = (await tx.select().from(playerClipperCards).where(eq(playerClipperCards.playerId, principal))).map(cardRecord);
   const earnedRows = await tx
     .select({ awardId: playerFieldAwards.awardId })

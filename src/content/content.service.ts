@@ -18,6 +18,7 @@ import { BLOB_STORE, StorageRequestError, StorageUnavailableError } from "../sto
 import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
 import { compareIds } from "./content-modules.js";
+import { ContentDocumentsService } from "./documents/content-documents.service.js";
 import { planHash, planImport } from "./import-plan.js";
 import { CONTENT_STATUSES, type ContentStatus } from "../db/enums.js";
 import type { ExistingItem, FieldDiff, ImportPlan } from "./import-plan.js";
@@ -100,6 +101,7 @@ export class ContentService {
   constructor(
     private readonly database: DatabaseService,
     @Inject(BLOB_STORE) private readonly blobs: BlobStore,
+    private readonly documents: ContentDocumentsService,
   ) {}
 
   /**
@@ -170,7 +172,7 @@ export class ContentService {
       throw error;
     }
 
-    return this.database.withTransaction(async (tx): Promise<ApplyResult> => {
+    const applied = await this.database.withTransaction(async (tx): Promise<ApplyResult> => {
       // Serialises imports per module, so two uploads can never plan against the same stale rows. Try, never
       // wait: a waiting import would hold a pooled connection, so a busy module is a retryable 409 instead.
       const lock = await tx.execute<{ locked: boolean }>(
@@ -297,6 +299,9 @@ export class ContentService {
       });
       return { replayed: false, import: summary(receipt), warnings };
     });
+    // Committed. A fresh database seals clipper-cards v1 only once Military items exist (design 7, T4 as built).
+    if (!applied.replayed) await this.documents.afterImport();
+    return applied;
   }
 
   async listItems(module: string): Promise<ItemView[]> {

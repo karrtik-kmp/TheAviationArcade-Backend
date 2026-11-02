@@ -26,6 +26,7 @@ export default defineConfig({
       "test/field-awards.test.ts",
       "test/dealer.test.ts",
       "test/deal-items.test.ts",
+      "test/content-documents.test.ts",
     ],
   },
 });

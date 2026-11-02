@@ -1,10 +1,22 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.9.0 (slice T4, design 7).** Two routes are built, both for any signed-in player and both used by the app:
+    `GET /v1/content/manifest` and `GET /v1/content/documents/{name}/{version}` (they were `x-planned`). The manifest keeps
+    Unity's `ManifestWire` / `ModuleWire` fields and adds `documents[]`; all eight modules are `enabled: true` and
+    `contentVersion` / `assetBundleUrl` are null. The manifest `version` is a stable hash (same on every instance and
+    after a restart) and its `ETag`; `If-None-Match` gives 304. Documents are immutable: the bytes of `(name, version)`
+    never change, they are the canonical JSON of the document (keys sorted at every depth, no whitespace, UTF-8, integers
+    only) and hash to the `sha256` the manifest lists. The only exceptions to `/v1` `no-store` are these two routes' 200 and
+    304 answers (`no-cache` and `private, max-age=31536000, immutable`); their errors stay `no-store`. No new error code.
+    Version 1 of the Field Award catalog and the aircraft tags exists from the first start; `clipper-cards` v1 appears once the
+    server holds Military content. Completing a Trip now reads the catalog and tags from the highest valid document versions
+    (`catalogVersion` is the Field Award document's version). No change to any other route.
 
     **Changelog 0.8.0 (slice B5, staff-only, no change for the game).** New route
     `POST /v1/admin/content/{module}/trip-coverage` (how many Flights a Trip would hold at each rank for the
@@ -38,7 +50,7 @@ info:
     `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts, call `complete` after the 10th Round.
 
     **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (the
-    Logbook, the content manifest and its data documents) are the agreed next contract, recorded here so Unity can build
+    Logbook) are the agreed next contract, recorded here so Unity can build
     against it. They are NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
     `x-planned-properties`; the built shapes beside them are what the server does now. Error codes only planned
@@ -50,6 +62,7 @@ info:
     `trip` (contract round 1, 2026-10-29).
 
     - Every route except `/v1/health` and `/v1/health/ready` needs `Authorization: Bearer <Firebase ID token>`.
+      The manifest and the documents need a signed-in player like every other route (any player, no staff rule).
     - Bodies are JSON only, at most 16 KB (exceptions for staff: the xlsx import, 5 MB, and Trip coverage, 160 KB). Unknown fields are rejected (400 `invalid_request`).
     - Every response carries `X-Request-Id`. `/v1` responses other than `/v1/health` are `Cache-Control: no-store`.
     - Errors share one body, `Error`. Switch on `error.code`, never on `message`.
@@ -82,7 +95,7 @@ tags:
   - name: trips
     description: Flight Segments (Unity Trips) of ten Rounds (Unity Flights). Open, complete and abandon are built.
   - name: content
-    description: Planned. The content manifest and the versioned data documents it points to.
+    description: The content manifest and the versioned data documents it points to.
 
 paths:
   /v1/health:
@@ -628,6 +641,9 @@ paths:
         the new segment; the app reads the completed one's lists by calling `complete` on its `tripId`, which replays the
         stored answer (`replayed: true`). A segment with fewer than ten banked Rounds is abandoned as before.
 
+        When a full segment must be completed and the server's content documents are not seeded yet (a window right after a
+        first start), this answers 503 `service_unavailable` with `Retry-After`, and nothing is written: retry the same request.
+
         `localDate` must be the calendar date of server time plus `utcOffsetMinutes` (within 15 minutes either side,
         so a request that straddles midnight passes); otherwise 422 `local_date_mismatch`. The server records the
         offset and judges every day-based rule itself from its own clock plus that offset (site-day ruling: a rewound
@@ -706,7 +722,9 @@ paths:
         with all ten Rounds banked can be completed at any time, even after `expiresAt` (an app outbox may retry
         after a restart). No request body. A `tripId` that is not a UUID is 404 `trip_not_found`. Fewer than ten Rounds
         banked is 409 `trip_incomplete`, except that an open segment past `expiresAt` is 410 `trip_expired` (and is
-        marked abandoned); an abandoned segment is 410 `trip_closed`.
+        marked abandoned); an abandoned segment is 410 `trip_closed`. If the content documents the Field Awards are judged
+        against are not seeded yet (a window right after a first start), this answers 503 `service_unavailable` with
+        `Retry-After` and writes nothing: retry the same request.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
         - $ref: "#/components/parameters/TripId"
@@ -794,23 +812,28 @@ paths:
 
   /v1/content/manifest:
     get:
-      x-planned: true
-      x-planned-note: Not built. Slice T4 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
       tags: [content]
       operationId: getContentManifest
-      summary: Content manifest (planned)
+      summary: Content manifest
       description: |
-        PLANNED, NOT BUILT. What content the server currently publishes, pulled by Unity's existing
+        What content the server currently publishes, pulled by Unity's existing
         `HttpContentManifestService` (contract round 1: admin updates reach the app by pull manifest; UGS Remote
         Config stays the kill switch and a pointer only). Compatible with Unity's `ApiWireModels.ManifestWire`:
         `version`, `generatedAtUtc` and `modules[] { id, enabled, contentVersion, assetBundleUrl }` keep their names
         and types. Additive: `documents[]`, which today's client ignores.
 
-        - `version` changes whenever any listed document or module entry changes; the app caches it
+        - `version` is `m-` and 16 hex characters: a hash of the listed (name, version, sha256) triples and the module
+          entries, so it is the same on every server instance and across restarts, and it changes whenever any listed
+          document or module entry changes; the app caches it
           (`LocalContentManifestCache.SaveVersion`) and refetches only the documents whose `version` moved.
         - `modules` lists all eight modules with `enabled: true`. The backend never disables a module: Remote Config
           is the kill switch. `contentVersion` and `assetBundleUrl` stay null until content releases exist (5.2+);
           the app keeps playing its bundled packs.
+        - `generatedAtUtc` is when the manifest last changed (the newest `createdAt` of the listed documents, database
+          clock), not the time of the request, so equal versions are byte-identical.
+        - `documents` lists the version IN FORCE of each document: the highest version whose body is valid and whose bytes match
+          its digest (the same selection the server judges Field Awards against), so everything listed can be fetched. `clipper-cards` is absent until the first
+          Military content exists (a fresh database), then it is listed from version 1.
         - `documents` point at immutable, versioned JSON documents (`GET /v1/content/documents/{name}/{version}`):
           the Field Award catalog, the Clipper Card catalog and the aircraft tags.
 
@@ -842,16 +865,20 @@ paths:
 
   /v1/content/documents/{name}/{version}:
     get:
-      x-planned: true
-      x-planned-note: Not built. Slice T4 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
       tags: [content]
       operationId: getContentDocument
-      summary: One versioned content document (planned)
+      summary: One versioned content document
       description: |
-        PLANNED, NOT BUILT. An immutable published version of one data document. Take the URL from the manifest.
+        An immutable published version of one data document. Take the URL from the manifest.
         The bytes of a `(name, version)` never change, so the response may be cached for good: `Cache-Control:
         private, max-age=31536000, immutable`, and `ETag` is the quoted `sha256` the manifest lists (check it).
-        Every version the manifest has ever listed stays fetchable. Unknown name or version is 404 `not_found`.
+        Every version the manifest has ever listed stays fetchable. Unknown name or version is 404 `not_found` (so is a
+        version that is not a positive integer written without leading zeros).
+
+        The bytes are the document's canonical JSON, defined once: UTF-8 without a byte order mark, no whitespace between
+        tokens and no trailing newline, object keys sorted by UTF-16 code unit at every depth, array order kept, numbers
+        are integers, strings escaped as `JSON.stringify` does. Their SHA-256 is the `sha256` in the manifest and in the
+        `ETag`, their length is `byteSize`. Clients should verify both against the manifest.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
         - $ref: "#/components/parameters/IfNoneMatch"
@@ -1278,11 +1305,10 @@ components:
       schema: { type: string, format: uuid }
 
     IfNoneMatch:
-      x-planned: true
       name: If-None-Match
       in: header
       required: false
-      description: Planned. The `ETag` of a copy the app already holds; an unchanged resource is 304.
+      description: The `ETag` of a copy the app already holds (a list, a weak `W/` tag or `*` also work); an unchanged resource is 304.
       schema: { type: string }
 
   headers:
@@ -1299,16 +1325,13 @@ components:
       description: Always `Bearer`.
       schema: { type: string, const: Bearer }
     NoCache:
-      x-planned: true
-      description: Planned (content manifest). Always `no-cache`; revalidate with `If-None-Match`.
+      description: Content manifest. Always `no-cache`; revalidate with `If-None-Match`.
       schema: { type: string, const: no-cache }
     Immutable:
-      x-planned: true
-      description: Planned (content documents). Always `private, max-age=31536000, immutable`.
+      description: Content documents. Always `private, max-age=31536000, immutable`.
       schema: { type: string, const: "private, max-age=31536000, immutable" }
     ETag:
-      x-planned: true
-      description: Planned. A strong entity tag (quoted), the manifest `version` or a document's `sha256`.
+      description: A strong entity tag (quoted), the manifest `version` or a document's `sha256`.
       schema: { type: string, pattern: '^"[A-Za-z0-9._:+-]{1,80}"$' }
 
   responses:
@@ -2168,7 +2191,6 @@ components:
         - vertical-horizon
         - executive-platinum
     FieldAwardMetric:
-      x-planned: true
       type: string
       description: |
         What the server counts for an award (Unity `AchievementMetric`, kebab-case). A metric is code; staff can edit
@@ -2326,11 +2348,9 @@ components:
         logbook: { $ref: "#/components/schemas/Logbook" }
 
     ContentDocumentName:
-      x-planned: true
       type: string
       enum: [field-awards, clipper-cards, aircraft-tags]
     ManifestModule:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [id, enabled, contentVersion, assetBundleUrl]
@@ -2349,7 +2369,6 @@ components:
             - { type: string }
             - { type: "null" }
     ManifestDocument:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [name, format, version, sha256, byteSize, url]
@@ -2361,7 +2380,6 @@ components:
         byteSize: { type: integer, minimum: 1 }
         url: { type: string, description: "Relative path: /v1/content/documents/{name}/{version}." }
     ContentManifest:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [version, generatedAtUtc, modules, documents]
@@ -2377,7 +2395,6 @@ components:
           items: { $ref: "#/components/schemas/ManifestDocument" }
 
     FieldAwardRuling:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [field, text, source, status]
@@ -2388,7 +2405,6 @@ components:
         source: { type: string, description: "e.g. client ruling 2026-10-28 (WhatsApp)" }
         status: { type: string, enum: [confirmed, resolved, to-confirm] }
     FieldAwardDefinition:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [id, sheetId, sheetRow, title, criteria, thresholdCell, target, metric, hidden, rulings]
@@ -2406,7 +2422,6 @@ components:
           type: array
           items: { $ref: "#/components/schemas/FieldAwardRuling" }
     FieldAwardCatalogDocument:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [format, version, source, awards]
@@ -2429,7 +2444,6 @@ components:
           items: { $ref: "#/components/schemas/FieldAwardDefinition" }
 
     ClipperCardDefinition:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [key, module, name, keySource, itemIds]
@@ -2438,9 +2452,9 @@ components:
           type: string
           minLength: 1
           description: |
-            The Card identity. Commercial (`identifier`): the Unity aircraft family (`787`). Military: the client's
-            answer text normalised: trimmed, case-folded, runs of whitespace collapsed to one space (contract round 2),
-            so repeated rows of one answer (Eurofighter Typhoon x3) share one Card and variants stay separate until the
+            The Card identity. Commercial (`identifier`): the Unity aircraft family (`787`). Military: `mil:` plus the
+            client's answer text normalised (trimmed, case-folded, runs of whitespace collapsed to one space, contract
+            round 2), so repeated rows of one answer (Eurofighter Typhoon x3) share one Card and variants stay separate until the
             client supplies a family mapping.
         module: { $ref: "#/components/schemas/ModuleId" }
         name: { type: string, minLength: 1, description: "Display name: the family name, or the answer text as the client supplied it (first in natural id order)." }
@@ -2450,7 +2464,6 @@ components:
           description: Content item ids that collect this Card (Military `mil-a4`, `mil-a8`, `mil-a26` for the Typhoon).
           items: { type: string }
     ClipperCardCatalogDocument:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [format, version, cards]
@@ -2462,17 +2475,14 @@ components:
           items: { $ref: "#/components/schemas/ClipperCardDefinition" }
 
     AircraftTag:
-      x-planned: true
       type: string
       enum: [quad-engine, regional-jet, fighter-attack, military-rotary, vtol, piston, heavy]
       description: Unity `AircraftTag` flags, kebab-case.
     TagSource:
-      x-planned: true
       type: string
       enum: [client_sheet, client_ruling, provisional]
       description: "`provisional`: authored by us (Unity `AircraftTags.cs`), pending the client's attribute grid."
     AircraftTagEntry:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [cardKey, manufacturer, manufacturerSource, tags]
@@ -2497,7 +2507,6 @@ components:
               tag: { $ref: "#/components/schemas/AircraftTag" }
               source: { $ref: "#/components/schemas/TagSource" }
     AircraftTagDocument:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [format, version, entries]

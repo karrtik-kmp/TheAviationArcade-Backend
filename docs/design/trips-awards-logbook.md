@@ -1,6 +1,6 @@
 # Trips, Field Awards, Clipper Cards, Logbook and the content manifest
 
-**Status:** designed 2026-10-29; slices T1 (pure rules), T2 (segments and Rounds) and T3 (complete) built 2026-10-29, T4-T6 not built. Contract: the `x-planned` operations and schemas in
+**Status:** designed 2026-10-29; slices T1 (pure rules), T2 (segments and Rounds) and T3 (complete) built 2026-10-29, T4 (content documents and the manifest) built 2026-11-02, T5-T6 not built. Contract: the `x-planned` operations and schemas in
 [`../openapi.yaml`](../openapi.yaml) (the parity test asserts they answer 404 today); the built ones are served. Owner: this session (backend repo).
 
 Binding inputs: `docs/TASKS.md` Decisions 2026-10-29 "contract round 1" and "contract round 2", D-1, D-3, D-5, C5, C12.
@@ -108,8 +108,8 @@ Identifier Rounds only (Unity `AwardCounters.PerfectFlightStreak`), a separate c
     `SEED_COMMERCIAL_CARD_KEYS`, checked by `cardKeyFor(module, value, catalog)`). Anything else (a typo, `a320`, a
     Military key such as `mil:...`) answers the Round result with **400 `invalid_request`** and banks nothing, so a case
     variant or an unknown family can never create a second Card. (Alternative, not chosen: bank the Round and give it no
-    Card; that would hide a client bug and silently drop Card progress.) The catalog is read from the clipper-cards
-    document once T4 lands.
+    Card; that would hide a client bug and silently drop Card progress.) After T4 the gate still reads the code constant, not the
+    clipper-cards document (see "Not done in T4"); moving it is a later slice.
   - `aircraft-identifier-military`: **proposed** — the content item id (`mil-a4`); the server reads the item's
     `answer` from `content_items` (approved or retired, A6) and derives the Card key. Reason: ADR-0008 §2/§3 asks for
     "a roster id for military", the ruling keys the Card by the answer text, and only the id lets the server check the
@@ -317,9 +317,12 @@ the evaluator clamps a bad catalog value (`effectiveTarget`), and the T4 publish
   snapshot); `enabled` is always true (Remote Config is the kill switch, contract round 1 (3)); `contentVersion` and
   `assetBundleUrl` are null until releases (5.2+); no `minClientVersion` (Unity hard-codes 1; the 426 gate is the
   server's tool).
-- Seed (slice T4), one migration-time import, never hand-typed: `field-awards` v1 from the sheet snapshot with the
-  Unity code ids and the targets in §3.6; `clipper-cards` v1 from `content_items` (Military, keyed per §3.5) plus the
-  commercial families (U9); `aircraft-tags` v1 with per-entry `source` (U8).
+- Seed (slice T4), never hand-typed: `field-awards` v1 from the sheet snapshot with the Unity code ids and the targets in
+  §3.6; `clipper-cards` v1 from `content_items` (Military, keyed per §3.5) plus the commercial families (U9);
+  `aircraft-tags` v1 with per-entry `source` (U8). **Decided 2026-11-02: not a migration-time import but an idempotent seed at
+  start and after each import (see "T4 as built")**, because `clipper-cards` depends on rows that may be imported after migrating.
+- Bytes (T4): the served bytes are the canonical JSON of the stored `body` (UTF-8, keys sorted at every depth, no whitespace,
+  integers only), not stored bytes; see "T4 as built".
 - Auth: the manifest and documents require a token like every non-health route (U11).
 
 ## 8. Admin edits (C12) → manifest versions
@@ -477,13 +480,103 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 | T1 | Pure rules | S | `src/rules/trips.ts` (day-streak step, `withTrip` counters, outcome, Go Around, night window, hint cadence), `src/rules/field-awards.ts` (28 ids, metric evaluation, Card key normalisation); test names aligned with Unity EditMode tests (`FieldAwardsTests`, `AchievementBoardTests`, `HintBankTests`, `DailyFlightLogTests`, `LifetimeFlightStatsTests`, `LogbookCollectionTests`); ASSUMPTION tests | `npm test`. **Built 2026-10-29** (see "T1 as built" below) |
 | T2 | Segments and Rounds | M | **Built 2026-10-29** (see "T2 as built" below). migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
 | T3 | Complete | M | **Built 2026-10-29** (see "T3 as built" below). migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
-| T4 | Content documents and manifest | M | migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
+| T4 | Content documents and manifest | M | **Built 2026-11-02** (see "T4 as built" below). migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
 | T5 | Logbook | S | `GET /v1/me/logbook` | e2e against a seeded history; schema parity |
-| T6 | Admin edit and publish (C12) | M | staff routes, version checks, publish, audit; after U7/U10 | e2e: an edit reaches the manifest; Unity pulls it (cross-repo gate in ADR-0008 S2) |
+| T6 | Admin edit and publish (C12) | M | staff routes, version checks, publish, audit; after U7/U10 | e2e: an edit reaches the manifest; Unity pulls it (cross-repo gate in ADR-0008 S2). **Also:** a `clipper-cards` v1 sealed from a small or trial Military set stays incomplete until a publish (T6 must make re-publishing it easy); consumers of Cards need a fallback for a Card key not in the document; clients verify `sha256` against the manifest |
 
 Order (user, 2026-10-29): interleaved with the dealer slices from the brief, one at a time: T2 → B1 → B2 → T3 → B3 →
 B4 → B5 → T4 → T5 → T6, then server answer checks and dealing with releases (§10). Each slice: focused commit,
 independent review for T2–T4 and T6, verification recorded in `docs/TASKS.md`.
+
+### T4 as built (2026-11-02)
+
+Migration `0011_content_documents` (generated; 0000-0010 untouched; a second `db:generate` reports no changes). Table
+`content_documents` as section 4, plus: `format = name || '.v1'`, `body @> '{}'` (an object), `created_at` default `now()` (the
+database clock), `created_by` 1-256 chars, `note` at most 500. `name` has a TS list (`CONTENT_DOCUMENT_NAMES`, `src/db/enums.ts`)
+and is in the S5 parity tests, unit and live. **Immutability** is three things: a BEFORE UPDATE OR DELETE row trigger appended by
+hand to the generated SQL (drizzle-kit does not model triggers; the snapshot is unaffected and the second `db:generate` is clean),
+the single writer `src/content/documents/document-store.ts` (insert-only; `test/content-documents.test.ts` scans `src/` for any other
+write, with seeded violations), and no update path anywhere. Not covered: TRUNCATE, and a superuser disabling the trigger.
+
+**Canonical bytes.** `jsonb` keeps neither key order nor whitespace, so bytes are not stored. They are `canonicalBytes(body)`
+(`canonical.ts`): UTF-8, no BOM, no whitespace, no trailing newline, object keys sorted by UTF-16 code unit at every depth, array
+order kept, numbers are safe integers only, strings escaped as `JSON.stringify` does; U+0000, lone surrogates, fractions, -0 and
+non-plain objects throw (they could not survive jsonb or UTF-8). `sha256` and `byte_size` are written from those bytes at insert and
+re-checked at every serve and by `catalogInForce`; a mismatch is a 500 (never served) and the row is skipped by `catalogInForce`. The
+GET answer is sent as a Buffer with `Content-Type: application/json; charset=utf-8`; a test hashes the raw response and compares it
+with the manifest, and compares the v1 bytes with the generator's.
+
+**Routes.** `GET /v1/content/manifest` and `GET /v1/content/documents/{name}/{version}` (`src/content/documents/`), signed-in players
+only (U11, no staff rule). Both are under the client version gate (426 when `MIN_CLIENT_BUILD` is set and no build is sent; `X-Client: web`
+passes) and the per-principal rate limit (a 304 counts). The manifest is `ManifestWire` plus `documents[]`; `modules` is all eight in Unity
+ticket order, `enabled: true`, `contentVersion` and `assetBundleUrl` null; `documents` is the highest version per name, sorted by name.
+`version` = `m-` + 16 hex of SHA-256 over the canonical JSON of `{ v: 1, documents: [{name, version, sha256}], modules }`: a pure function of
+the stored rows, so identical on every instance and after a restart (tested across a second and a restarted app). It is the strong ETag
+(`"m-..."`) with `Cache-Control: no-cache`. **`generatedAtUtc`** = the newest `created_at` among the listed documents (database clock), a
+constant epoch when none: it is when the manifest last changed, not the request time, so a strong ETag always names identical bytes. A
+document is `ETag "<sha256>"`, `Cache-Control: private, max-age=31536000, immutable`, also on its 304. `If-None-Match` accepts an exact
+tag, a weak `W/` tag, a list or `*`. The Cache-Control exceptions apply to successful 200/304 answers only: 401, 404, 429 and the 500 for a
+corrupt row stay `no-store`. Unknown name, unknown version and a malformed version (`0`, `01`, `abc`, `1.5`, more than 9 digits) are all 404
+`not_found`.
+
+**The seed (decision, replaces "one migration-time import").** A migration cannot seed `clipper-cards`: it needs `content_items` rows, a
+fresh database has none until the first import (and a migration should not carry content bytes). So the seed is a plain function
+(`seedContentDocuments`) run (1) at application start, awaited before the server listens, and (2) after every successful, non-replay content
+import. Per call, in one transaction under `pg_advisory_xact_lock` (so concurrent callers in one process, two instances, or a boot racing an
+import serialise and the later one sees the earlier one's rows): a name that already has ANY row is never touched, and every insert is
+`ON CONFLICT DO NOTHING`, so a later seed can never change the bytes of an existing version. `field-awards` v1 and `aircraft-tags` v1 are
+generated from the code constants (`buildFieldAwardsBody`, `buildAircraftTagsBody`) whenever their name has no row, on a fresh and an existing
+database alike; `clipper-cards` v1 is generated from the commercial families plus the approved Military items and is sealed only when its name
+has no row AND such items exist. Each name is seeded in its own savepoint: one that fails is logged and left out (reported in `failed`) and cannot roll back the others,
+and the manifest lists what exists. An approved Military item over a clipper-cards schema limit (id over 64 characters, Card key over 512,
+answer over 500, more than 1000 items on one Card, more than 5000 Cards) is skipped with a logged warning instead of blocking the document;
+the `note` of the row records `N approved, M sealed, K skipped`, and nothing is sealed if every item was skipped. Fresh database: the manifest lists two documents until the first import seals the third (and its version
+changes). Existing database with content: all three at the first start. A golden digest test pins the two code-derived v1 byte strings, so
+a changed constant cannot make a fresh database seal different v1 bytes than existing ones hold (it must ship as version 2). A database that is
+down at start does not stop the process (the platform tests start it that way and readiness reports it): the failure is logged, the seed
+retries in the background (1 s doubling to 30 s), and the first manifest read seeds first if it has not succeeded yet. After v1 exists, content
+changes reach the app only as a new version (T6 publish): **a v1 sealed from a small or trial set stays incomplete until a publish.** Boot-time seeding by every instance is safe: the lock and `ON CONFLICT` make it
+idempotent.
+
+**Document bodies** follow the planned openapi schemas, now built. `field-awards` is the 28 `FIELD_AWARD_CATALOG` definitions without
+`provisional` (the openapi definition has no such field; it is derived from the metric on read: the eight tag-metric awards), `source` from
+`FIELD_AWARD_CATALOG_SOURCE`. `aircraft-tags` is `SEED_AIRCRAFT_TAG_ENTRIES` unchanged (including the nine pre-tagged Military aircraft that
+are not client answers). `clipper-cards`: the 23 commercial families in seed order (`name` = the family, `itemIds` empty until the Identifier
+importer, D-2), then one Military Card per distinct Card key (the key frozen on the item, else `militaryCardKey(answer)`) in the natural id order
+of its first item: `name` = that item's answer as stored, `itemIds` = every approved item holding the key. **Document-body validation**
+(`parseFieldAwards`, `parseAircraftTags`, `parseClipperCards`: strict zod plus checks) runs before any insert, when a row is served, and in
+`catalogInForce`: exactly the 28 ids once, each award's metric equal to its id's own metric (a metric is code), integer targets 1..1,000,000,000,
+the body's `version` equal to the row's, unique Card keys, no repeated tag. This is not the T6 publish check (no staff route exists yet).
+
+**One definition of "in force".** `documentInForce(db, name)` returns the highest VALID version of a name (shape, digest and length): it reads
+ONE metadata row at a time, newest first, and walks to the next older row only when a row is invalid (no row cap). `catalogInForce(db)` (async,
+takes the caller's transaction) uses it for `field-awards` and `aircraft-tags`, and the manifest uses it for every name, so the manifest never
+advertises a row that cannot be fetched and a bad newest row is absent from both while the previous version applies to both (tested).
+Verdicts are memoised per process by (name, version, sha256), which is safe because rows are immutable; the body is fetched, and zod, canonical
+bytes and SHA-256 run, only the first time a row is seen, so a completion normally does none of it under the player lock (tested with a validation
+counter). A bad row is logged once per (name, version, sha256), not per completion; when the awards and tags in force come from different
+fallbacks (a newer row skipped) the applied version pair is logged once per pair. `version` = the field-awards version applied, recorded on the
+segment and on each earned award; the tag document's version is not recorded (one column). With no valid `field-awards` or `aircraft-tags` row
+(the seed has not run yet) `catalogInForce` throws the existing `service_unavailable`: a retryable 503 with `Retry-After: 5`, nothing written
+(documented on `complete` and `POST /v1/trips`). The manifest never fails because a seed failed: it lists what exists, and only when the table has no
+row at all does it try the seed once. `readCompletion` orders a replay's awards by `FIELD_AWARD_IDS`, not by the catalog in force, so a replay lists
+what the first answer listed whatever has been published since. With only the seed in the table the behaviour is exactly T3's (the existing suite
+passes unchanged apart from the re-derivation test, which now reads the catalog at the recorded `catalog_version`).
+
+**Consumers.** Clients should verify the served bytes' SHA-256 against the manifest's `sha256`, and need a fallback for a Card key that is not in
+the `clipper-cards` document (a v1 sealed from a small set, a retired item's Card, a commercial family added by the importer later).
+
+Choices not settled by the spec (none is a user ruling): (1) seed at start and after imports, not in a migration (above); (2) `generatedAtUtc` as
+the newest document `created_at`; (3) canonical bytes are rebuilt from jsonb, not stored, and keys are sorted, so a document does not keep the
+sheet's field order (array order carries the sheet order); (4) a bad newest document is skipped in `catalogInForce` rather than failing
+completion, and the manifest lists the same selection (no disagreement: both use "in force"); T6's publish check should still stop a bad version being published; (5)
+`clipper-cards` lists approved Military items only (a retired item's Card, collectable by A6, is not listed) and a commercial `name` is the
+family string; (6) a malformed version is 404, not 400; (7) the immutability trigger is hand-added to the generated migration; (8) the
+`provisional` flag is not published (derived from the metric); (9) a database that is down at start does not stop the server.
+
+Not done in T4 (by design): the commercial `aircraftKey` gate (section 3.2) still reads the code constant `SEED_COMMERCIAL_CARD_KEYS`, not the
+`clipper-cards` document (changing it would change Round-result behaviour; a later slice or T6 moves it);
+the publish check and staff edit routes (T6); the Logbook (T5).
 
 ### T3 as built (2026-10-29)
 

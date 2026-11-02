@@ -81,8 +81,8 @@ transaction as the Miles posting.
 Completing a segment (T3, `POST /v1/trips/{id}/complete`, or implicitly when `POST /v1/trips` finds a full open one) runs
 in one `PlayerBalance.update` transaction, in the lock order player → trip → Round → `player_counters` / Cards / awards:
 the ten banked Rounds are folded in flight order through the pure `applyCompletedTrip` (counters, Go Around, Red-Eye), each
-finished Round with a Card key upserts `player_clipper_cards`, all 28 awards are evaluated against `catalogInForce()` (a code
-constant until T4 reads `content_documents`) and the new ones are inserted into `player_field_awards`, the segment row gets its
+finished Round with a Card key upserts `player_clipper_cards`, all 28 awards are evaluated against `catalogInForce(tx)` (the highest valid
+`field-awards` and `aircraft-tags` versions in `content_documents`, slice T4) and the new ones are inserted into `player_field_awards`, the segment row gets its
 result columns, and the Trip hint is the only posting (`trip_grant`, UNIQUE (player, kind, ref = tripId)). The step is
 `republish` + `mirrorNow`; `players.version` bumps only when a hint is granted or the streak was not already 0 (U2). The answer
 is read back from the tables (Cards by `first_trip_id`, awards by `trip_id`, the hint from the ledger), so the first answer and

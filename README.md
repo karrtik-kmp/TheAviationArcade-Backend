@@ -95,8 +95,9 @@ the key and retry both unchanged, including across midnight.
 The contract is [docs/openapi.yaml](docs/openapi.yaml), kept in step with the code by a parity test.
 The table lists only what is built. Flight Segments (Unity Trips: open, abandon, Rounds inside a segment) are built
 (slice T2), and so is completing one (slice T3, API 0.5.0: outcome, Field Awards, Clipper Cards, the Trip hint). The rest
-of the next contract (the Logbook and the content manifest) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
-[docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md); those routes answer 404 today.
+and so are the content manifest and its immutable documents (slice T4, API 0.9.0). The rest
+of the next contract (the Logbook) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
+[docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md); that route answers 404 today.
 
 > **Breaking change for the Unity app (API 0.4.0, slice T2, 2026-10-29).** The Round routes changed shape:
 > `POST /v1/rounds` takes `{ tripId }` instead of `{ module }`, and `POST /v1/rounds/:id/result` requires the Flight
@@ -123,6 +124,8 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
 | POST | `/v1/trips` | `{ module, flightCount: 10, localDate, utcOffsetMinutes, contentVersion }` and a required `Idempotency-Key`. Opens a Flight Segment at Active Rank (abandons the player's open one; its Perfect Streak starts at 0). 201 opened, 200 replay of a key already used with the same module, localDate, utcOffsetMinutes and contentVersion, 422 `local_date_mismatch` (beyond 15 minutes of server time plus the offset), 422 `idempotency_key_reused` (the key opened a segment with a different module, localDate, utcOffsetMinutes or contentVersion). A full open segment is completed first (same transaction), not abandoned |
 | POST | `/v1/trips/:id/complete` | No body, after the 10th banked Round. In one player-locked transaction: the outcome, the Award counters (Go Around, Red-Eye ...), Clipper Cards, all 28 Field Awards, the Trip hint (`trip_grant`, +1 on every 4th completed segment), Perfect Streak back to 0, and the UGS copy republished at once. Returns `{ trip, fieldAwards, clipperCards, hintGrants, replayed, progress }`. Idempotent: a repeat returns the identical lists with `replayed: true` and pays nothing twice. 404 `trip_not_found`, 409 `trip_incomplete` (fewer than 10 banked), 410 `trip_expired` (partial and past expiry) / `trip_closed` (abandoned) |
+| GET | `/v1/content/manifest` | Any signed-in player. Unity `ManifestWire`/`ModuleWire` (`version`, `generatedAtUtc`, `modules[] { id, enabled: true, contentVersion: null, assetBundleUrl: null }`) plus `documents[] { name, format, version, sha256, byteSize, url }`: the highest version of each document. `version` is a stable hash and the strong `ETag`; `If-None-Match` (exact, weak, list or `*`) gives 304. `Cache-Control: no-cache` (an exception to the `/v1` no-store). `generatedAtUtc` is the newest document `createdAt`, not the request time |
+| GET | `/v1/content/documents/:name/:version` | Any signed-in player. `name` is `field-awards`, `clipper-cards` or `aircraft-tags`. The document's canonical JSON bytes (keys sorted, no whitespace, UTF-8, integers only; their SHA-256 is the manifest's `sha256` and the `ETag`). `Cache-Control: private, max-age=31536000, immutable`; 304 for the matching `If-None-Match`. 404 `not_found` for an unknown name or version (also a malformed version). 500 only for a corrupted row (never served) |
 | POST | `/v1/trips/:id/abandon` | No body. Closes the segment and its open Round; 200, `replayed: true` when it was already closed or expired. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_closed` |
 | POST | `/v1/rounds` | `{ tripId }`. Issues the segment's next single-use Round (flight number banked + 1; a re-issue keeps the number); abandons any other open Round. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_expired` / `trip_closed` |
 | DELETE | `/v1/me` | Account deletion: erases the player and its Rounds. 204 whether or not a player existed |
@@ -181,6 +184,25 @@ of file (ruled 2026-10-28):
 
 The original upload is kept forever in Bunny Storage under `backend/imports/<module>/<sha256>.xlsx`. No email is
 stored: receipts and the append-only audit log carry the staff principal. Details: ARCHITECTURE.md "Admin content store".
+
+## Content documents and the manifest (slice T4)
+
+Three published, versioned data documents live in `content_documents` (rows are immutable; a change is a new version for that
+name): `field-awards` (the 28 Field Awards on the Unity code ids, the client's sheet text verbatim), `clipper-cards` and
+`aircraft-tags`. `GET /v1/content/manifest` lists the highest version of each; the app pulls the ones that changed.
+`catalogInForce(tx)` (what Trip completion judges against) reads the highest *valid* `field-awards` and `aircraft-tags`
+versions (the manifest lists the same selection); a bad newest row is skipped with an error log once, verdicts are memoised per (name, version, sha256), and the recorded `catalog_version` is the field-awards version applied. With no valid document yet, completing a Trip answers a retryable 503 `service_unavailable`.
+- **Seed.** Version 1 is generated, never typed: `field-awards` and `aircraft-tags` from the code constants in `src/rules`,
+  `clipper-cards` from the commercial families plus the approved Military items. It runs at every start (idempotent, one
+  transaction under an advisory lock, a name that already has any row is never touched) and again after each successful content
+  import. `clipper-cards` v1 is sealed only once Military items exist, so a fresh database lists it after the first import and a
+  database that already has content lists it at the first start. After v1, content changes reach the app only as a new
+  version (slice T6 publish). A database that is down at start does not stop the server; the seed retries in the background.
+- **Bytes.** The served bytes are the canonical JSON of the stored `body` (`src/content/documents/canonical.ts`: UTF-8, keys
+  sorted at every depth, no whitespace or newline, integers only), because `jsonb` keeps neither key order nor whitespace.
+  `sha256` / `byte_size` are their digest and length, re-checked at every read; a mismatch is a 500, never a response.
+- **Immutable.** Only `document-store.ts` writes the table (`test/content-documents.test.ts` scans for it) and a trigger
+  refuses UPDATE and DELETE. A test that needs to drop a row it inserted disables the trigger in its own transaction.
 
 ## UGS mirror
 

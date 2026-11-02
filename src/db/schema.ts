@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   AdminAuditAction,
+  ContentDocumentName,
   ContentSource,
   ContentStatus,
   RoundCompletion,
@@ -467,6 +468,44 @@ export const playerFieldAwards = pgTable(
   ],
 );
 
+/**
+ * Published, versioned data documents the app pulls through the content manifest (design 7; slice T4). A row is IMMUTABLE:
+ * a change is a new `version` for that name, and old versions stay fetchable. Enforced by convention (only
+ * `src/content/documents/document-store.ts` writes it, test/content-documents.test.ts), by the migration's
+ * BEFORE UPDATE/DELETE trigger, and by never exposing an update path.
+ *
+ * The served bytes are NOT stored: jsonb keeps neither key order nor whitespace. They are the canonical serialisation of
+ * `body` (`canonicalBytes`: keys sorted recursively, no whitespace, UTF-8, integers only), and `sha256` / `byte_size` are
+ * that serialisation's digest and length, written at insert and re-checked at every read.
+ */
+export const contentDocuments = pgTable(
+  "content_documents",
+  {
+    name: text("name").$type<ContentDocumentName>().notNull(),
+    version: integer("version").notNull(),
+    format: text("format").notNull(),
+    body: jsonb("body").notNull(),
+    sha256: text("sha256").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    // Database clock (default now()), never a process clock: instances' clocks can disagree and the manifest's
+    // generatedAtUtc is derived from it.
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy: text("created_by").notNull(),
+    note: text("note"),
+  },
+  (t) => [
+    primaryKey({ name: "content_documents_pk", columns: [t.name, t.version] }),
+    check("content_documents_name_check", sql`${t.name} IN ('field-awards', 'clipper-cards', 'aircraft-tags')`),
+    check("content_documents_version_check", sql`${t.version} >= 1`),
+    check("content_documents_format_check", sql`${t.format} = ${t.name} || '.v1'`),
+    check("content_documents_body_check", sql`${t.body} @> '{}'::jsonb`),
+    check("content_documents_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+    check("content_documents_byte_size_check", sql`${t.byteSize} > 0`),
+    check("content_documents_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check("content_documents_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
+  ],
+);
+
 /** Source of `ugs_mirror_outbox.generation`: never restarts, so a row deleted and re-inserted gets a new value. */
 export const ugsMirrorGeneration = pgSequence("ugs_mirror_generation_seq");
 
@@ -566,4 +605,5 @@ export type PlayerCountersRow = typeof playerCounters.$inferSelect;
 export type ClipperCardRow = typeof playerClipperCards.$inferSelect;
 export type FieldAwardRow = typeof playerFieldAwards.$inferSelect;
 export type ContentItemRow = typeof contentItems.$inferSelect;
+export type ContentDocumentRow = typeof contentDocuments.$inferSelect;
 export type ContentImportRow = typeof contentImports.$inferSelect;

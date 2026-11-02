@@ -2,6 +2,7 @@ import { getTableConfig, PgDialect, type PgTable } from "drizzle-orm/pg-core";
 import { HINT_LEDGER_KINDS, MILES_LEDGER_KINDS } from "../src/balance/ledger-kinds.js";
 import {
   ADMIN_AUDIT_ACTIONS,
+  CONTENT_DOCUMENT_NAMES,
   CONTENT_SOURCES,
   CONTENT_STATUSES,
   ROUND_COMPLETIONS,
@@ -39,6 +40,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "player_counters.player_counters_previous_outcome_check": TRIP_OUTCOMES,
   "player_clipper_cards.player_clipper_cards_module_check": CARD_MODULES,
   "player_field_awards.player_field_awards_award_id_check": FIELD_AWARD_IDS,
+  "content_documents.content_documents_name_check": CONTENT_DOCUMENT_NAMES,
 };
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

@@ -6,6 +6,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
+import { DatabaseService } from "../src/database/database.module.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { recordSighting } from "../src/rules/clipper-cards.js";
 import type { CardRecord } from "../src/rules/clipper-cards.js";
@@ -13,6 +14,7 @@ import { evaluateFieldAwards, FIELD_AWARD_IDS } from "../src/rules/field-awards.
 import type { FieldAwardId } from "../src/rules/field-awards.js";
 import { addDays, applyCompletedTrip, deriveDayLog, deriveTripCounters, flightFact, localDateTimeOf } from "../src/rules/trips.js";
 import type { CompletedTrip } from "../src/rules/trips.js";
+import { parseFieldAwards } from "../src/content/documents/documents.js";
 import { catalogInForce } from "../src/trips/catalog-in-force.js";
 import { toCounters } from "../src/trips/counters-store.js";
 import { emulatorToken } from "./tokens.js";
@@ -1674,7 +1676,11 @@ describe("T3: the stored counters equal a re-derivation from stored segments and
     const tripRows = (await sql.query("SELECT *, to_char(completion_local_date, 'YYYY-MM-DD') AS completion_day FROM trips WHERE player_id = $1 AND status = 'completed' ORDER BY closed_at", [p.principal])).rows;
     expect(tripRows).toHaveLength(4);
 
-    const catalog = catalogInForce();
+    // The catalog the completions were judged against: the field-awards document at the RECORDED catalog_version (not the latest,
+    // so a published version 2 cannot break this test); the tag document is not versioned on the segment, so the one in force.
+    const recorded = Math.max(...tripRows.map((t) => t.catalog_version as number));
+    const awardsBody = (await sql.query("SELECT body FROM content_documents WHERE name = 'field-awards' AND version = $1", [recorded])).rows[0]?.body;
+    const catalog = { version: recorded, awards: parseFieldAwards(awardsBody, recorded).awards, tags: (await catalogInForce(app.get(DatabaseService).db)).tags };
     const history: CompletedTrip[] = [];
     const cards = new Map<string, CardRecord>();
     const cardFirstTrip = new Map<string, string>();
