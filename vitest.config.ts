@@ -27,6 +27,8 @@ export default defineConfig({
       "test/dealer.test.ts",
       "test/deal-items.test.ts",
       "test/content-documents.test.ts",
+      "test/logbook.test.ts",
+      "test/content-publish.test.ts",
     ],
   },
 });

@@ -54,6 +54,13 @@ export type Step<T> = {
    * changed `profile`, or `republish`); a step that does none of those queues nothing and this is ignored.
    */
   mirrorNow?: true;
+  /**
+   * This step changes what `GET /v1/me/logbook` returns (a banked Round, a completed segment), so `players.logbook_version`
+   * rises by one in the same UPDATE as everything else (user ruling 2026-10-29, T5). It is independent of the version bump:
+   * a completion that pays no hint and resets no streak carries this and no `change`, so `players.version` stays put (U2).
+   * Set it only on the path that WROTE: a replay, a refusal and an abandon change nothing the Logbook shows and must not.
+   */
+  logbook?: true;
 };
 
 export type UpdateResult<T> =
@@ -105,6 +112,10 @@ class InsufficientBalance extends ExpectedRollback {
  *    same UGS player changes nothing (UgsLinkService answers that before any admin call; a race that lands here only
  *    republishes at the current version). A stale-holder move bumps the caller's version; the old holder gets no
  *    bump, it just loses the link and its queued mirror.
+ * 12. `players.logbook_version` (T5) is a second, independent counter: it rises by one, in the same single UPDATE, when the
+ *    step carries `logbook` (in a lone UPDATE when it carries nothing else), and never otherwise. It is the Logbook ETag's
+ *    freshness; `version` keeps its D-1/U2 meaning. Nothing outside this module writes it (the guard forbids any direct
+ *    write to `players`).
  *
  * DB errors propagate unchanged (lock_timeout 55P03 is a 503 via database-errors.ts). One adapter (Postgres) on
  * purpose: callers share the transaction for their own tables, so this is a deep module, not a seam.
@@ -151,8 +162,20 @@ export class PlayerBalance {
 
         const profileChanged = step.profile?.activeRank !== undefined && step.profile.activeRank !== player.activeRank;
         if (!step.change && !profileChanged) {
+          let current = player;
+          if (step.logbook) {
+            // Logbook-only write: the one UPDATE of this call. Neither `version` nor `updated_at` moves (they describe stored
+            // Progress, and the UGS copy has not changed), so nothing is enqueued for it.
+            const [bumped] = await tx
+              .update(players)
+              .set({ logbookVersion: sql`${players.logbookVersion} + 1` })
+              .where(eq(players.id, principal))
+              .returning();
+            if (!bumped) throw new Error("Locked player row was not updated.");
+            current = bumped;
+          }
           if (step.republish) await this.enqueue(tx, principal, player.version, now, step.mirrorNow === true);
-          return { kind: "ok", value: step.value, player };
+          return { kind: "ok", value: step.value, player: current };
         }
 
         const change = step.change ?? {};
@@ -186,6 +209,7 @@ export class PlayerBalance {
             ...(change.firstClassUntil !== undefined ? { firstClassUntil: change.firstClassUntil } : {}),
             ...(profileChanged ? { activeRank: step.profile?.activeRank ?? null } : {}),
             version: sql`${players.version} + 1`,
+            ...(step.logbook ? { logbookVersion: sql`${players.logbookVersion} + 1` } : {}),
             updatedAt: now,
           })
           .where(eq(players.id, principal))

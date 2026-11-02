@@ -1,10 +1,30 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.9.0
+  version: 0.11.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.11.0 (slice T6, design 8, staff-only, no change for the game's own calls).** Five staff routes edit and publish
+    the three documents: `GET /v1/admin/content/documents`, `GET` and `PATCH /v1/admin/content/documents/{name}/draft`,
+    `POST .../draft/discard` and `POST .../publish`. A draft is a mutable overlay on the version in force with its own revision
+    (`draftVersion`, the version check: stale = 409); a publish writes the next immutable `content_documents` version and one
+    `content_publish` audit row, and only then do players see it (manifest `version` and document entry, `catalogVersion` on later
+    completions, the Logbook `ETag`; no player row is written). New error codes `version_conflict` (409), `nothing_to_publish`
+    (409) and `content_invalid` (422). Publishing `clipper-cards` rebuilds the Cards from the approved Military content as it is
+    then, so a version sealed from a small set catches up. Consumers of Cards still need a fallback for a Card key that is not
+    in the document they hold, and should verify each document's `sha256` against the manifest. Remote Config and the Field
+    Awards sheet re-import are not part of this.
+
+    **Changelog 0.10.0 (slice T5, design 6).** `GET /v1/me/logbook` is built (it was `x-planned`), for any signed-in player
+    who has called `PUT /v1/me`: recent Trips, the daily log, lifetime totals, the Field Award counters, every Clipper Card and
+    all 28 Field Awards, from one consistent snapshot, with no write and no lock. It carries a strong `ETag` and answers
+    `If-None-Match` with 304 (`Cache-Control: private, no-cache`, another exception to `/v1` `no-store`). `Logbook.version`
+    is a new counter, `logbookVersion`, **not** `Progress.version` (a completion that pays no hint and resets no streak
+    changes the Logbook and not Progress); it is also folded, with the Field Award and aircraft-tag versions in force, into
+    the ETag, so a catalog publish changes the tag with no player write. Field Award `earned` is the stored fact, never
+    `current >= target`. No new error code, and no change to any other route, to Progress or to the UGS copy.
 
     **Changelog 0.9.0 (slice T4, design 7).** Two routes are built, both for any signed-in player and both used by the app:
     `GET /v1/content/manifest` and `GET /v1/content/documents/{name}/{version}` (they were `x-planned`). The manifest keeps
@@ -49,9 +69,9 @@ info:
     `invalid_request` from both Round routes until it adopts this. Unity changes: open a segment per Trip with a fresh
     `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts, call `complete` after the 10th Round.
 
-    **Planned contract (designed 2026-10-29, not built).** Operations marked `x-planned: true` (the
-    Logbook) are the agreed next contract, recorded here so Unity can build
-    against it. They are NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
+    **Planned contract.** Nothing is planned any more: the Logbook was the last `x-planned` operation (0.10.0), and 0.11.0 added
+    only built routes. The marks stay defined for the next one. An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
+    against it. It is NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
     `x-planned-properties`; the built shapes beside them are what the server does now. Error codes only planned
     operations use are listed in `Error` under `x-planned-enum`, not in `enum`. Design, open questions and the build
@@ -193,7 +213,7 @@ paths:
       description: |
         `perfectStreak` is the Perfect Streak of the open Flight Segment, 0 when none is open or the open one has
         expired (D-3, built in T2). The full Field Award board, Clipper Cards and counters will be served by
-        `GET /v1/me/logbook` (planned), not here (contract round 2).
+        `GET /v1/me/logbook`, not here (contract round 2).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       responses:
@@ -363,15 +383,14 @@ paths:
 
   /v1/me/logbook:
     get:
-      x-planned: true
-      x-planned-note: Not built. Slice T5 in docs/design/trips-awards-logbook.md. Answers 404 not_found today.
       tags: [player]
       operationId: getLogbook
-      summary: Pilot Logbook (planned)
+      summary: Pilot Logbook
       description: |
-        PLANNED, NOT BUILT. Everything the Unity Logbook, passport and Awards tab show, derived on the server from
+        Everything the Unity Logbook, passport and Awards tab show, derived on the server from
         stored Flight Segments (Unity Trips) and Rounds (Unity Flights); there are no client writes behind it
-        (contract round 2). Read-only and safe to call on every Logbook open.
+        (contract round 2). Read-only (no lock, no write, nothing is bumped) and safe to call on every Logbook open.
+        The whole answer comes from one consistent database snapshot.
 
         - `recentTrips`: the last 20 completed Flight Segments, newest first (Unity "RECENT FLIGHTS", whose rows are
           Trips, as `RecentFlightsLog` stores them).
@@ -382,18 +401,47 @@ paths:
         - `counters`: the Field Award counters (Unity `AwardCounters`); they replace the app's local ones.
         - `clipperCards`: every collected Card, commercial and Military.
         - `fieldAwards`: all 28 Field Awards against the catalog version in force, earned or locked, with progress.
-          An award no player can reach with today's content is simply locked; nothing is hidden.
+          An award no player can reach with today's content is simply locked; nothing is hidden. **`earned` is the stored
+          fact, never `current >= target`:** an award earned under an old target stays earned after staff raise the target
+          (`earned: true` with `current < target`), and one whose target was lowered reads `earned: false`, `current = target`
+          until the player's next completed Trip stores it. `current` is the metric's value capped at the target.
+        - `version` is the Logbook's own counter (`logbookVersion`), **not** `Progress.version`: it rises whenever a Round is
+          banked or a Trip is completed (the daily log, counters, Cards, awards and recent Trips all move with those), and
+          a completion that pays no hint and resets no streak still raises it while `Progress.version` stays put. A catalog
+          publish does not change it (it changes `fieldAwards.catalogVersion` and the `ETag`), and abandoning a Trip does not
+          (nothing the Logbook shows moves).
+        - Every Card the player holds is listed, from the stored row alone, whether or not the `clipper-cards` document names
+          it (the document supplies display names to the app; this route never joins it).
+
+        Size: 20 Trip rows, 28 awards, a fixed set of counters, and one record per distinct Clipper Card collected. Cards
+        are the only list that grows, and only with content (23 commercial families and one per distinct Military answer,
+        50 today, about 8 KB; the `clipper-cards` document caps the set at 5,000, under 1 MB).
+
+        Caching: the `ETag` names the Logbook exactly. It changes when the player's Logbook data changes, when the Field
+        Award catalog or the aircraft tags in force change (a publish moves `fieldAwards` without any player write), and
+        never otherwise; no field depends on the clock (`daily` is stored data, the app decides what "today" is). Send it
+        back as `If-None-Match` and an unchanged Logbook is 304 with no body. `Vary: Authorization` and `Cache-Control: private, no-cache` (store,
+        revalidate), an exception to the `/v1` `no-store` rule; errors stay `no-store`. 503 `service_unavailable` (with
+        `Retry-After`) means the content documents are not ready yet.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The Logbook.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
-            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoCache" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/LogbookEnvelope" }
+        "304":
+          description: Unchanged since the `If-None-Match` tag. No body.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoCache" }
+            ETag: { $ref: "#/components/headers/ETag" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/PlayerNotFound" }
         "426": { $ref: "#/components/responses/ClientUpdateRequired" }
@@ -1270,6 +1318,225 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/admin/content/documents:
+    get:
+      tags: [admin]
+      operationId: listContentDocumentDrafts
+      summary: Every published document with its draft state
+      description: |
+        Staff only (slice T6, design 8). One entry per document (`field-awards`, `clipper-cards`, `aircraft-tags`): the
+        version players are served (`publishedVersion`, null for `clipper-cards` before it was first sealed), the draft
+        revision (`draftVersion`, 0 = no draft yet), whether a publish would change anything and the pending edits.
+        Nothing here is visible to players until it is published.
+      responses:
+        "200":
+          description: The three documents.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentDraftList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "422": { $ref: "#/components/responses/InvalidDraft" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/documents/{name}/draft:
+    get:
+      tags: [admin]
+      operationId: getContentDocumentDraft
+      summary: The draft of one document
+      description: |
+        Staff only. The pending edits and `body`, the document a publish would write now (the version in force with the
+        edits applied, as `publishedVersion + 1`; for `clipper-cards` rebuilt from the approved Military content as it stands
+        now, so it also shows Cards that were added or retired since the last publish). A preview: players are not served it.
+      parameters:
+        - $ref: "#/components/parameters/ContentDocumentNamePath"
+      responses:
+        "200":
+          description: The draft and the preview.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentDraftDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "422": { $ref: "#/components/responses/InvalidDraft" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    patch:
+      tags: [admin]
+      operationId: editContentDocumentDraft
+      summary: Edit the draft of one document
+      description: |
+        Staff only. Merges edits into the draft as the next draft revision; nothing is published and players see nothing.
+        `draftVersion` is the revision you read: when it is not the current one the answer is 409 `version_conflict` and
+        nothing changes (an edit never overwrites another editor's). The body depends on the document, all strict (any other
+        field, including `id` and `metric`, is 400):
+
+        - `field-awards`: `awards`: up to 28 (the 28 ids, each once) `{ id, title?, criteria?, target?, hidden? }`, at least one of the four per
+          award, each id once. `title` is 1 to 200 characters, `criteria` 1 to 2000 (both trimmed), `target` an integer from 1
+          to 1,000,000,000. The id, the metric, the sheet row, the threshold cell and the rulings cannot be edited.
+        - `clipper-cards`: `names`: up to 25 `{ key, name }`, `name` 1 to 500 characters. `key` must be a Card of the
+          catalog (a commercial family, or a Military Card derived from the approved content), else 422 `content_invalid`.
+          Which Cards exist is not edited here: it follows the content (see publish).
+        - `aircraft-tags`: `entries`: up to 25 `{ cardKey, tags }`, the Card's whole tag list (each tag once; an empty list
+          clears it). The Card must have an entry or be a Card of the catalog, else 422. A tag already on the entry keeps its
+          `source`; a tag staff add is `provisional`. A new entry has no manufacturer.
+
+        Removing a tag the client supplied (source `client_sheet` or `client_ruling`) needs `acknowledgeClientTagRemoval: true` on that
+        entry, else 422 `content_invalid`; the change then carries `removedClientTags`. Text may not contain U+0000 or an unpaired
+        surrogate. The global 16 KB body limit applies, so a request near the item caps can be answered 413 before validation.
+      parameters:
+        - $ref: "#/components/parameters/ContentDocumentNamePath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { $ref: "#/components/schemas/FieldAwardsDraftEdit" }
+                - { $ref: "#/components/schemas/ClipperCardsDraftEdit" }
+                - { $ref: "#/components/schemas/AircraftTagsDraftEdit" }
+      responses:
+        "200":
+          description: The draft after the edit (without `body`; read the draft for the preview).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentDraft" }
+        "400":
+          description: A body that does not match the document's edit shape, an invalid value (target below 1 or not an integer, empty or over-long text), a repeated id, key or tag, or an unknown field.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+        "422": { $ref: "#/components/responses/InvalidDraft" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/documents/{name}/draft/discard:
+    post:
+      tags: [admin]
+      operationId: discardContentDocumentDraft
+      summary: Throw away the pending edits
+      description: |
+        Staff only. Clears the draft (revision + 1), version checked like an edit; also the way out of a stored draft that no
+        longer validates (422 `content_invalid`). With no draft yet (`draftVersion` 0) nothing is written. Answers 200.
+      parameters:
+        - $ref: "#/components/parameters/ContentDocumentNamePath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentDraftVersion" }
+      responses:
+        "200":
+          description: The draft after the discard.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentDraft" }
+        "400":
+          description: Not `{ draftVersion }` with a non-negative integer.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/documents/{name}/publish:
+    post:
+      tags: [admin]
+      operationId: publishContentDocument
+      summary: Publish the draft as the next document version
+      description: |
+        Staff only. In one transaction: writes the draft as the next immutable version of the document
+        (`content_documents`, version = highest stored + 1, `created_by` = the verified staff principal), writes exactly one
+        audit row (`content_publish`: actor, document, versions, digest, the draft revision, the note, every editor and the edit and discard
+        history since the last publish, and the list of changes cut at 200) and resets the draft (revision + 1). Players then see it with no write to any player: the manifest `version`
+        and the document entry change, a manifest request with the old `If-None-Match` misses, completions record the new
+        `catalogVersion`, and the Logbook `ETag` changes. Earned Field Awards never un-earn when a target rises, and a
+        completion that happened under an older version replays unchanged.
+
+        `clipper-cards` is always rebuilt from the approved Military content as it is at publish time (names: the draft's, else
+        the published Card's, else the content's), so publishing it is how a version sealed from a small or trial set catches up
+        and how Cards of newly approved or retired items appear or go.
+
+        Refusals, with nothing written: 409 `version_conflict` (`draftVersion` is not the current revision, or the version
+        was just written by someone else; a retry of a publish that succeeded is this too), 409 `nothing_to_publish` (the
+        document would equal the one in force, or there is no approved Military content to seal `clipper-cards` yet), 422
+        `content_invalid` when the publish would remove a Card of `clipper-cards` and the body lacks `acknowledgeCardRemoval: true` (Cards
+        players already hold stay in their Logbooks), when a staged tag edit removes a client tag without its acknowledgement, and when the document would not validate: each of the 28 Field Award ids exactly once, each award's metric
+        its own, integer targets of at least 1, unique Card keys; or the stored draft is invalid.
+      parameters:
+        - $ref: "#/components/parameters/ContentDocumentNamePath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentPublishRequest" }
+      responses:
+        "201":
+          description: Published.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentPublishResult" }
+        "400":
+          description: Not `{ draftVersion, note? }` (`note` is 1 to 300 characters).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: the draft changed since you read it, or the version was written concurrently. `nothing_to_publish`:
+            the draft equals the version in force (or `clipper-cards` has no approved Military content to seal). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict, nothing_to_publish]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/InvalidDraft" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
 components:
   securitySchemes:
     firebaseBearer:
@@ -1296,6 +1563,13 @@ components:
       required: true
       description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
+
+    ContentDocumentNamePath:
+      name: name
+      in: path
+      required: true
+      description: A document name. Any other name is 404 `not_found`.
+      schema: { $ref: "#/components/schemas/ContentDocumentName" }
 
     TripId:
       name: tripId
@@ -1327,11 +1601,14 @@ components:
     NoCache:
       description: Content manifest. Always `no-cache`; revalidate with `If-None-Match`.
       schema: { type: string, const: no-cache }
+    PrivateNoCache:
+      description: The Logbook. Always `private, no-cache`; revalidate with `If-None-Match`.
+      schema: { type: string, const: "private, no-cache" }
     Immutable:
       description: Content documents. Always `private, max-age=31536000, immutable`.
       schema: { type: string, const: "private, max-age=31536000, immutable" }
     ETag:
-      description: A strong entity tag (quoted), the manifest `version` or a document's `sha256`.
+      description: "A strong entity tag (quoted): the manifest `version`, a document's `sha256` or a Logbook tag (`lb-` and 32 hex)."
       schema: { type: string, pattern: '^"[A-Za-z0-9._:+-]{1,80}"$' }
 
   responses:
@@ -1378,6 +1655,29 @@ components:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
       x-error-codes: [forbidden]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    VersionConflict:
+      description: |
+        `version_conflict`: `draftVersion` is not the current draft revision (another editor edited, discarded or published since you
+        read it; the message names the current revision). Nothing was written. Read the draft again and redo the edit on top of it.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [version_conflict]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidDraft:
+      description: |
+        `content_invalid`: an edit names something that does not exist (a Card that is not in the catalog), or the stored draft or the
+        document a publish would write does not validate. Nothing was written. A stored draft that does not validate is cleared with
+        `POST .../draft/discard`.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [content_invalid]
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1517,6 +1817,9 @@ components:
                 - plan_changed
                 - import_in_progress
                 - unknown_item_ids
+                - version_conflict
+                - nothing_to_publish
+                - content_invalid
                 - ugs_link_conflict
                 - storage_unavailable
                 - service_unavailable
@@ -1592,6 +1895,184 @@ components:
             properties:
               rank: { type: string, enum: [trainee, first-officer, captain, check-airman, chief-pilot] }
               dealable: { type: integer, minimum: 0, maximum: 10, description: "Flights a Trip at this rank would hold (below flightsPerTrip: the content cannot fill one)." }
+    ContentDraftVersion:
+      type: object
+      additionalProperties: false
+      required: [draftVersion]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000, description: "The draft revision you read (0 = no draft yet)." }
+    ContentPublishRequest:
+      type: object
+      additionalProperties: false
+      required: [draftVersion]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000, description: "The draft revision you read." }
+        note: { type: string, minLength: 1, maxLength: 300, description: "Why; stored on the document version and in the audit row." }
+        acknowledgeCardRemoval:
+          type: boolean
+          const: true
+          description: Required when the publish would remove a Card from `clipper-cards` (its items are no longer approved); without it the answer is 422 `content_invalid`. Recorded in the audit row.
+    FieldAwardsDraftEdit:
+      type: object
+      additionalProperties: false
+      required: [draftVersion, awards]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000 }
+        awards:
+          type: array
+          minItems: 1
+          maxItems: 28
+          items:
+            type: object
+            additionalProperties: false
+            required: [id]
+            properties:
+              id: { $ref: "#/components/schemas/FieldAwardId" }
+              title: { type: string, minLength: 1, maxLength: 200 }
+              criteria: { type: string, minLength: 1, maxLength: 2000 }
+              target: { type: integer, minimum: 1, maximum: 1000000000 }
+              hidden: { type: boolean }
+    ClipperCardsDraftEdit:
+      type: object
+      additionalProperties: false
+      required: [draftVersion, names]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000 }
+        names:
+          type: array
+          minItems: 1
+          maxItems: 25
+          items:
+            type: object
+            additionalProperties: false
+            required: [key, name]
+            properties:
+              key: { type: string, minLength: 1, maxLength: 512 }
+              name: { type: string, minLength: 1, maxLength: 500 }
+    AircraftTagsDraftEdit:
+      type: object
+      additionalProperties: false
+      required: [draftVersion, entries]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000 }
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 25
+          items:
+            type: object
+            additionalProperties: false
+            required: [cardKey, tags]
+            properties:
+              cardKey: { type: string, minLength: 1, maxLength: 512 }
+              tags:
+                type: array
+                uniqueItems: true
+                items: { $ref: "#/components/schemas/AircraftTag" }
+              acknowledgeClientTagRemoval:
+                type: boolean
+                const: true
+                description: Required when the list drops a tag the client supplied (source `client_sheet` or `client_ruling`). Applies to this edit of this Card only.
+    ContentChange:
+      type: object
+      additionalProperties: false
+      required: [kind, key]
+      description: |
+        One difference between the document in force and what a publish would write. `kind`: `award` (a Field Award field:
+        `field` is title, criteria, target or hidden), `card-added`, `card-removed`, `card-renamed`, `card-items` (the content
+        items on a Card moved) or `tags` (a Card's tag list; `from` and `to` are sorted tag lists).
+      properties:
+        kind: { type: string, enum: [award, card-added, card-removed, card-renamed, card-items, tags] }
+        key: { type: string, description: "The award id, or the Card key." }
+        field: { type: string }
+        from: {}
+        to: {}
+        removedClientTags:
+          type: array
+          description: "`tags` only: client-supplied tags (source `client_sheet` or `client_ruling`) this change removes. Present only with an acknowledgement."
+          items: { $ref: "#/components/schemas/AircraftTag" }
+        acknowledgedRemoval: { type: boolean, const: true }
+    ContentDraft:
+      type: object
+      additionalProperties: false
+      required: [name, publishedVersion, draftVersion, changed, edits, changeCount, changes]
+      properties:
+        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        publishedVersion:
+          description: The version players are served. Null only for `clipper-cards` before its first seal.
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: "null" }
+        draftVersion: { type: integer, minimum: 0, description: "The revision the version check compares. 0 = no draft row yet. Edits, discards and publishes raise it." }
+        changed: { type: boolean, description: "Whether a publish now would write a different document than the one in force." }
+        edits:
+          type: object
+          description: |
+            The pending overlay. `field-awards`: `{ awards: { <id>: { title?, criteria?, target?, hidden? } } }`; `clipper-cards`:
+            `{ names: { <cardKey>: name } }`; `aircraft-tags`: `{ tags: { <cardKey>: [tag] }, ackClientTagRemoval: { <cardKey>: true } }`. Every
+            document also carries `history`: `[{ principal, action: edit|discard, at, draftVersion }]`, every editor and discarder since the last
+            publish (kept across a discard, copied into the publish audit row, cleared by a publish). Empty when there is no draft.
+        changeCount: { type: integer, minimum: 0 }
+        changes:
+          type: array
+          maxItems: 200
+          description: The first 200 of `changeCount` differences.
+          items: { $ref: "#/components/schemas/ContentChange" }
+    ContentDraftDetail:
+      description: A draft plus the document a publish would write.
+      type: object
+      additionalProperties: false
+      required: [name, publishedVersion, draftVersion, changed, edits, changeCount, changes, body]
+      properties:
+        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        publishedVersion:
+          description: The version players are served. Null only for `clipper-cards` before its first seal.
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: "null" }
+        draftVersion: { type: integer, minimum: 0, description: "The revision the version check compares. 0 = no draft row yet. Edits, discards and publishes raise it." }
+        changed: { type: boolean, description: "Whether a publish now would write a different document than the one in force." }
+        edits:
+          type: object
+          description: |
+            The pending overlay. `field-awards`: `{ awards: { <id>: { title?, criteria?, target?, hidden? } } }`; `clipper-cards`:
+            `{ names: { <cardKey>: name } }`; `aircraft-tags`: `{ tags: { <cardKey>: [tag] } }`. Empty when there is no draft.
+        changeCount: { type: integer, minimum: 0 }
+        changes:
+          type: array
+          maxItems: 200
+          description: The first 200 of `changeCount` differences.
+          items: { $ref: "#/components/schemas/ContentChange" }
+        body:
+          description: The preview, as version `publishedVersion + 1` (or the next free version).
+          oneOf:
+            - { $ref: "#/components/schemas/FieldAwardCatalogDocument" }
+            - { $ref: "#/components/schemas/ClipperCardCatalogDocument" }
+            - { $ref: "#/components/schemas/AircraftTagDocument" }
+    ContentDraftList:
+      type: object
+      additionalProperties: false
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          items: { $ref: "#/components/schemas/ContentDraft" }
+    ContentPublishResult:
+      type: object
+      additionalProperties: false
+      required: [name, version, previousVersion, sha256, byteSize, draftVersion, changeCount, manifestVersion]
+      properties:
+        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        version: { type: integer, minimum: 1, description: The version just written. }
+        previousVersion:
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: "null" }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: "The digest the manifest lists for the new version." }
+        byteSize: { type: integer, minimum: 1 }
+        draftVersion: { type: integer, minimum: 1, description: "The draft revision after the publish (the draft is empty again)." }
+        changeCount: { type: integer, minimum: 0 }
+        manifestVersion: { type: string, description: "The manifest `version` a player is served right after the commit." }
     ImportIssue:
       type: object
       additionalProperties: false
@@ -1947,8 +2428,8 @@ components:
         progress: { $ref: "#/components/schemas/Progress" }
 
     # ---------------------------------------------------------------------------------------------------------
-    # Flight Segment schemas: built in slices T2 and T3. Below them, PLANNED schemas (x-planned: true), designed 2026-10-29,
-    # not built. docs/design/trips-awards-logbook.md.
+    # Flight Segment, Field Award and Logbook schemas: built in slices T2, T3 and T5 (a schema marked x-planned: true would be
+    # designed and not built). docs/design/trips-awards-logbook.md.
     # ---------------------------------------------------------------------------------------------------------
 
     LocalDate:
@@ -2218,7 +2699,6 @@ components:
         - rotary-identified
         - vtol-identified
     FieldAwardProgress:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [id, current, target, earned, earnedAt]
@@ -2232,7 +2712,6 @@ components:
             - { type: string, format: date-time }
             - { type: "null" }
     FieldAwardBoard:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [catalogVersion, earned, total, awards]
@@ -2246,7 +2725,6 @@ components:
           items: { $ref: "#/components/schemas/FieldAwardProgress" }
 
     ClipperCardRecord:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [key, module, firstCollectedAt, timesIdentified, everPerfect]
@@ -2258,7 +2736,6 @@ components:
         timesIdentified: { type: integer, minimum: 1 }
         everPerfect: { type: boolean, description: "Identified at least once with no error and no hint (a one-way latch)." }
     LogbookTripRow:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [tripId, module, localDate, flights, correct, miles, statusPoints, completedAt]
@@ -2266,14 +2743,13 @@ components:
       properties:
         tripId: { type: string, format: uuid }
         module: { $ref: "#/components/schemas/ModuleId" }
-        localDate: { $ref: "#/components/schemas/LocalDate" }
+        localDate: { allOf: [{ $ref: "#/components/schemas/LocalDate" }], description: "The local day the Trip was completed on (the same value as FlightSegmentSummary.localDate)." }
         flights: { type: integer, const: 10 }
         correct: { type: integer, minimum: 0, maximum: 10 }
         miles: { type: integer, minimum: 0 }
         statusPoints: { type: integer, minimum: 0 }
         completedAt: { type: string, format: date-time }
     DailyLog:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [lastPlayedDate, flightsOnLastPlayedDate, streakDays, bestStreakDays]
@@ -2287,7 +2763,6 @@ components:
         streakDays: { type: integer, minimum: 0, description: Consecutive local days ending on lastPlayedDate. }
         bestStreakDays: { type: integer, minimum: 0 }
     LifetimeTotals:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [trips, flights, correct, allCorrectTrips, bestTripStreak, miles]
@@ -2300,7 +2775,6 @@ components:
         bestTripStreak: { type: integer, minimum: 0, maximum: 10, description: "Unity BestRoundStreak: the longest Perfect Streak inside one segment." }
         miles: { type: integer, minimum: 0, description: Miles earned in completed segments. }
     AwardCounters:
-      x-planned: true
       type: object
       additionalProperties: false
       description: Unity `AwardCounters` (the parts that are not derived from Cards). Replaces the app's local counters.
@@ -2320,12 +2794,11 @@ components:
             - { $ref: "#/components/schemas/FlightSegmentOutcome" }
             - { type: "null" }
     Logbook:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [version, recentTrips, daily, lifetime, counters, clipperCards, fieldAwards]
       properties:
-        version: { type: integer, minimum: 1, description: "players.version when it was read (same counter as Progress.version)." }
+        version: { type: integer, minimum: 1, description: "The Logbook's own counter (players.logbook_version): NOT Progress.version. Rises when a Round is banked or a Trip completed; 1 for a player who has done neither." }
         recentTrips:
           type: array
           maxItems: 20
@@ -2340,7 +2813,6 @@ components:
           items: { $ref: "#/components/schemas/ClipperCardRecord" }
         fieldAwards: { $ref: "#/components/schemas/FieldAwardBoard" }
     LogbookEnvelope:
-      x-planned: true
       type: object
       additionalProperties: false
       required: [logbook]

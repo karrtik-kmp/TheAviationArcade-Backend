@@ -1,23 +1,13 @@
 import { Controller, Get, Param, Req, Res } from "@nestjs/common";
 import type { Request, Response } from "express";
 import { ApiError } from "../../common/errors.js";
+import { ifNoneMatchHits } from "../../common/http-cache.js";
 import { ContentDocumentsService } from "./content-documents.service.js";
 import { isDocumentName } from "./documents.js";
 
 /** Manifest: store, but revalidate with If-None-Match. Documents: the bytes of a (name, version) never change. Both are exceptions to the global `/v1` no-store (design 7). */
 export const MANIFEST_CACHE_CONTROL = "no-cache";
 export const DOCUMENT_CACHE_CONTROL = "private, max-age=31536000, immutable";
-
-/**
- * RFC 9110 `If-None-Match` for a GET: `*` matches any current representation, otherwise any listed tag equal to `etag`
- * under WEAK comparison (a `W/` prefix is ignored) matches. `etag` is the quoted strong tag we sent.
- */
-export function ifNoneMatchHits(header: string | undefined, etag: string): boolean {
-  if (header === undefined) return false;
-  const value = header.trim();
-  if (value === "*") return true;
-  return value.split(",").some((part) => part.trim().replace(/^W\//, "") === etag);
-}
 
 const VERSION = /^[1-9]\d{0,8}$/;
 

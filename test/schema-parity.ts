@@ -41,6 +41,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "player_clipper_cards.player_clipper_cards_module_check": CARD_MODULES,
   "player_field_awards.player_field_awards_award_id_check": FIELD_AWARD_IDS,
   "content_documents.content_documents_name_check": CONTENT_DOCUMENT_NAMES,
+  "content_drafts.content_drafts_name_check": CONTENT_DOCUMENT_NAMES,
 };
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

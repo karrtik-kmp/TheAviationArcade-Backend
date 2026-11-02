@@ -1,0 +1,2 @@
+ALTER TABLE "players" ADD COLUMN "logbook_version" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "players" ADD CONSTRAINT "players_logbook_version_check" CHECK ("players"."logbook_version" >= 1);

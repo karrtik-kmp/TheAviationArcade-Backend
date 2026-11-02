@@ -156,7 +156,7 @@ export class TripsService {
         value: { kind: "opened", trip: await tripView(tx, row, 0, now) },
         ...(change ? { change } : {}),
         // The "write at Trip end" trigger: the completed segment's copy is due now (C3).
-        ...(completed ? { republish: true as const, mirrorNow: true as const } : {}),
+        ...(completed ? { republish: true as const, mirrorNow: true as const, logbook: true as const } : {}),
       };
     });
     if (result.kind === "no_player") return { kind: "no_player" };
@@ -243,6 +243,8 @@ export class TripsService {
         ...(change ? { change } : {}),
         republish: true,
         mirrorNow: true,
+        // The segment, counters, Cards and awards the Logbook shows all changed (T5). Replays return above without this.
+        logbook: true,
       };
     });
     if (result.kind === "no_player") return { kind: "not_found" };

@@ -1,6 +1,6 @@
 # Trips, Field Awards, Clipper Cards, Logbook and the content manifest
 
-**Status:** designed 2026-10-29; slices T1 (pure rules), T2 (segments and Rounds) and T3 (complete) built 2026-10-29, T4 (content documents and the manifest) built 2026-11-02, T5-T6 not built. Contract: the `x-planned` operations and schemas in
+**Status:** designed 2026-10-29; slices T1 (pure rules), T2 (segments and Rounds) and T3 (complete) built 2026-10-29, T4 (content documents and the manifest), T5 (Logbook) and T6 (admin edit and publish) built 2026-11-02. Contract: the `x-planned` operations and schemas in
 [`../openapi.yaml`](../openapi.yaml) (the parity test asserts they answer 404 today); the built ones are served. Owner: this session (backend repo).
 
 Binding inputs: `docs/TASKS.md` Decisions 2026-10-29 "contract round 1" and "contract round 2", D-1, D-3, D-5, C5, C12.
@@ -296,8 +296,8 @@ segment the caller does not own maps `no_player`/missing to 404 `trip_not_found`
 
 One read transaction, no lock, no writes: `recentTrips` = the 20 newest completed `trips` (index above); `daily` and
 `lifetime` and `counters` from `player_counters`; `clipperCards` from `player_clipper_cards`; `fieldAwards` = the
-catalog in force × (`player_field_awards` ∪ current metric values). `version` = `players.version`, so the app can
-tell a stale cache. The app still owns the presentation flags ("announced", "unseen"; ADR-0008 §1).
+catalog in force × (`player_field_awards` ∪ current metric values). `version` = `players.logbook_version` (**overridden at T5 by the user ruling of 2026-10-29: the Logbook has its own counter and
+ETag, see "T5 as built"; `players.version` keeps its U2 meaning**). The app still owns the presentation flags ("announced", "unseen"; ADR-0008 §1).
 
 `current` is the metric value capped at the target in force, reported as is. A stored award never un-earns (U7), so after
 a staff edit raises a target an award can read `earned: true` with `current < target` (25 / 50 and earned). The
@@ -327,13 +327,12 @@ the evaluator clamps a bad catalog value (`effectiveTarget`), and the T4 publish
 
 ## 8. Admin edits (C12) → manifest versions
 
-Planned staff routes (slice T6, not in this contract yet): read the draft catalog, edit an award's `title`,
-`criteria`, `target` or `hidden` (never its id or metric) with a version check like `content_items`, edit Card names
-and tags, then **publish**, which writes a new `content_documents` version and one `admin_audit` row
-(`action = 'content_publish'`, a new CHECK value). The next manifest read shows the new version; Unity pulls it. A
-re-import of a later Field Awards sheet goes through the same plan → confirm → apply path as 5.0 imports (rows matched
-by sheet row and title, never guessed). Remote Config gets at most a pointer (the manifest version) and the kill
-switches (contract round 1 (3)). Military content edits (5.0) change `clipper-cards` only through a publish.
+Built in slice T6 (see "T6 as built"): staff routes read the draft catalog, edit an award's `title`, `criteria`, `target` or `hidden`
+(never its id or metric), edit Card names and tags, then **publish**, which writes a new `content_documents` version and one
+`admin_audit` row (`action = 'content_publish'`, a new CHECK value). The next manifest read shows the new version; Unity pulls it. A
+re-import of a later Field Awards sheet goes through the same plan, confirm, apply path as 5.0 imports (rows matched
+by sheet row and title, never guessed): **not built, a follow-up.** Remote Config gets at most a pointer (the manifest version) and the kill
+switches (contract round 1 (3)): not built either. Military content edits (5.0) change `clipper-cards` only through a publish.
 
 ## 9. UGS copy impact
 
@@ -481,12 +480,172 @@ The offset is fixed per segment on purpose (one clock per Trip); the next segmen
 | T2 | Segments and Rounds | M | **Built 2026-10-29** (see "T2 as built" below). migration 0009 (incl. the open request's `Idempotency-Key`, unique per player, U14); `src/trips/` module; `POST /v1/trips`, `abandon`; Rounds require `tripId`; Flight facts; D-3 in `bankRound`'s caller; day streak + `day_streak_grant`; drop `x-planned` from those ops and the planned Round changes; schema parity lists | e2e: open/abandon/supersede/expiry, replay, concurrency (two opens, issue vs abandon), openapi parity |
 | T3 | Complete | M | **Built 2026-10-29** (see "T3 as built" below). migration 0010; Cards, counters, 28 awards, `trip_grant`, `mirrorNow`; catalog from a code constant until T4; re-derivation test | e2e: replay returns the same lists, nothing paid twice, concurrent completes, Go Around sequence, 4th-Trip grant |
 | T4 | Content documents and manifest | M | **Built 2026-11-02** (see "T4 as built" below). migration 0011; seed field-awards/clipper-cards/aircraft-tags v1; `GET /v1/content/manifest`, `GET /v1/content/documents/{name}/{version}`; ETag/304; T3 reads the catalog from documents | e2e: Unity-compatible manifest, 304, immutable bytes = sha256 |
-| T5 | Logbook | S | `GET /v1/me/logbook` | e2e against a seeded history; schema parity |
-| T6 | Admin edit and publish (C12) | M | staff routes, version checks, publish, audit; after U7/U10 | e2e: an edit reaches the manifest; Unity pulls it (cross-repo gate in ADR-0008 S2). **Also:** a `clipper-cards` v1 sealed from a small or trial Military set stays incomplete until a publish (T6 must make re-publishing it easy); consumers of Cards need a fallback for a Card key not in the document; clients verify `sha256` against the manifest |
+| T5 | Logbook | S | **Built 2026-11-02** (see "T5 as built" below). migration 0012 (`players.logbook_version`); `GET /v1/me/logbook` | e2e against a seeded history; schema parity |
+| T6 | Admin edit and publish (C12) | M | **Built 2026-11-02** (see "T6 as built" below). staff routes, version checks, publish, audit; after U7/U10 | e2e: an edit reaches the manifest; Unity pulls it (cross-repo gate in ADR-0008 S2). **Also:** a `clipper-cards` v1 sealed from a small or trial Military set stays incomplete until a publish (T6 must make re-publishing it easy); consumers of Cards need a fallback for a Card key not in the document; clients verify `sha256` against the manifest |
 
 Order (user, 2026-10-29): interleaved with the dealer slices from the brief, one at a time: T2 → B1 → B2 → T3 → B3 →
 B4 → B5 → T4 → T5 → T6, then server answer checks and dealing with releases (§10). Each slice: focused commit,
 independent review for T2–T4 and T6, verification recorded in `docs/TASKS.md`.
+
+### T6 as built (2026-11-02)
+
+Migration `0013_content_drafts_and_publish` (generated; 0000-0012 untouched; a second `db:generate` reports no changes): table
+`content_drafts`, and `admin_audit_action_check` now allows `content_publish` (`ADMIN_AUDIT_ACTIONS`, the `schema.ts` literal and the S5
+parity lists, unit and live, agree). Five staff routes under `/v1/admin/content/documents` (`src/content/documents/`: pure
+`drafts.ts`, `draft-store.ts`, `content-admin.service.ts`, `content-admin.controller.ts`): list, `GET` and `PATCH .../{name}/draft`,
+`POST .../draft/discard`, `POST .../publish`. Same class guards as `ContentController` (`@StaffOnly`, `@SkipClientVersion`; the website also
+sends `X-Client: web`); the actor is the verified token's principal and no body field can name one. API 0.11.0; new error codes
+`version_conflict` (409), `nothing_to_publish` (409), `content_invalid` (422).
+
+**The draft is an overlay, not a copy.** One mutable row per document name, created by the first edit: `edits` is
+`{ awards: { id: { title?, criteria?, target?, hidden? } } }` for `field-awards`, `{ names: { cardKey: name } }` for `clipper-cards`,
+`{ tags: { cardKey: [tag] } }` for `aircraft-tags`, and `version` is the draft revision (no row = 0). The document a publish would write is the
+version in force with the overlay applied (the preview, shown by `GET .../draft` as `body`). So a draft cannot go stale against a newer
+version (it applies on top of whatever is in force), published rows are never touched, and "what changed" is a plain comparison of the preview
+with the document in force (`changed`, `changes`). The stored overlay is parsed again on every read: a hand-edited row that no longer
+validates is 422 `content_invalid` (never published) and `discard` is the way out.
+
+**Concurrency.** Every edit, discard and publish of one name first takes `pg_advisory_xact_lock(hashtextextended('content-draft:<name>'))`
+(blocking, bounded by the pool's `lock_timeout`, which maps to a retryable 503), then compares the request's `draftVersion` with the row's: a
+mismatch is 409 `version_conflict` and nothing is written, so an edit never overwrites another editor's (repo rule) and a publish racing an edit
+either includes it or refuses it, never drops it. A publish reads the next version (`max(version) + 1` of the name, under the lock), inserts it
+through the insert-only writer in `document-store.ts` (`ON CONFLICT DO NOTHING`; a lost insert is 409 too), writes one audit row and resets the
+draft (`edits = {}`, revision + 1), all in one transaction. A retry of a publish that succeeded carries the old `draftVersion` and is 409, never a
+second row. The advisory lock (not a row lock) also covers the case where no draft row exists yet.
+
+**Publish check** (before any insert): the preview is validated with the T4 validator (`validateDocument`: 28 ids exactly once, each award's metric
+its own, integer targets 1..1e9, the body `version` equal to the row's, unique Card keys, tag lists); a failure is 422 `content_invalid`. The edit
+request schemas are stricter still (strict objects, so `id`, `metric`, sheet text and rulings are 400; titles 1-200, criteria 1-2000, Card names
+1-500, trimmed; no U+0000 or unpaired surrogate; at most 28 awards (each id once) / 25 Card names / 25 tag entries per request; the global 16 KB body limit can answer 413 before any of these checks). An unchanged
+document is 409 `nothing_to_publish` (the defined refusal, so a double click or a retry can never mint an identical version).
+
+**Review fixes (wave review of T5 and T6, 2026-11-02).** (a) **Client tags.** Dropping a tag whose source is `client_sheet` or `client_ruling` is
+refused (422 `content_invalid`) unless that entry carries `acknowledgeClientTagRemoval: true`; the acknowledgement is stored in the overlay
+(`ackClientTagRemoval`), belongs to one edit of one Card (a later edit of it without the flag clears it and asks again), is checked again at publish
+(a hand-edited draft cannot skip it), and the `tags` change carries `removedClientTags` and `acknowledgedRemoval`, so it is in the audit row.
+(b) **Editors.** The overlay keeps `history: [{ principal, action: edit|discard, at, draftVersion }]` (newest 1000), so no schema change: it survives a
+discard (even of a draft that no longer validates, whose history is salvaged), and a publish copies `editors` (distinct principals) and `history` into the
+audit `detail`, then clears it; `content_drafts.updated_by` stays "last writer". (c) **Card removal.** A `clipper-cards` publish whose changes include
+`card-removed` needs `acknowledgeCardRemoval: true` in the body, else 422 `content_invalid` with the Card keys (chosen over 409 because the request is
+well-formed and the state is unchanged, it is the document that needs confirming; the same code as the tag acknowledgement). The audit row records
+`acknowledgedCardRemoval`. Players' stored Cards are never touched: the Logbook lists Cards from stored rows. (d) A publish also takes the seed's
+advisory lock (after the draft lock), because a publish racing the seed of version 1 could otherwise read "nothing in force" and then "next version 2" and
+write a duplicate of v1 (found by the new race test); `seedContentDocuments` reports a name seeded only when its insert happened. (e) `list` and `GET draft`
+read in one REPEATABLE READ, READ ONLY transaction. (f) `ifNoneMatchHits` lives in `src/common/http-cache.ts`; the Logbook sends `Vary: Authorization`.
+
+**Audit.** One `content_publish` row per publish: `actor` = the staff principal, `target` = the document name, `detail` = `{ name, version,
+previousVersion, sha256, byteSize, draftVersion, editors, history, acknowledgedCardRemoval?, note?, changeCount, changes }` with the first 200 changes (`{ kind, key, field?, from?, to? }`).
+`content_documents.created_by` is the same principal and `note` the staff note. This is the "recorded staff edit" of U10: a sheet typo is fixed by
+a title or criteria edit and both the old and the new text are in the audit row.
+
+**clipper-cards and the T4 caveat.** A publish of `clipper-cards` always rebuilds the Cards from the approved Military items as they are then (the
+commercial families plus one Card per Card key, the T4 seal limits applied), so a v1 sealed from a small or trial set catches up with one publish, and
+`GET .../draft` already shows the difference (`card-added`, `card-removed`, `card-items`). Names: the draft's, else the published Card's, else the
+content's, so a staff-edited name survives later republishes and an import that changes an answer's text does not silently rename a Card. A Card of a
+retired item drops out (consistent with the seed: approved items only). With no `clipper-cards` row and no approved Military item, publish is 409
+`nothing_to_publish`; with items but no row it writes version 1. The consumers' rules from T4 stand: a Card key may be missing from the document
+a client holds (fall back), and clients verify `sha256` against the manifest.
+
+**Effects, each pinned by a test.** An edit changes nothing a player can read (manifest, document 2, `catalogInForce`, Logbook body and ETag, player
+rows). A publish changes the manifest `version` and the document entry, `catalogInForce().version`, the Logbook ETag and `catalogVersion`, writes no
+player row, and later completions record `catalog_version` = the new version. A raised target keeps an earned award earned (U7: `earned` is the
+stored fact; `current < target` is possible), the old completion replays unchanged (the replay reads the stored rows) and still records version 1.
+The process-local memo is keyed by (name, version, sha256) and the "in force" query reads the highest row every time, so another process that
+memoised version 1 sees version 2 at once and a restarted process agrees; a second app instance serves the same manifest.
+
+Choices not settled by the spec (none is a user ruling): (1) the draft is an overlay in `content_drafts`, one row per name, revision-checked (not a
+copy, not per-field versions: two editors working on different awards of one document still conflict on the revision, and the loser rereads);
+(2) the version check is `draftVersion` in the body, not `If-Match`; (3) a new error code each for a stale draft, an unchanged draft and an invalid
+document, rather than reusing `plan_changed` or `import_invalid`; the conflict message names the current revision, there is no extra response field;
+(4) tag edits replace a Card's whole tag list; a tag already on the entry keeps its `source`, a staff-added tag is `provisional` (ASSUMPTION: it is
+neither the client's sheet nor a ruling), and a Card with no entry may be given one (manufacturer null) if it is a Card of the catalog; (5)
+`thresholdCell` (the sheet's verbatim cell) is not editable, so after a `target` edit it can disagree with `target`; the audit row carries both
+values; (6) `clipper-cards` membership is derived from the content at publish time and is not edited, only names are; (7) a publish keeps the draft
+row and raises its revision (revisions never repeat, so a stale tab can never match a newer draft); (8) discard with no draft writes nothing; (9) a
+publish returns `manifestVersion` read after the commit (informational: another publish may already have moved it); (10) a stored draft that no
+longer validates blocks reading, editing and publishing it (422) until discarded; (11) audit `createdAt` is the process clock like `content_import`,
+while the document's `created_at` is the database clock; (12) a view or audit row lists at most 200 changes, `changeCount` is the true number.
+
+Not done (follow-ups): Remote Config pointer and kill switches; re-importing a later Field Awards sheet through plan, confirm and apply; an
+`If-Match` form; moving the commercial `aircraftKey` gate (section 3.2) from `SEED_COMMERCIAL_CARD_KEYS` to the `clipper-cards` document; website
+admin screens and the Unity pull (messages in `docs/TASKS.md`).
+
+### T5 as built (2026-11-02)
+
+Migration `0012_logbook_version` (generated; 0000-0011 untouched; a second `db:generate` reports no changes): `players.logbook_version
+integer NOT NULL DEFAULT 1` with `CHECK (logbook_version >= 1)`. One route, `GET /v1/me/logbook` (`src/logbook/`: pure builders
+`logbook.ts`, read-only `logbook.service.ts`, `logbook.controller.ts`). API 0.10.0; `x-planned` is gone from the contract (no operation is
+planned any more). No change to Progress, the UGS copy (U1) or any other route.
+
+**The counter lives on `players`, written by `PlayerBalance.update`.** The player row is already locked there, so the bump is atomic with
+the write that causes it and needs no new lock order. `Step` gains `logbook?: true`: the bump is `logbook_version + 1` inside the one
+UPDATE of the call (invariant 2 holds), or a lone UPDATE of that column when the step has no `change` and no `profile`. A lone bump touches
+neither `version` nor `updated_at` and enqueues nothing (nothing in Progress or the UGS copy moved), which is exactly the user ruling: a
+completion that pays no hint and resets no streak raises `logbook_version` and not `version`. The balance guard already forbids any direct
+write to `players` outside `src/balance` (drizzle and raw SQL); a seeded test records that a `logbookVersion` bump is flagged, so no new guard
+rule or table was needed.
+
+**Which writes bump it (it rises iff the response changes), each pinned by a test:**
+
+| Write | Bumps | Why |
+|---|---|---|
+| a Round banked (`completeRound`, first time) | yes | `daily` (flightsOnLastPlayedDate, day streak) is in the response; it moves on every banked Round whatever it pays |
+| a segment completed through `POST /v1/trips/:id/complete` (first time) | yes | recent Trips, lifetime, counters, Cards, awards |
+| the lazy completion inside `POST /v1/trips` | yes | same data; the open call carries `logbook` only on the completing path |
+| replay of `complete` or of a Round result, concurrent completes | no | write nothing; a burst of 6 bumps once |
+| abandon (explicit, superseded by an open, or lazy on expiry) | no | ASSUMPTION: an abandoned segment is not in `recentTrips`, and the Rounds it banked were counted when banked. This reads "Trips ... change" in the ruling as "what the Logbook returns" |
+| open, issue a Round, spend a hint, refused result, shop, Active Rank, `PUT /v1/me`, UGS link, reads | no | nothing the Logbook shows moves (Active Rank, hints and links change Progress, not the Logbook) |
+| catalog publish (field-awards or aircraft-tags version) | no counter; **the ETag changes** | see below |
+| account deletion | row gone | a recreated account has a new `created_at` in its tag |
+
+**The ETag** is `"lb-" + 32 hex`, SHA-256 over `[LOGBOOK_FORMAT, player id, created_at (ms), logbook_version, field-awards version in force,
+aircraft-tags version in force]`. The body is a pure function of the player's stored rows plus those two documents, so the tag names exactly
+that: the counter covers every player write, the two versions cover a publish (which changes `fieldAwards` text, targets and the tag-derived
+`current` values with no player write), the player id and `created_at` stop another player or a deleted-and-recreated account (counter
+restarted at 1) ever sharing a tag, and `LOGBOOK_FORMAT` retires every tag when the derivation changes in code. The versions are the ones
+`catalogInForce` applies (highest VALID document), so an invalid newest row changes nothing. The `clipper-cards` document is not read, so
+it is not in the tag.
+
+**Time-derived fields: there are none.** `daily` is stored data (the app decides what "today" is), `recentTrips` lists completed segments
+only (an open or expiring one never appears), and nothing is stamped with the request time or `evaluatedAt`. Tests: the same state gives the
+same bytes and tag a second apart, and an open segment running out (expiry is time passing, not a stored change) moves neither. Any field that
+did depend on the clock would have to enter the hash.
+
+**The read** is one `REPEATABLE READ, READ ONLY` transaction (`DatabaseService.withTransaction` takes an optional transaction config): the
+player row, `catalogInForce`, counters, the 20 newest completed segments, the Cards and the earned rows are one snapshot, so a completion
+committing in between is seen whole or not at all and the tag always belongs to its body. No `FOR UPDATE`, no `PlayerBalance`, no write
+(a source scan pins that, and a held player lock does not block a read). The tag is decided first from two small reads, so a matching
+`If-None-Match` is a 304 without reading the history. Order of answers: 426 / 401 / 429 as every route (guards), then 404
+`player_not_found`, then 503 `service_unavailable` (`catalogInForce` finds no valid document; returned out of the transaction, not thrown, so
+the pooled connection is kept), then 304 or 200. An `If-None-Match` never turns a 404 or 503 into a 304.
+
+**Field Awards.** `current` and `target` come from `evaluateFieldAwards` (metric capped at the effective target); **`earned` and `earnedAt`
+come only from `player_field_awards`**. So a raised target reads `earned: true` with `current < target`; a lowered one reads `earned: false`
+with `current = target` until the next completion stores it (ASSUMPTION test: it is the only reading that does not invent a fact the
+completion has not recorded). `fieldAwards.earned` counts stored rows, `total` is the catalog length (28), `catalogVersion` the field-awards
+version in force now (not the one an award was earned under).
+
+**Cards.** Listed from `player_clipper_cards` alone, oldest first (`first_collected_at`, then key): `key`, `module`, `firstCollectedAt`,
+`timesIdentified`, `everPerfect` (the contract's fields). The route never joins `clipper-cards`, so a key no document names (a retired
+Military item, a family added later, a v1 sealed from a small set) still appears; names and art are the app's join against the document it
+pulled. There is therefore no fallback label to invent.
+
+**Size bound.** 20 Trip rows, exactly 28 awards, a fixed set of counters, and one record (about 150 bytes) per distinct Card held. Cards are
+the only list that grows, and only with content: a key exists only for a commercial family the key gate admits (23) or a Military answer, and the
+`clipper-cards` document caps the set at 5,000, so under 1 MB at the cap and about 8 KB today (23 + 27 answers). No row cap is applied: a
+silent truncation would be worse than a list bounded by content.
+
+**Caching.** `Cache-Control: private, no-cache` on 200 and 304 (store, always revalidate; `private` because the body is per player, unlike
+the manifest's plain `no-cache`); errors stay `no-store`. `If-None-Match` handling is the manifest's `ifNoneMatchHits` (exact, weak, list, `*`).
+The 429 limiter counts a 304 like any request.
+
+Choices not settled by the spec (none is a user ruling): (1) the counter is a `players` column, not a table; (2) abandon does not bump (above);
+(3) `private, no-cache`, not the manifest's `no-cache`; (4) the ETag folds in the player id and `created_at`, not only counters and versions;
+(5) `earned` is the stored fact, so a lowered target reads unearned until the next completion; (6) the aircraft-tags version is in the tag
+although the segment does not record it; (7) `recentTrips[].localDate` is the completion day (A22), as in the completion summary; (8) Cards carry
+only the contract's five fields and no display name; (9) no row cap on Cards; (10) a lone bump leaves `updated_at` alone; (11) `Logbook.version`
+starts at 1 and is not comparable to `Progress.version` (documented in openapi). Not done (by design): the publish route and its re-sealing of
+`clipper-cards` (T6), and any move of the commercial key gate to the document.
 
 ### T4 as built (2026-11-02)
 

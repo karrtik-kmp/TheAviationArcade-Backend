@@ -19,6 +19,8 @@ import type { FieldAwardDefinition } from "../rules/field-awards.js";
  */
 export type CatalogInForce = {
   version: number;
+  /** The aircraft-tags document's version applied (not recorded on a segment; the Logbook ETag folds it in, T5). */
+  tagsVersion: number;
   awards: readonly FieldAwardDefinition[];
   tags: AircraftTagTable;
 };
@@ -42,5 +44,5 @@ export async function catalogInForce(db: Reader): Promise<CatalogInForce> {
       );
     }
   }
-  return { version: awards.meta.version, awards: awards.value.awards, tags: tags.value.tags };
+  return { version: awards.meta.version, tagsVersion: tags.meta.version, awards: awards.value.awards, tags: tags.value.tags };
 }

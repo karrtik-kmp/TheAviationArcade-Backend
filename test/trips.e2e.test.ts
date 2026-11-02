@@ -1127,7 +1127,7 @@ describe("every Progress view agrees on the live streak (review fix)", () => {
     const full = (await sql.query("SELECT * FROM players WHERE id = $1", [p.principal])).rows[0];
     const asRow = {
       id: full.id, statusPoints: full.status_points, miles: full.miles, hints: full.hints, perfectStreak: full.perfect_streak,
-      activeRank: full.active_rank, firstClassUntil: full.first_class_until, version: full.version, createdAt: full.created_at, updatedAt: full.updated_at,
+      activeRank: full.active_rank, firstClassUntil: full.first_class_until, version: full.version, logbookVersion: full.logbook_version, createdAt: full.created_at, updatedAt: full.updated_at,
     };
     expect(mirrorSnapshot({ ...asRow, evaluatedAt: new Date() }).perfectStreak).toBe(1); // unlived: the stored value
     const { DatabaseService } = await import("../src/database/database.module.js");

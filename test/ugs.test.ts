@@ -283,6 +283,7 @@ describe("mirror policy", () => {
       activeRank: "trainee",
       firstClassUntil: new Date("2026-12-01T00:00:00.000Z"),
       version: 9,
+      logbookVersion: 1,
       createdAt: new Date("2026-10-01T00:00:00.000Z"),
       updatedAt: new Date("2026-10-28T12:00:00.000Z"),
     };

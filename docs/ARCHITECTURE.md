@@ -219,10 +219,12 @@ sample. Nothing existed to sync.
 - UGS player tokens: RS256, JWKS `https://player-auth.services.api.unity.com/.well-known/jwks.json` (kid `public:<uuid>`), `iss`
   `https://player-auth.services.api.unity.com`, `sub` = the UGS player id, `exp`/`nbf`.
 - Player Auth admin: `GET https://services.api.unity.com/player-identity/v1/projects/{projectId}/users/{playerId}` (Basic
-  service account; the API must be enabled in the dashboard) returns `externalIds[] { externalId, providerId }`. Rate limit
+  service account with scope `player_auth.users.get`; the API must be enabled in the dashboard; the docs name no role for that
+  scope, re-checked 2026-11-02, so read it off the role list) returns `externalIds[] { externalId, providerId }`. Rate limit
   10 req/s and 500 per 30 minutes.
 
-**UNVERIFIED (kept as `ASSUMPTION` tests; confirm against a real UGS project before relying on them).:**
+**UNVERIFIED (kept as `ASSUMPTION` tests; `npm run ugs:check -- --live` settles both against the real project, with the owner's
+sign-off):**
 
 1. The token claims `project_id` / `upid`, `envId` and `idd` are described only in a support article. The code requires a
    project claim (either name), checks `envId` when present, and ignores `idd`.

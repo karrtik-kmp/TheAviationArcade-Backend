@@ -1,5 +1,5 @@
 import { Logger } from "@nestjs/common";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, max, sql } from "drizzle-orm";
 import type { Database, DatabaseService, Tx } from "../../database/database.module.js";
 import { contentDocuments, contentItems } from "../../db/schema.js";
 import type { ContentDocumentRow } from "../../db/schema.js";
@@ -154,6 +154,12 @@ export async function findDocument(db: Reader, name: ContentDocumentName, versio
   return row;
 }
 
+/** The version a publish would write: one above the highest stored row of the name, valid or not (0 rows = 1). Read under the publish lock. */
+export async function nextDocumentVersion(db: Reader, name: ContentDocumentName): Promise<number> {
+  const [row] = await db.select({ top: max(contentDocuments.version) }).from(contentDocuments).where(eq(contentDocuments.name, name));
+  return (row?.top ?? 0) + 1;
+}
+
 export type NewDocument = { name: ContentDocumentName; version: number; body: unknown; createdBy: string; note?: string };
 
 /**
@@ -204,6 +210,14 @@ async function hasAny(tx: Tx, name: ContentDocumentName): Promise<boolean> {
 export type SeedResult = { seeded: ContentDocumentName[]; failed: ContentDocumentName[] };
 
 const SEED_LOCK = sql`SELECT pg_advisory_xact_lock(hashtextextended('content-documents-seed', 0))`;
+
+/**
+ * The seed's lock, for a publish: it orders the publish's reads ("in force", the next version) after any seed that is writing
+ * version 1, so a publish racing the seed sees v1 or none, never half. Always taken after the per-name draft lock.
+ */
+export async function lockSeed(tx: Tx): Promise<void> {
+  await tx.execute(SEED_LOCK);
+}
 
 // The limits of the clipper-cards schema (documents.ts). An item over one is SKIPPED, never allowed to block the document.
 const MAX_CARD_NAME = 500;
@@ -264,8 +278,7 @@ export async function seedContentDocuments(database: Pick<DatabaseService, "with
           if (await hasAny(sp, name)) return;
           const doc = await build(sp);
           if (!doc) return;
-          await insertDocument(sp, doc);
-          seeded.push(name);
+          if (await insertDocument(sp, doc)) seeded.push(name);
         });
       } catch (error) {
         failed.push(name);

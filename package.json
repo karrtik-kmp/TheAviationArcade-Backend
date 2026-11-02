@@ -16,7 +16,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "contracts:write": "nest build && node scripts/write-contracts.mjs",
-    "bunny:check": "nest build && node scripts/bunny-check.mjs"
+    "bunny:check": "nest build && node scripts/bunny-check.mjs",
+    "ugs:check": "nest build && node scripts/ugs-check.mjs"
   },
   "dependencies": {
     "@nestjs/common": "12.1.3",

@@ -337,6 +337,13 @@ describe("balance guard checker catches seeded violations", () => {
     expect(violations("await tx\n  .update(\n    players\n  )\n  .set({});")).toContain(WRITE);
   });
 
+  it("a logbook_version bump outside src/balance is a direct write to players (T5)", () => {
+    expect(violations("await tx.update(players).set({ logbookVersion: sql`${players.logbookVersion} + 1` }).where(x);")).toContain(WRITE);
+    expect(violations("await tx.execute(sql`UPDATE players SET logbook_version = logbook_version + 1 WHERE id = ${id}`);")).toContain(
+      "writes players, ugs_links or a ledger directly (raw SQL)",
+    );
+  });
+
   it("direct raw SQL writes to players, ugs_links and the ledgers", () => {
     for (const sqlText of [
       "update players set miles = 0",

@@ -54,11 +54,17 @@ export const players = pgTable(
     // Bumped on every STORED progress change (PlayerBalance owns the bump). It orders stored changes; evaluatedAt (database
     // clock) orders time-derived views at one version, e.g. lazy Trip expiry. Game rule: order by (version, evaluatedAt).
     version: integer("version").notNull().default(1),
+    // Freshness of GET /v1/me/logbook (T5; user ruling 2026-10-29): bumped by PlayerBalance.update, in the same UPDATE, by
+    // exactly the writes that change what the Logbook returns (a banked Round, a completed segment). It is NOT `version`:
+    // a completion that pays no hint and resets no streak changes the Logbook but not Progress. Never client-visible
+    // except inside the Logbook ETag and `Logbook.version`.
+    logbookVersion: integer("logbook_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
   (t) => [
     check("players_status_points_check", sql`${t.statusPoints} >= 0`),
+    check("players_logbook_version_check", sql`${t.logbookVersion} >= 1`),
     check("players_miles_check", sql`${t.miles} >= 0`),
     check("players_hints_check", sql`${t.hints} >= 0`),
     check("players_perfect_streak_check", sql`${t.perfectStreak} >= 0`),
@@ -348,7 +354,7 @@ export const adminAudit = pgTable(
     detail: jsonb("detail").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
-  (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import')`)],
+  (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import', 'content_publish')`)],
 );
 
 /**
@@ -503,6 +509,30 @@ export const contentDocuments = pgTable(
     check("content_documents_byte_size_check", sql`${t.byteSize} > 0`),
     check("content_documents_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
     check("content_documents_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
+  ],
+);
+
+/**
+ * Staff drafts of the published documents (slice T6): MUTABLE, one row per document name, created by the first edit. `edits` is an
+ * overlay on the document in force (field-awards: per-award field values; clipper-cards: Card names; aircraft-tags: tag lists),
+ * not a copy of it, so a draft never goes stale against a newer version. `version` is the draft revision the editors' version
+ * check compares (no row = 0): every edit, discard and publish raises it. Written only by
+ * `src/content/documents/draft-store.ts`, always under the per-name advisory lock. Players never read it.
+ */
+export const contentDrafts = pgTable(
+  "content_drafts",
+  {
+    name: text("name").$type<ContentDocumentName>().primaryKey(),
+    version: integer("version").notNull(),
+    edits: jsonb("edits").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  (t) => [
+    check("content_drafts_name_check", sql`${t.name} IN ('field-awards', 'clipper-cards', 'aircraft-tags')`),
+    check("content_drafts_version_check", sql`${t.version} >= 1`),
+    check("content_drafts_edits_check", sql`${t.edits} @> '{}'::jsonb`),
+    check("content_drafts_updated_by_check", sql`length(${t.updatedBy}) BETWEEN 1 AND 256`),
   ],
 );
 

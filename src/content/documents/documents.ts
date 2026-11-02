@@ -52,7 +52,7 @@ const TAG_METRICS: ReadonlySet<FieldAwardMetric> = new Set<FieldAwardMetric>([
 const SHA256 = /^[0-9a-f]{64}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 /** Targets are whole numbers in 1..1e9: a bigger one is a typo, not a goal (and the evaluator would accept it). */
-const MAX_TARGET = 1_000_000_000;
+export const MAX_TARGET = 1_000_000_000;
 
 const rulingSchema = z.strictObject({
   field: z.string(),

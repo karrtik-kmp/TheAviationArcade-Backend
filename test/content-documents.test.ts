@@ -3,7 +3,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CanonicalJsonError, canonicalBytes, canonicalJson, sha256Hex } from "../src/content/documents/canonical.js";
-import { DOCUMENT_CACHE_CONTROL, MANIFEST_CACHE_CONTROL, ifNoneMatchHits } from "../src/content/documents/content-documents.controller.js";
+import { ifNoneMatchHits } from "../src/common/http-cache.js";
+import { DOCUMENT_CACHE_CONTROL, MANIFEST_CACHE_CONTROL } from "../src/content/documents/content-documents.controller.js";
 import {
   DOCUMENT_FORMAT,
   DocumentValidationError,

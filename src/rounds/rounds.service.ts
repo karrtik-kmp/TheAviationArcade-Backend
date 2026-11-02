@@ -375,6 +375,9 @@ export class RoundsService {
             trip: { tripId: trip.id, roundsBanked: trip.roundsBanked + 1, perfectStreak: banked.streak },
           },
         },
+        // A banked Round moves the Logbook's daily log (flightsOnLastPlayedDate / the day streak), whatever it pays (T5).
+        // The replay branch above and every refusal return before this point and carry no `logbook`.
+        logbook: true,
         // One ledger entry per Round (the unique key makes a double pay impossible); a zero award writes none.
         change: {
           postings,

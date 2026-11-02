@@ -99,9 +99,10 @@ describe("openapi contract parity", () => {
     expect(specRoutes()).toEqual(registered);
   });
 
-  it("x-planned operations are not served yet: not registered, and 404 not_found", async () => {
+  it("x-planned operations are not served yet: not registered, and 404 not_found (none are planned since 0.10.0; runs for the next one)", async () => {
+    // Since 0.10.0 (T5) no operation is planned, so the loops below check nothing today. Kept on purpose (the next planned
+    // operation is covered the day it is marked), and stated here so a green run is not mistaken for coverage.
     const planned = specRoutes("planned");
-    expect(planned.length).toBeGreaterThan(0);
     const registered = new Set(expressRoutes());
     const auth = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
     for (const route of planned) {
@@ -145,7 +146,7 @@ describe("openapi contract parity", () => {
     const validate = ajv.compile({ $ref: "spec#/components/schemas/UgsMirrorProgress" });
     const player = {
       id: "firebase:demo-airplane-games:u1", statusPoints: 1200, miles: 30, hints: 5, perfectStreak: 2, activeRank: null,
-      firstClassUntil: null, version: 4, createdAt: new Date(), updatedAt: new Date(),
+      firstClassUntil: null, version: 4, logbookVersion: 1, createdAt: new Date(), updatedAt: new Date(),
     };
     const value = mirrorSnapshot({ ...player, evaluatedAt: new Date() });
     expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
@@ -442,6 +443,58 @@ describe("openapi contract: real responses validate against the spec", () => {
     expect((await request(server).get("/v1/content/manifest")).status).toBe(401);
   });
 
+  it("logbook: a real response (with history) validates against the spec, headers and 304 included (slice T5)", async () => {
+    const reader = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    expect((await request(server).put("/v1/me").set(reader)).status).toBe(201);
+    const empty = await request(server).get("/v1/me/logbook").set(reader);
+    expect(empty.status).toBe(200);
+    check("LogbookEnvelope", empty.body);
+
+    // History: one completed identifier segment (two Cards) and one open segment with a banked Round.
+    const opened = await request(server).post("/v1/trips").set(reader).set("Idempotency-Key", newKey()).send(openBody("identifier"));
+    expect(opened.status).toBe(201);
+    const tripId = opened.body.trip.tripId as string;
+    for (let n = 0; n < 10; n += 1) {
+      const issued = await request(server).post("/v1/rounds").set(reader).send({ tripId });
+      const roundId = issued.body.round.roundId as string;
+      await sql.query("UPDATE rounds SET issued_at = issued_at - interval '10 seconds' WHERE id = $1", [roundId]);
+      const key = n % 2 === 0 ? "787" : "A320";
+      const banked = await request(server)
+        .post(`/v1/rounds/${roundId}/result`).set(reader)
+        .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("identifier", { aircraftKey: key }) });
+      expect(banked.status, JSON.stringify(banked.body)).toBe(200);
+    }
+    const completed = await request(server).post(`/v1/trips/${tripId}/complete`).set(reader);
+    expect(completed.status).toBe(200);
+
+    const res = await request(server).get("/v1/me/logbook").set(reader);
+    expect(res.status).toBe(200);
+    check("LogbookEnvelope", res.body);
+    expect(res.body.logbook.recentTrips).toHaveLength(1);
+    expect(res.body.logbook.clipperCards).toHaveLength(2);
+    expect(res.body.logbook.fieldAwards.awards.some((a: { earned: boolean }) => a.earned)).toBe(true);
+    expect(res.headers["cache-control"]).toBe(spec.components.headers.PrivateNoCache.schema.const);
+    expect(res.headers["etag"]).toMatch(new RegExp(spec.components.headers.ETag.schema.pattern));
+    const notModified = await request(server).get("/v1/me/logbook").set(reader).set("If-None-Match", res.headers["etag"] as string);
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["cache-control"]).toBe(spec.components.headers.PrivateNoCache.schema.const);
+    expect(notModified.headers["etag"]).toBe(res.headers["etag"]);
+
+    // The declared responses are exactly the ones the route can answer.
+    expect(Object.keys(spec.paths["/v1/me/logbook"].get.responses).sort()).toEqual(["200", "304", "401", "404", "426", "429", "503"]);
+    expect(spec.paths["/v1/me/logbook"].get["x-planned"]).toBeUndefined();
+    const stranger = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    const missing = await request(server).get("/v1/me/logbook").set(stranger);
+    expect(missing.status).toBe(404);
+    check("Error", missing.body);
+
+    // The schema is strict.
+    rejects("LogbookEnvelope", { logbook: { ...res.body.logbook, extra: 1 } });
+    rejects("LogbookEnvelope", { logbook: { ...res.body.logbook, recentTrips: Array(21).fill(res.body.logbook.recentTrips[0]) } });
+    rejects("LogbookEnvelope", { logbook: { ...res.body.logbook, fieldAwards: { ...res.body.logbook.fieldAwards, awards: [{ id: "first-solo", current: 0, target: 1, earned: false, earnedAt: null }] } } });
+    rejects("LogbookEnvelope", res.body.logbook);
+  });
+
   it("request schemas accept and reject the same bodies as the server", async () => {
     const result = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.5, ...factsFor("atc-match") };
     const open = openBody("atc-match");
@@ -588,5 +641,79 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
     expect(valid("FlightSegmentCompletion", completion)).toBe(true);
     expect(valid("FlightSegmentCompletion", { ...completion, hintGrants: [{ kind: "starter", hints: 5, ref: "x" }] })).toBe(false);
     expect(valid("ProgressEnvelope", { progress })).toBe(true);
+  });
+});
+
+describe("openapi contract: the staff edit and publish routes (0.11.0)", () => {
+  const ajv = new Ajv2020({ strict: false, validateFormats: false, allErrors: true });
+  ajv.addSchema({ $id: "spec", components: spec.components });
+  const check = (schemaName: string, value: unknown) => {
+    const validate = ajv.compile({ $ref: `spec#/components/schemas/${schemaName}` });
+    expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
+  };
+  const rejects = (schemaName: string, value: unknown) =>
+    expect(ajv.compile({ $ref: `spec#/components/schemas/${schemaName}` })(value), schemaName).toBe(false);
+  const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
+  const BASE = "/v1/admin/content/documents";
+
+  afterAll(async () => {
+    await sql.query("DELETE FROM content_drafts");
+    await sql.query("DELETE FROM admin_audit WHERE action = 'content_publish'");
+    const client = await sql.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE content_documents DISABLE TRIGGER content_documents_immutable");
+      await client.query("DELETE FROM content_documents WHERE version > 1 AND name = 'field-awards'");
+      await client.query("ALTER TABLE content_documents ENABLE TRIGGER content_documents_immutable");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  it("real list, draft, edit, discard and publish responses and the three refusals validate", async () => {
+    await sql.query("DELETE FROM content_drafts");
+    const list = await request(server).get(BASE).set(staff);
+    expect(list.status).toBe(200);
+    check("ContentDraftList", list.body);
+    const read = await request(server).get(`${BASE}/field-awards/draft`).set(staff);
+    check("ContentDraftDetail", read.body);
+    const edit = { draftVersion: read.body.draftVersion, awards: [{ id: "century", title: "Century (edited)", target: 120 }] };
+    check("FieldAwardsDraftEdit", edit);
+    const edited = await request(server).patch(`${BASE}/field-awards/draft`).set(staff).send(edit);
+    expect(edited.status).toBe(200);
+    check("ContentDraft", edited.body);
+    check("ContentDraftDetail", (await request(server).get(`${BASE}/field-awards/draft`).set(staff)).body);
+    rejects("FieldAwardsDraftEdit", { ...edit, awards: [{ id: "century", metric: "x", title: "a" }] });
+    rejects("FieldAwardsDraftEdit", { ...edit, awards: [{ id: "century", target: 0 }] });
+    check("ClipperCardsDraftEdit", { draftVersion: 0, names: [{ key: "787", name: "Boeing 787" }] });
+    check("AircraftTagsDraftEdit", { draftVersion: 0, entries: [{ cardKey: "787", tags: ["heavy"] }] });
+    rejects("AircraftTagsDraftEdit", { draftVersion: 0, entries: [{ cardKey: "787", tags: ["heavy", "heavy"] }] });
+
+    const stale = await request(server).post(`${BASE}/field-awards/publish`).set(staff).send({ draftVersion: 0 });
+    expect(stale.status).toBe(409);
+    check("Error", stale.body);
+    expect(stale.body.error.code).toBe("version_conflict");
+
+    const published = await request(server).post(`${BASE}/field-awards/publish`).set(staff).send({ draftVersion: edited.body.draftVersion, note: "contract test" });
+    expect(published.status).toBe(201);
+    check("ContentPublishResult", published.body);
+    const nothing = await request(server).post(`${BASE}/field-awards/publish`).set(staff).send({ draftVersion: published.body.draftVersion });
+    expect(nothing.status).toBe(409);
+    expect(nothing.body.error.code).toBe("nothing_to_publish");
+    check("Error", nothing.body);
+
+    await sql.query("INSERT INTO content_drafts (name, version, edits, updated_by) VALUES ('aircraft-tags', 1, $1::jsonb, 'test')", [JSON.stringify({ tags: { "787": ["bogus"] } })]);
+    const invalid = await request(server).get(`${BASE}/aircraft-tags/draft`).set(staff);
+    expect(invalid.status).toBe(422);
+    expect(invalid.body.error.code).toBe("content_invalid");
+    check("Error", invalid.body);
+    const cleared = await request(server).post(`${BASE}/aircraft-tags/draft/discard`).set(staff).send({ draftVersion: 1 });
+    expect(cleared.status).toBe(200);
+    check("ContentDraft", cleared.body);
+    check("ContentDraftList", (await request(server).get(BASE).set(staff)).body);
   });
 });

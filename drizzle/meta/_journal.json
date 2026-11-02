@@ -85,6 +85,20 @@
       "when": 1793614452971,
       "tag": "0011_content_documents",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793616557804,
+      "tag": "0012_logbook_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793617780790,
+      "tag": "0013_content_drafts_and_publish",
+      "breakpoints": true
     }
   ]
 }

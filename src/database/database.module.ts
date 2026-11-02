@@ -13,6 +13,9 @@ export type Database = NodePgDatabase<typeof schema>;
 /** What a transaction callback receives. */
 export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
+/** Isolation level and access mode of a transaction (a consistent read snapshot is `repeatable read` + `read only`). */
+export type TransactionConfig = NonNullable<Parameters<Database["transaction"]>[1]>;
+
 /**
  * require = encrypted but the server certificate is not checked (libpq's "require"); verify-full checks
  * chain and hostname against the CA bundle (system roots when none is configured).
@@ -67,11 +70,11 @@ export class DatabaseService {
    * client is always released, and on an unexpected failure it is released WITH the error, which makes pg
    * destroy it rather than return a possibly broken connection to the pool. An ExpectedRollback keeps it.
    */
-  async withTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  async withTransaction<T>(fn: (tx: Tx) => Promise<T>, config?: TransactionConfig): Promise<T> {
     const client = await this.pool.connect();
     let failure: Error | undefined;
     try {
-      return await drizzle({ client, schema }).transaction(fn);
+      return await drizzle({ client, schema }).transaction(fn, config);
     } catch (error) {
       if (!(error instanceof ExpectedRollback)) failure = error instanceof Error ? error : new Error(String(error));
       throw error;

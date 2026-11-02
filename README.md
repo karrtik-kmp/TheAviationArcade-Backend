@@ -95,9 +95,9 @@ the key and retry both unchanged, including across midnight.
 The contract is [docs/openapi.yaml](docs/openapi.yaml), kept in step with the code by a parity test.
 The table lists only what is built. Flight Segments (Unity Trips: open, abandon, Rounds inside a segment) are built
 (slice T2), and so is completing one (slice T3, API 0.5.0: outcome, Field Awards, Clipper Cards, the Trip hint). The rest
-and so are the content manifest and its immutable documents (slice T4, API 0.9.0). The rest
-of the next contract (the Logbook) is designed but not built: it is the `x-planned` part of `openapi.yaml`, explained in
-[docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md); that route answers 404 today.
+and so are the content manifest and its immutable documents (slice T4, API 0.9.0) and the Pilot Logbook (slice T5, API 0.10.0), and the staff edit-and-publish routes for the documents (slice T6, API 0.11.0).
+Nothing is `x-planned` any more; the design, with a section per slice as built, is
+[docs/design/trips-awards-logbook.md](docs/design/trips-awards-logbook.md).
 
 > **Breaking change for the Unity app (API 0.4.0, slice T2, 2026-10-29).** The Round routes changed shape:
 > `POST /v1/rounds` takes `{ tripId }` instead of `{ module }`, and `POST /v1/rounds/:id/result` requires the Flight
@@ -124,6 +124,7 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | PUT | `/v1/me/ugs-link` | `{ ugsToken }`. Proves server-side that a UGS player is this Firebase user, then links it so progress is mirrored to UGS. 201 first link, 200 same/replaced; 400 bad UGS token, 403 no proof, 404 `player_not_found` / `not_found` (mirror off), 409 `ugs_link_conflict`, 503 `auth_unavailable` / `service_unavailable` |
 | POST | `/v1/trips` | `{ module, flightCount: 10, localDate, utcOffsetMinutes, contentVersion }` and a required `Idempotency-Key`. Opens a Flight Segment at Active Rank (abandons the player's open one; its Perfect Streak starts at 0). 201 opened, 200 replay of a key already used with the same module, localDate, utcOffsetMinutes and contentVersion, 422 `local_date_mismatch` (beyond 15 minutes of server time plus the offset), 422 `idempotency_key_reused` (the key opened a segment with a different module, localDate, utcOffsetMinutes or contentVersion). A full open segment is completed first (same transaction), not abandoned |
 | POST | `/v1/trips/:id/complete` | No body, after the 10th banked Round. In one player-locked transaction: the outcome, the Award counters (Go Around, Red-Eye ...), Clipper Cards, all 28 Field Awards, the Trip hint (`trip_grant`, +1 on every 4th completed segment), Perfect Streak back to 0, and the UGS copy republished at once. Returns `{ trip, fieldAwards, clipperCards, hintGrants, replayed, progress }`. Idempotent: a repeat returns the identical lists with `replayed: true` and pays nothing twice. 404 `trip_not_found`, 409 `trip_incomplete` (fewer than 10 banked), 410 `trip_expired` (partial and past expiry) / `trip_closed` (abandoned) |
+| GET | `/v1/me/logbook` | The Pilot Logbook (slice T5, API 0.10.0): `recentTrips` (the 20 newest completed Trips), `daily`, `lifetime`, `counters`, every Clipper Card, and all 28 Field Awards against the catalog in force. One read-only REPEATABLE READ snapshot: no lock, no write, nothing bumped. `Logbook.version` is the Logbook's own counter (`players.logbook_version`), **not** `Progress.version`; it rises when a Round is banked or a Trip is completed (including the lazy completion inside `POST /v1/trips`), and not on an abandon, a replay, a hint, a rank change or a refusal. Strong `ETag` (`lb-` + 32 hex) over the player, the counter and the Field Award and aircraft-tag versions in force, so a catalog publish changes it with no player write; `If-None-Match` (exact, weak, list or `*`) gives 304. `Cache-Control: private, no-cache` (an exception to the `/v1` no-store). `earned` is the stored fact, never `current >= target`. 404 `player_not_found` until `PUT /v1/me`; 503 `service_unavailable` while the content documents are unseeded. Size: 20 Trips, 28 awards, one record per Card held (about 8 KB today) |
 | GET | `/v1/content/manifest` | Any signed-in player. Unity `ManifestWire`/`ModuleWire` (`version`, `generatedAtUtc`, `modules[] { id, enabled: true, contentVersion: null, assetBundleUrl: null }`) plus `documents[] { name, format, version, sha256, byteSize, url }`: the highest version of each document. `version` is a stable hash and the strong `ETag`; `If-None-Match` (exact, weak, list or `*`) gives 304. `Cache-Control: no-cache` (an exception to the `/v1` no-store). `generatedAtUtc` is the newest document `createdAt`, not the request time |
 | GET | `/v1/content/documents/:name/:version` | Any signed-in player. `name` is `field-awards`, `clipper-cards` or `aircraft-tags`. The document's canonical JSON bytes (keys sorted, no whitespace, UTF-8, integers only; their SHA-256 is the manifest's `sha256` and the `ETag`). `Cache-Control: private, max-age=31536000, immutable`; 304 for the matching `If-None-Match`. 404 `not_found` for an unknown name or version (also a malformed version). 500 only for a corrupted row (never served) |
 | POST | `/v1/trips/:id/abandon` | No body. Closes the segment and its open Round; 200, `replayed: true` when it was already closed or expired. 404 `trip_not_found`, 409 `trip_full`, 410 `trip_closed` |
@@ -135,6 +136,11 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | GET | `/v1/admin/me` | Staff only. `{ principal, staff: true }`; 403 `forbidden` for anyone else |
 | POST | `/v1/admin/content/:module/imports` | Staff only. Raw `.xlsx` body (≤ 5 MB), optional `X-File-Name`, `?dryRun=true` (plan + field diffs + `planHash`), `?confirm=<planHash>`. 201 imported, 200 plan or `replayed: true`, 422 `import_invalid` (row report, or "dry run first"), 409 `plan_changed` or `import_in_progress`, 503 `storage_unavailable` |
 | POST | `/v1/admin/content/:module/trip-coverage` | Staff only. Optional JSON `{ itemIds?: string[] }` (≤ 2000, repeats count once). 200 `{ module, policy, flightsPerTrip, ranks: [{ rank, dealable }] }`: Flights a Trip would hold per rank from the module's approved items (blank photo not dealable). 404 for a module with no mapping or no deal policy, 422 `unknown_item_ids`, 400 for a bad body |
+| GET | `/v1/admin/content/documents` | Staff only (T6). `{ documents: [...] }`, one per document name: `publishedVersion` (the version players are served), `draftVersion` (0 = no draft), `changed`, `edits`, `changes` |
+| GET | `/v1/admin/content/documents/:name/draft` | Staff only. The draft plus `body`, the document a publish would write now (a preview, not served). 404 for an unknown name |
+| PATCH | `/v1/admin/content/documents/:name/draft` | Staff only. `{ draftVersion, awards \| names \| entries }` per document: Field Award `title`/`criteria`/`target`/`hidden`, Card `name`, a Card's tag list. Never an id or metric (400). Stale `draftVersion` = 409 `version_conflict`; an unknown Card = 422 `content_invalid` |
+| POST | `/v1/admin/content/documents/:name/draft/discard` | Staff only. `{ draftVersion }`. 200, clears the draft (also the way out of a stored draft that no longer validates) |
+| POST | `/v1/admin/content/documents/:name/publish` | Staff only. `{ draftVersion, note? }`. 201 `{ name, version, previousVersion, sha256, byteSize, draftVersion, changeCount, manifestVersion }`. One transaction: next immutable version, one `content_publish` audit row, draft reset. 409 `version_conflict` / `nothing_to_publish`, 422 `content_invalid`; nothing is written on a refusal |
 | GET | `/v1/admin/content/:module/items` | Staff only. Items in natural id order, retired ones included (`status`) |
 | GET | `/v1/admin/content/:module/export` | Staff only. `.xlsx` in the client's columns plus `Id`, `Version`, `Status` (retired rows included) |
 
@@ -197,12 +203,29 @@ versions (the manifest lists the same selection); a bad newest row is skipped wi
   transaction under an advisory lock, a name that already has any row is never touched) and again after each successful content
   import. `clipper-cards` v1 is sealed only once Military items exist, so a fresh database lists it after the first import and a
   database that already has content lists it at the first start. After v1, content changes reach the app only as a new
-  version (slice T6 publish). A database that is down at start does not stop the server; the seed retries in the background.
+  version (the T6 publish, below). A database that is down at start does not stop the server; the seed retries in the background.
 - **Bytes.** The served bytes are the canonical JSON of the stored `body` (`src/content/documents/canonical.ts`: UTF-8, keys
   sorted at every depth, no whitespace or newline, integers only), because `jsonb` keeps neither key order nor whitespace.
   `sha256` / `byte_size` are their digest and length, re-checked at every read; a mismatch is a 500, never a response.
 - **Immutable.** Only `document-store.ts` writes the table (`test/content-documents.test.ts` scans for it) and a trigger
   refuses UPDATE and DELETE. A test that needs to drop a row it inserted disables the trigger in its own transaction.
+
+## Editing and publishing the documents (slice T6)
+
+Staff edit the draft of a document and publish it; players see nothing until the publish. A draft is a **mutable overlay** on the
+version in force (`content_drafts`, one row per document name, created by the first edit), not a copy: Field Award fields,
+Card names or a Card's tag list. Published versions stay immutable. Every edit, discard and publish of one name runs under a
+per-name advisory lock, and `draftVersion` is the editors' version check: a stale one is 409 `version_conflict` and nothing
+changes, so an edit never overwrites another editor's and two publishes can never write one version twice or lose an edit. A publish
+validates the document with the T4 validators (28 ids once, each award's own metric, integer targets of at least 1), refuses an
+unchanged draft (409 `nothing_to_publish`), then inserts version `highest + 1` through `document-store.ts`, writes exactly one
+`content_publish` audit row (actor = the verified staff principal, the changes, the digest, the note) and resets the draft. The manifest
+`version`, `catalogInForce`, later completions' `catalog_version` and the Logbook `ETag` move with it, with no player write; earned
+awards never un-earn (U7) and a completion made under an older version replays unchanged.
+
+`clipper-cards` is rebuilt from the approved Military content as it is at publish time, so publishing it is how a v1 sealed from a
+small or trial set catches up (and how Cards of newly approved or retired items appear or go); a staff-edited Card name is kept. Not
+built: Remote Config, and re-importing a later Field Awards sheet through plan, confirm and apply (follow-ups in `docs/TASKS.md`).
 
 ## UGS mirror
 
