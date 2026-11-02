@@ -1,10 +1,13 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Res, StreamableFile } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query, Res, StreamableFile } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
 import { Principal } from "../auth/firebase-auth.guard.js";
 import { StaffOnly } from "../auth/staff.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
+import { DEAL_POLICY } from "../rules/dealer.js";
+import { MODULE_IDS } from "../rules/modules.js";
+import type { ModuleId } from "../rules/modules.js";
 import { SkipClientVersion } from "../platform/client-version.js";
 import type { ContentModuleMapping } from "./content-module.js";
 import { contentMappingFor } from "./content-modules.js";
@@ -18,6 +21,19 @@ const importQuery = z.strictObject({
   confirm: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 type ImportQuery = z.infer<typeof importQuery>;
+
+export const MAX_COVERAGE_IDS = 2000;
+/** Ids are short (`mil-a31`); the cap keeps 2000 of them inside the route's JSON limit (see app.setup.ts). */
+export const MAX_COVERAGE_ID_LENGTH = 64;
+// Strict. A repeated id is allowed and counts once. The array length is checked before de-duplication.
+const coverageBody = z
+  .strictObject({ itemIds: z.array(z.string().min(1).max(MAX_COVERAGE_ID_LENGTH)).max(MAX_COVERAGE_IDS).optional() })
+  .optional();
+type CoverageBody = z.infer<typeof coverageBody>;
+
+function isModuleId(value: string): value is ModuleId {
+  return (MODULE_IDS as readonly string[]).includes(value);
+}
 
 /** A module with no mapping yet (or an unknown name) is a 404, like an unknown route. */
 function mappingFor(module: string): ContentModuleMapping {
@@ -74,6 +90,31 @@ export class ContentController {
     const result = await this.content.apply(mapping, body, sanitiseFileName(fileName), principal, new Date(), query.confirm);
     res.status(result.replayed ? 200 : 201);
     return result;
+  }
+
+  /**
+   * Per-rank Trip coverage of the module's approved items (B3 `tripCoverage`), optionally for a subset. Read-only,
+   * so 200. A module with a mapping but no deal policy is 404 (the server does not deal it).
+   */
+  @Post(":module/trip-coverage")
+  @HttpCode(200)
+  async tripCoverage(
+    @Param("module") module: string,
+    @Headers("content-type") contentType: string | undefined,
+    @Headers("content-length") contentLength: string | undefined,
+    @Headers("transfer-encoding") transferEncoding: string | undefined,
+    @Body(new ZodValidationPipe(coverageBody, `Expected {} or { itemIds: up to ${MAX_COVERAGE_IDS} item id strings }.`)) body: CoverageBody,
+  ) {
+    // A body that is not JSON was not parsed, so its itemIds would be silently ignored: refuse it instead.
+    const hasBody = transferEncoding !== undefined || (contentLength !== undefined && contentLength !== "0");
+    if (hasBody && !/^application\/json\s*(;|$)/i.test(contentType ?? "")) {
+      throw new ApiError(415, "invalid_request", "Send the body as application/json.");
+    }
+    const mapping = mappingFor(module);
+    if (!isModuleId(mapping.module) || !Object.hasOwn(DEAL_POLICY, mapping.module)) {
+      throw new ApiError(404, "not_found", "No such endpoint.");
+    }
+    return this.content.tripCoverage(mapping.module, body?.itemIds);
   }
 
   @Get(":module/items")

@@ -681,8 +681,8 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 16 guarded routes (incl. 4 admin, 3 trips) plus two health routes.
-    expect(routes.length).toBe(18);
+    // Guard against the enumeration silently finding nothing: 17 guarded routes (incl. 5 admin, 3 trips) plus two health routes.
+    expect(routes.length).toBe(19);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military");
       const response = await send(method, concrete, {});

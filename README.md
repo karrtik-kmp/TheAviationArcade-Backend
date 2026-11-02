@@ -131,6 +131,7 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
 | GET | `/v1/admin/me` | Staff only. `{ principal, staff: true }`; 403 `forbidden` for anyone else |
 | POST | `/v1/admin/content/:module/imports` | Staff only. Raw `.xlsx` body (≤ 5 MB), optional `X-File-Name`, `?dryRun=true` (plan + field diffs + `planHash`), `?confirm=<planHash>`. 201 imported, 200 plan or `replayed: true`, 422 `import_invalid` (row report, or "dry run first"), 409 `plan_changed` or `import_in_progress`, 503 `storage_unavailable` |
+| POST | `/v1/admin/content/:module/trip-coverage` | Staff only. Optional JSON `{ itemIds?: string[] }` (≤ 2000, repeats count once). 200 `{ module, policy, flightsPerTrip, ranks: [{ rank, dealable }] }`: Flights a Trip would hold per rank from the module's approved items (blank photo not dealable). 404 for a module with no mapping or no deal policy, 422 `unknown_item_ids`, 400 for a bad body |
 | GET | `/v1/admin/content/:module/items` | Staff only. Items in natural id order, retired ones included (`status`) |
 | GET | `/v1/admin/content/:module/export` | Staff only. `.xlsx` in the client's columns plus `Id`, `Version`, `Status` (retired rows included) |
 

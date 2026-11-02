@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { NestExpressApplication } from "@nestjs/platform-express";
@@ -10,6 +11,7 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { sanitiseFileName } from "../src/content/content.controller.js";
 import { XLSX_MIME, readFirstSheet } from "../src/content/xlsx.js";
+import { RANKS } from "../src/rules/ranks.js";
 import { BLOB_STORE, StorageRequestError } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { CLIENT_HEADER, clientRow, clientSheet, xlsx } from "./fixtures.js";
@@ -24,6 +26,7 @@ const STAFF_PRINCIPAL = "firebase:demo-airplane-games:staff";
 const IMPORTS = `/v1/admin/content/${MODULE}/imports`;
 const ITEMS = `/v1/admin/content/${MODULE}/items`;
 const EXPORT = `/v1/admin/content/${MODULE}/export`;
+const COVERAGE = `/v1/admin/content/${MODULE}/trip-coverage`;
 
 const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -101,6 +104,7 @@ describe("staff gate", () => {
     ["get", ITEMS],
     ["get", EXPORT],
     ["post", IMPORTS],
+    ["post", COVERAGE],
   ] as const;
 
   it("no token is 401 first, on every admin route", async () => {
@@ -876,11 +880,11 @@ describe("client sheet is authoritative", () => {
 // The 5 MB body is read only after the token and staff rule have passed.
 
 /** POST headers plus the start of a body that never ends; resolves with the response status. */
-function unfinishedUpload(headers: Record<string, string>): Promise<number> {
+function unfinishedUpload(headers: Record<string, string>, path = IMPORTS, contentType = XLSX_MIME): Promise<number> {
   const { port } = (server as { address(): AddressInfo }).address();
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { host: "127.0.0.1", port, method: "POST", path: IMPORTS, headers: { ...headers, "Content-Type": XLSX_MIME, "Content-Length": String(50 * 1024 * 1024) } },
+      { host: "127.0.0.1", port, method: "POST", path, headers: { ...headers, "Content-Type": contentType, "Content-Length": String(50 * 1024 * 1024) } },
       (res) => {
         res.resume();
         resolve(res.statusCode ?? 0);
@@ -918,5 +922,226 @@ describe("auth before the upload body", () => {
   it("staff still gets the 413 for an oversized body", async () => {
     const res = await upload(Buffer.alloc(6 * 1024 * 1024)).catch((e: Error) => e);
     if (!(res instanceof Error)) expect(res.status).toBe(413);
+  });
+});
+
+// B5: per-rank Trip coverage of the stored approved content, computed by B3's tripCoverage.
+describe("trip coverage", () => {
+  const coverage = (body?: unknown, headers: Record<string, string> = staff, path = COVERAGE) => {
+    const req = request(server).post(path).set(headers);
+    return body === undefined ? req : req.send(body as object);
+  };
+  const byRank = (res: request.Response) => Object.fromEntries((res.body.ranks as { rank: string; dealable: number }[]).map((r) => [r.rank, r.dealable]));
+  const all = (n: number) => Object.fromEntries(RANKS.map((rank) => [rank, n]));
+
+  /** The coverage block of the published dealer.v1.json for military-v1 under a policy: the file, not retyped numbers. */
+  function published(policy: string): Record<string, number> {
+    const file = JSON.parse(readFileSync(new URL("../contracts/dealer.v1.json", import.meta.url), "utf8"));
+    const entry = file.coverage.find((c: { pool: string; policy: string }) => c.pool === "military-v1" && c.policy === policy);
+    expect(entry, `dealer.v1.json has no military-v1 coverage for ${policy}`).toBeDefined();
+    return entry.perRank;
+  }
+
+  it("answers 200 with the policy, flightsPerTrip and the five ranks in order, equal to the published military-v1 coverage", async () => {
+    expect((await upload(await clientSheet(31))).status).toBe(201);
+    const res = await coverage({});
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.body).toMatchObject({ module: MODULE, policy: "nearest-ranks", flightsPerTrip: 10 });
+    expect(res.body.ranks.map((r: { rank: string }) => r.rank)).toEqual([...RANKS]);
+    expect(Object.keys(res.body).sort()).toEqual(["flightsPerTrip", "module", "policy", "ranks"]);
+    expect(byRank(res)).toEqual(published(res.body.policy));
+  });
+
+  it("an absent body is the same as {}", async () => {
+    await upload(await clientSheet(31));
+    const res = await coverage();
+    expect(res.status).toBe(200);
+    expect(byRank(res)).toEqual(all(10));
+  });
+
+  const REAL_SHEET = new URL("../../docs/Military Airplane Identifier v1.xlsx", import.meta.url);
+  it.skipIf(!existsSync(REAL_SHEET))("the client's real 31-row sheet gives the published military-v1 coverage too", async () => {
+    expect((await upload(readFileSync(REAL_SHEET))).status).toBe(201);
+    const res = await coverage({});
+    expect(res.status).toBe(200);
+    expect(byRank(res)).toEqual(published(res.body.policy));
+  });
+
+  it("itemIds restricts the count (nearest-ranks: a pool of 3 deals 3 at every rank); order and repeats do not matter", async () => {
+    await upload(await clientSheet(31));
+    const res = await coverage({ itemIds: ["mil-a10", "mil-a2", "mil-a1", "mil-a2"] });
+    expect(res.status).toBe(200);
+    expect(byRank(res)).toEqual(all(3));
+    expect(byRank(await coverage({ itemIds: ["mil-a2", "mil-a1", "mil-a10"] }))).toEqual(all(3));
+    expect(byRank(await coverage({ itemIds: [] }))).toEqual(all(0));
+  });
+
+  it("retired rows are not counted, whether or not they are named", async () => {
+    await upload(await clientSheet(31));
+    await sql.query("UPDATE content_items SET status = 'retired' WHERE module = $1 AND id NOT IN ('mil-a1', 'mil-a2', 'mil-a3', 'mil-a4')", [MODULE]);
+    expect(byRank(await coverage({}))).toEqual(all(4));
+    // Named and retired: known, so no 422, but not counted.
+    expect(byRank(await coverage({ itemIds: ["mil-a1", "mil-a2", "mil-a31"] }))).toEqual(all(2));
+    expect(byRank(await coverage({ itemIds: ["mil-a31"] }))).toEqual(all(0));
+  });
+
+  it("a row without a photo is not dealable", async () => {
+    await upload(await clientSheet(31));
+    await sql.query(
+      `UPDATE content_items SET data = jsonb_set(data, '{sourceFile}', '"  "') WHERE module = $1 AND id IN ('mil-a1', 'mil-a2')`,
+      [MODULE],
+    );
+    expect(byRank(await coverage({ itemIds: ["mil-a1", "mil-a2", "mil-a3"] }))).toEqual(all(1));
+    expect(byRank(await coverage({ itemIds: ["mil-a1", "mil-a2"] }))).toEqual(all(0));
+    expect(byRank(await coverage({}))).toEqual(all(10)); // 29 photographed rows remain
+  });
+
+  /** Keep only mil-a1..mil-a<n> approved, all at Trainee, with the given [sourceFile, answer] pairs. */
+  async function thinPool(pairs: [string, string][]) {
+    await upload(await clientSheet(31));
+    await sql.query("UPDATE content_items SET status = 'retired' WHERE module = $1", [MODULE]);
+    for (const [i, [sourceFile, answer]] of pairs.entries()) {
+      await sql.query(
+        `UPDATE content_items SET status = 'approved', rank = 'trainee', data = $3::jsonb WHERE module = $1 AND id = $2`,
+        [MODULE, `mil-a${i + 1}`, JSON.stringify({ answer, wrong: [`w${i}a`, `w${i}b`, `w${i}c`], sourceFile, photographer: "p" })],
+      );
+    }
+  }
+
+  it("a thin pool is counted below 10 and depends on the filter; duplicate answer keys are dealt once", async () => {
+    // Four photos, answers X, X, Y, Y: under nearest-ranks an answer key is not repeated inside a Trip.
+    await thinPool([["p1.jpg", "X"], ["p2.jpg", "X"], ["p3.jpg", "Y"], ["p4.jpg", "Y"]]);
+    expect((await coverage({})).status).toBe(200);
+    expect(byRank(await coverage({}))).toEqual(all(2));
+    expect(byRank(await coverage({ itemIds: ["mil-a1", "mil-a3", "mil-a4"] }))).toEqual(all(2));
+    expect(byRank(await coverage({ itemIds: ["mil-a1", "mil-a2"] }))).toEqual(all(1));
+    expect(byRank(await coverage({ itemIds: ["mil-a1"] }))).toEqual(all(1));
+  });
+
+  it("the count follows id order, not storage order: one photo with two answer keys", async () => {
+    // Five photographed rows, found by search: dealt in id order the pool fills 3 Flights at every rank, dealt in
+    // reverse storage order it fills 2 (dealer.ts: "one photo, two answer keys" makes the count order-sensitive).
+    await thinPool([["p2.jpg", "Y"], ["p2.jpg", "Z"], ["p1.jpg", "X"], ["p1.jpg", "Y"], ["p0.jpg", "Y"]]);
+    // Rewrite the rows newest-first so a sequential scan returns them in reverse id order.
+    for (const n of [5, 4, 3, 2, 1]) {
+      await sql.query("UPDATE content_items SET updated_at = now() WHERE module = $1 AND id = $2", [MODULE, `mil-a${n}`]);
+    }
+    const res = await coverage({});
+    expect(byRank(res)).toEqual(all(3));
+  });
+
+  it("an empty module counts nothing", async () => {
+    const res = await coverage({});
+    expect(res.status).toBe(200);
+    expect(byRank(res)).toEqual(all(0));
+  });
+
+  it("an id the module does not store is 422 unknown_item_ids, naming it", async () => {
+    await upload(await clientSheet(31));
+    const res = await coverage({ itemIds: ["mil-a1", "mil-a99", "nope"] });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe("unknown_item_ids");
+    expect(res.body.error.message).toContain("mil-a99");
+    expect(res.body.error.message).toContain("nope");
+    expect(res.body.ranks).toBeUndefined();
+  });
+
+  it("a module with no content mapping is 404, for a known module id or an unknown name", async () => {
+    for (const module of ["identifier", "atc", "no-such-module"]) {
+      const res = await coverage({}, staff, `/v1/admin/content/${module}/trip-coverage`);
+      expect(res.status, module).toBe(404);
+      expect(res.body.error.code).toBe("not_found");
+    }
+  });
+
+  it("the strict body is 400 invalid_request: unknown field, wrong types, blank or over-long id, null", async () => {
+    await upload(await clientSheet(31));
+    const bad: unknown[] = [
+      { itemIds: ["mil-a1"], extra: 1 },
+      { module: MODULE },
+      { itemIds: "mil-a1" },
+      { itemIds: [1] },
+      { itemIds: [""] },
+      { itemIds: ["x".repeat(65)] },
+      { itemIds: null },
+      [],
+    ];
+    for (const body of bad) {
+      const res = await coverage(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body.error.code).toBe("invalid_request");
+    }
+  });
+
+  it("2000 ids are accepted (they fit this route's own JSON limit); 2001 is 400", async () => {
+    await upload(await clientSheet(31));
+    const known = Array.from({ length: 31 }, (_, i) => `mil-a${i + 1}`);
+    const ok = await coverage({ itemIds: Array.from({ length: 2000 }, (_, i) => known[i % 31]) });
+    expect(ok.status).toBe(200);
+    expect(byRank(ok)).toEqual(all(10));
+    // 2000 ids of the maximum length is about 134 KB of JSON: parsed fine, then unknown.
+    const longIds = await coverage({ itemIds: Array.from({ length: 2000 }, () => "mil-a1".padEnd(64, "x")) });
+    expect(longIds.status).toBe(422);
+    const tooMany = await coverage({ itemIds: Array.from({ length: 2001 }, () => "mil-a1") });
+    expect(tooMany.status).toBe(400);
+    expect(tooMany.body.error.code).toBe("invalid_request");
+  });
+
+  it("no token is 401 and a non-staff caller is 403", async () => {
+    expect((await request(server).post(COVERAGE).send({})).status).toBe(401);
+    const other = await coverage({ itemIds: ["mil-a1"] }, bearer(emulatorToken(`uid-${randomUUID()}`)));
+    expect(other.status).toBe(403);
+    expect(other.body.error.code).toBe("forbidden");
+  });
+});
+
+describe("auth before the trip-coverage body", () => {
+  const json = (n: number) => ({ itemIds: Array.from({ length: n }, () => "mil-a1") });
+  const OVER_16KB = { pad: "x".repeat(20_000) }; // JSON over the global 16 KB limit, under the route's 160 KB
+
+  it("a junk token is 401 and a non-staff token 403 while the body is still unsent", async () => {
+    expect(await unfinishedUpload({ Authorization: "Bearer junk" }, COVERAGE, "application/json")).toBe(401);
+    expect(await unfinishedUpload(bearer(emulatorToken(`uid-${randomUUID()}`)), COVERAGE, "application/json")).toBe(403);
+  });
+
+  it("an over-16 KB body is 401 for a junk token and 413 for no token, as on the xlsx route", async () => {
+    const junk = await request(server).post(COVERAGE).set({ Authorization: "Bearer junk" }).send(OVER_16KB).catch((e: Error) => e);
+    if (!(junk instanceof Error)) {
+      expect(junk.status).toBe(401);
+      expect(junk.headers["www-authenticate"]).toBe("Bearer");
+    }
+    const anon = await request(server).post(COVERAGE).send(OVER_16KB).catch((e: Error) => e);
+    if (!(anon instanceof Error)) expect(anon.status).toBe(413);
+  });
+
+  it("a non-staff caller with an over-16 KB body is 403", async () => {
+    const res = await request(server).post(COVERAGE).set(bearer(emulatorToken(`uid-${randomUUID()}`))).send(OVER_16KB).catch((e: Error) => e);
+    if (!(res instanceof Error)) expect(res.status).toBe(403);
+  });
+
+  it("staff may send up to 160 KB (a 20 KB body with an unknown field is 400, not 413) and gets 413 above it", async () => {
+    await upload(await clientSheet(31));
+    const within = await request(server).post(COVERAGE).set(staff).send(OVER_16KB);
+    expect(within.status).toBe(400);
+    expect((await request(server).post(COVERAGE).set(staff).send(json(2000))).status).toBe(200);
+    const over = await request(server).post(COVERAGE).set(staff).send({ pad: "x".repeat(170_000) }).catch((e: Error) => e);
+    if (!(over instanceof Error)) {
+      expect(over.status).toBe(413);
+      expect(over.body.error.code).toBe("invalid_request");
+    }
+  });
+
+  it("a body that is not JSON is 415 (its itemIds would otherwise be ignored); an empty one is fine", async () => {
+    await upload(await clientSheet(31));
+    const text = await request(server).post(COVERAGE).set(staff).set("Content-Type", "text/plain").send('{"itemIds":["mil-a1"]}');
+    expect(text.status).toBe(415);
+    expect(text.body.error.code).toBe("invalid_request");
+    const form = await request(server).post(COVERAGE).set(staff).type("form").send({ itemIds: "mil-a1" });
+    expect(form.status).toBe(415);
+    const none = await request(server).post(COVERAGE).set(staff).set("Content-Type", "text/plain");
+    expect(none.status).toBe(200);
+    const charset = await request(server).post(COVERAGE).set(staff).set("Content-Type", "application/json; charset=utf-8").send('{"itemIds":["mil-a1"]}');
+    expect(charset.status).toBe(200);
   });
 });

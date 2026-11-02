@@ -25,6 +25,7 @@ export default defineConfig({
       "test/trip-segments.test.ts",
       "test/field-awards.test.ts",
       "test/dealer.test.ts",
+      "test/deal-items.test.ts",
     ],
   },
 });

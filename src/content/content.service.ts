@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+﻿import { createHash, randomUUID } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { ApiError } from "../common/errors.js";
@@ -7,7 +7,13 @@ import type { Tx } from "../database/database.module.js";
 import { adminAudit, contentImports, contentItems } from "../db/schema.js";
 import type { ContentImportRow } from "../db/schema.js";
 import { militaryCardKey } from "../rules/clipper-cards.js";
-import { isRank } from "../rules/ranks.js";
+import { DEAL_POLICY, tripCoverage } from "../rules/dealer.js";
+import type { DealPolicy } from "../rules/dealer.js";
+import type { ModuleId } from "../rules/modules.js";
+import { RANKS, isRank } from "../rules/ranks.js";
+import type { Rank } from "../rules/ranks.js";
+import { FLIGHTS_PER_TRIP } from "../rules/trips.js";
+import { rowToDealItem } from "./deal-items.js";
 import { BLOB_STORE, StorageRequestError, StorageUnavailableError } from "../storage/blob-store.js";
 import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
@@ -306,6 +312,40 @@ export class ContentService {
         data: r.data,
         updatedAt: r.updatedAt.toISOString(),
       }));
+  }
+
+  /**
+   * How many Flights a Trip at each rank would hold for the module's APPROVED items (natural id order),
+   * optionally restricted to `itemIds`. An id the module does not store at all is 422 `unknown_item_ids`; a
+   * stored id that is not approved is simply not counted. The caller has checked that the module has a
+   * DEAL_POLICY. Repeated ids count once.
+   */
+  async tripCoverage(module: ModuleId, itemIds?: readonly string[]): Promise<{ module: ModuleId; policy: DealPolicy; flightsPerTrip: number; ranks: { rank: Rank; dealable: number }[] }> {
+    const policy = DEAL_POLICY[module];
+    if (!policy) throw new ApiError(404, "not_found", "No such endpoint.");
+    const rows = await this.database.db
+      .select({ id: contentItems.id, rank: contentItems.rank, status: contentItems.status, data: contentItems.data })
+      .from(contentItems)
+      .where(eq(contentItems.module, module));
+    const wanted = itemIds ? new Set(itemIds) : undefined;
+    if (wanted) {
+      const stored = new Set(rows.map((r) => r.id));
+      const unknown = [...wanted].filter((id) => !stored.has(id));
+      if (unknown.length > 0) {
+        const shown = unknown.slice(0, 10).join(", ");
+        throw new ApiError(422, "unknown_item_ids", `${unknown.length} item id(s) are not stored for this module: ${shown}${unknown.length > 10 ? ", ..." : ""}.`);
+      }
+    }
+    const counted = rows.filter((r) => r.status === "approved" && (!wanted || wanted.has(r.id))).sort((a, b) => compareIds(a.id, b.id));
+    const pool = counted.flatMap((r) => {
+      const item = rowToDealItem(r);
+      return item ? [item] : [];
+    });
+    if (pool.length < counted.length) {
+      this.logger.warn(`trip coverage for ${module}: ${counted.length - pool.length} approved row(s) have a malformed payload and were left out`);
+    }
+    const perRank = tripCoverage(module, pool);
+    return { module, policy, flightsPerTrip: FLIGHTS_PER_TRIP, ranks: RANKS.map((rank) => ({ rank, dealable: perRank[rank] })) };
   }
 
   /** The module's items as an xlsx in the client's column wording, natural id order. */

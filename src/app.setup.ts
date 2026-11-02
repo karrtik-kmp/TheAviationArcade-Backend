@@ -19,14 +19,19 @@ function noStore(req: Request, res: Response, next: NextFunction): void {
 const readXlsx = express.raw({ type: XLSX_MIME, limit: MAX_UPLOAD_BYTES });
 const UNAUTHORIZED = () => new ApiError(401, "unauthorized", "Sign in required.", { "WWW-Authenticate": "Bearer" });
 
+// Up to 2000 item ids of at most 64 characters each is about 134 KB of JSON.
+const readCoverageJson = express.json({ limit: "160kb" });
+
 /**
- * Raw xlsx bodies, for the staff import route only (POST /v1/admin/content/:module/imports). Everything
- * else keeps the 16 KB JSON-only rule. The 5 MB body is read only after this middleware has verified the
+ * A larger body for one staff route, read by `read` only after the caller's token is verified as staff.
+ * Used for the xlsx import (POST /v1/admin/content/:module/imports, raw xlsx, 5 MB) and Trip coverage
+ * (POST /v1/admin/content/:module/trip-coverage, JSON, 160 KB). Everything
+ * else keeps the 16 KB JSON-only rule. The body is read only after this middleware has verified the
  * Firebase token and the staff rule (same helpers and the same 401/403/503 answers as the guards), so
  * neither an anonymous caller nor a signed-in non-staff caller can make the server buffer it. A request
  * without a well-formed Bearer header is passed on unread; the guards, which still run afterwards, answer it.
  */
-function xlsxUpload(app: NestExpressApplication) {
+function staffBodyReader(app: NestExpressApplication, read: (req: Request, res: Response, next: NextFunction) => void) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const token = /^bearer (\S+)$/i.exec(req.header("authorization") ?? "")?.[1];
     if (req.method !== "POST" || !token) return next();
@@ -36,7 +41,7 @@ function xlsxUpload(app: NestExpressApplication) {
         if (!isStaff(identity.email, identity.emailVerified, config.staffEmails)) {
           return next(new ApiError(403, "forbidden", "Staff only."));
         }
-        readXlsx(req, res, next);
+        read(req, res, next);
       },
       (error: unknown) => {
         if (error instanceof AuthUnavailableError) {
@@ -75,7 +80,8 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   });
   // Default headers, and no X-Powered-By. Before the body parser so a 413 carries them too.
   app.useSecurityHeaders();
-  app.use("/v1/admin/content/:module/imports", xlsxUpload(app));
+  app.use("/v1/admin/content/:module/imports", staffBodyReader(app, readXlsx));
+  app.use("/v1/admin/content/:module/trip-coverage", staffBodyReader(app, readCoverageJson));
   // JSON only (no urlencoded). Round results are a few hundred bytes; 16 KB is generous.
   app.useBodyParser("json", { limit: "16kb" });
   app.use(noStore);

@@ -1,10 +1,14 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.8.0 (slice B5, staff-only, no change for the game).** New route
+    `POST /v1/admin/content/{module}/trip-coverage` (how many Flights a Trip would hold at each rank for the
+    stored approved content, computed by the server's Trip dealer) and new error code `unknown_item_ids`.
 
     **Changelog 0.7.0 (2026-11-02, user rulings).** (1) The game orders copies by `(version, evaluatedAt)`:
     `version` orders stored changes, `evaluatedAt` orders time-derived changes such as lazy Trip expiry at one
@@ -46,7 +50,7 @@ info:
     `trip` (contract round 1, 2026-10-29).
 
     - Every route except `/v1/health` and `/v1/health/ready` needs `Authorization: Bearer <Firebase ID token>`.
-    - Bodies are JSON only, at most 16 KB. Unknown fields are rejected (400 `invalid_request`).
+    - Bodies are JSON only, at most 16 KB (exceptions for staff: the xlsx import, 5 MB, and Trip coverage, 160 KB). Unknown fields are rejected (400 `invalid_request`).
     - Every response carries `X-Request-Id`. `/v1` responses other than `/v1/health` are `Cache-Control: no-store`.
     - Errors share one body, `Error`. Switch on `error.code`, never on `message`.
     - A path or method not listed here is 404 `not_found`.
@@ -1101,6 +1105,88 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/admin/content/{module}/trip-coverage:
+    post:
+      tags: [admin]
+      operationId: contentTripCoverage
+      summary: Trip coverage of a module's content
+      description: |
+        Staff only. For each rank, how many Flights a Trip would hold if dealt from the module's **approved**
+        items (draft or retired items are not counted), capped at `flightsPerTrip`; below that the content
+        cannot fill a Trip at that rank. Computed by the same dealer the dealer contract publishes, under the
+        module's deal policy, over the items in natural id order. An item without a photo (blank `sourceFile`
+        for Military) is not dealable. Read-only; answers 200, not 201.
+
+        `itemIds` (optional, at most 2000, each 1 to 64 characters) restricts the count to those items, for
+        "what if only these were live". A repeated id counts once. An id the module does not store at all is
+        422 `unknown_item_ids` and nothing is computed; a stored id that is not approved is not counted. An
+        empty body, `{}` and `{ "itemIds": [] }` are valid (the last counts nothing). Any other field is 400.
+
+        Only modules with a content mapping AND a deal policy answer (today `aircraft-identifier-military`);
+        any other module is 404 `not_found`. Order of checks: auth (401, 403), body size (413), body validation
+        (400, then 415), and only then the module (404): a bad body for an unmapped module is 400, not 404.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TripCoverageRequest" }
+      responses:
+        "200":
+          description: Coverage per rank, in rank order.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TripCoverage" }
+        "400":
+          description: Unknown field, `itemIds` not an array of 1 to 64 character strings, or more than 2000 ids.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "413":
+          description: |
+            Body too large. This route's limit is 160 KB (not the 16 KB of other routes), but it applies only to a
+            caller whose Bearer token is a verified staff token; a request without a well-formed Bearer header
+            is read under the global 16 KB limit and gets this answer above it (a junk token is 401 and a non-staff
+            token 403 before the body is read).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: A non-empty body whose Content-Type is not `application/json`. It is refused rather than ignored, because its `itemIds` would otherwise silently widen the answer to the whole module.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: At least one id in `itemIds` is not stored for this module.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [unknown_item_ids]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/admin/content/{module}/items:
     get:
       tags: [admin]
@@ -1407,6 +1493,7 @@ components:
                 - import_invalid
                 - plan_changed
                 - import_in_progress
+                - unknown_item_ids
                 - ugs_link_conflict
                 - storage_unavailable
                 - service_unavailable
@@ -1453,6 +1540,35 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/ContentItem" }
+    TripCoverageRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        itemIds:
+          type: array
+          maxItems: 2000
+          items: { type: string, minLength: 1, maxLength: 64 }
+    TripCoverage:
+      type: object
+      additionalProperties: false
+      required: [module, policy, flightsPerTrip, ranks]
+      properties:
+        module: { $ref: "#/components/schemas/ModuleId" }
+        policy:
+          type: string
+          enum: [lower-ranks, nearest-ranks]
+          description: The module's deal policy (`modulePolicy` in `contracts/dealer.v1.json`).
+        flightsPerTrip: { type: integer, const: 10 }
+        ranks:
+          type: array
+          description: One entry per rank, lowest first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [rank, dealable]
+            properties:
+              rank: { type: string, enum: [trainee, first-officer, captain, check-airman, chief-pilot] }
+              dealable: { type: integer, minimum: 0, maximum: 10, description: "Flights a Trip at this rank would hold (below flightsPerTrip: the content cannot fill one)." }
     ImportIssue:
       type: object
       additionalProperties: false
