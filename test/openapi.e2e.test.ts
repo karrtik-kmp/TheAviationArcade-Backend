@@ -147,14 +147,16 @@ describe("openapi contract parity", () => {
       id: "firebase:demo-airplane-games:u1", statusPoints: 1200, miles: 30, hints: 5, perfectStreak: 2, activeRank: null,
       firstClassUntil: null, version: 4, createdAt: new Date(), updatedAt: new Date(),
     };
-    const value = mirrorSnapshot(player, new Date());
+    const value = mirrorSnapshot({ ...player, evaluatedAt: new Date() });
     expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
-    expect(validate(mirrorSnapshot({ ...player, firstClassUntil: new Date() }, new Date()))).toBe(true);
+    expect(validate(mirrorSnapshot({ ...player, firstClassUntil: new Date(), evaluatedAt: new Date() }))).toBe(true);
     expect(validate({ ...value, extra: 1 })).toBe(false);
     expect(validate({ ...value, schemaVersion: 1 })).toBe(false);
+    expect(validate({ ...value, schemaVersion: 2 })).toBe(false); // v3 is the only schema: no real copy was ever written
+    expect(value.schemaVersion).toBe(3);
     expect(value.evaluatedAt).toEqual(expect.any(String));
-    const { evaluatedAt: _evaluatedAt, ...legacy } = value;
-    expect(validate(legacy)).toBe(true); // Cloud Save may still hold a pre-0.6.0 copy.
+    const { evaluatedAt: _evaluatedAt, ...withoutStamp } = value;
+    expect(validate(withoutStamp)).toBe(false); // evaluatedAt is required since 0.7.0
     const { uid: _uid, ...withoutOwner } = value;
     expect(validate(withoutOwner)).toBe(false);
   });

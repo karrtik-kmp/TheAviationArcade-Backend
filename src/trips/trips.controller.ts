@@ -95,7 +95,7 @@ export class TripsController {
       case "opened":
       case "replayed":
         res.status(outcome.kind === "opened" ? 201 : 200);
-        return { trip: outcome.trip, progress: progressView(outcome.player, now) };
+        return { trip: outcome.trip, progress: progressView(outcome.player) };
     }
   }
 
@@ -122,7 +122,7 @@ export class TripsController {
       case "closed":
         throw new ApiError(410, "trip_closed", "This Flight Segment was abandoned.");
       case "completed":
-        return { ...outcome.completion, replayed: outcome.replayed, progress: progressView(outcome.player, now) };
+        return { ...outcome.completion, replayed: outcome.replayed, progress: progressView(outcome.player) };
     }
   }
 
@@ -144,7 +144,7 @@ export class TripsController {
       case "closed":
         throw new ApiError(410, "trip_closed", "This Flight Segment was completed.");
       case "abandoned":
-        return { trip: outcome.trip, replayed: outcome.replayed, progress: progressView(outcome.player, now) };
+        return { trip: outcome.trip, replayed: outcome.replayed, progress: progressView(outcome.player) };
     }
   }
 }

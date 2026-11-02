@@ -135,7 +135,7 @@ export class ProgressWriteQueue implements MirrorQueue {
       await this.database.db.delete(ugsMirrorOutbox).where(mine);
       return "done";
     }
-    const result = await this.client.writeProgress(row.ugsPlayerId, mirrorSnapshot(await withLiveStreak(this.database.db, row.player, now), now), signal);
+    const result = await this.client.writeProgress(row.ugsPlayerId, mirrorSnapshot(await withLiveStreak(this.database.db, row.player)), signal);
     if (result.kind !== "ok") return result;
     // Recorded BEFORE the row is removed: a Round that commits in between hits the outbox conflict, and one that
     // commits after the delete inserts a row that already sees this write time.

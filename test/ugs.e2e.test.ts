@@ -499,8 +499,13 @@ describe("mirror worker (stubbed UGS)", () => {
     // mirror (like every Progress view) reads the Perfect Streak as 0 once the segment has expired.
     await sql.query("UPDATE trips SET expires_at = now() + interval '10 years' WHERE player_id = $1", [player.principal]);
     calls.length = 0;
-    const evaluatedAt = nextNow();
-    const summary = await worker.tick(evaluatedAt);
+    // The worker's clock is synthetic; evaluatedAt must come from the DATABASE clock, taken per row. Bracket the tick
+    // with database time and require a stamp inside it that is not the synthetic tick time.
+    const dbNow = async () => new Date((await sql.query("SELECT clock_timestamp() AS t")).rows[0].t).getTime();
+    const tickNow = nextNow();
+    const dbBefore = await dbNow();
+    const summary = await worker.tick(tickNow);
+    const dbAfter = await dbNow();
     expect(summary).toMatchObject({ written: 1, retried: 0, rateLimited: false });
     expect(writes()).toHaveLength(1);
     const call = writes()[0]!;
@@ -514,7 +519,7 @@ describe("mirror worker (stubbed UGS)", () => {
       "certifiedRank", "activeRank", "firstClassUntil", "updatedAt",
     ]);
     expect(call.body.value).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       uid: player.uid,
       version: 2,
       statusPoints: progress.statusPoints,
@@ -525,7 +530,10 @@ describe("mirror worker (stubbed UGS)", () => {
       activeRank: progress.activeRank,
       firstClassUntil: null,
     });
-    expect(call.body.value.evaluatedAt).toBe(new Date(evaluatedAt).toISOString());
+    const stamped = Date.parse(call.body.value.evaluatedAt);
+    expect(stamped).toBeGreaterThanOrEqual(dbBefore - 1); // ms truncation of the database stamp
+    expect(stamped).toBeLessThanOrEqual(dbAfter);
+    expect(stamped).not.toBe(new Date(tickNow).getTime());
     expect(call.body.value.updatedAt).toEqual(expect.any(String));
     expect(await outbox(player.principal)).toBeUndefined();
   });

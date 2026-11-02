@@ -1,14 +1,14 @@
 import { Injectable } from "@nestjs/common";
 import { PlayerBalance } from "../balance/player-balance.js";
 import { DatabaseService } from "../database/database.module.js";
+import type { LivePlayer } from "../trips/trip-store.js";
 import { withLiveStreak } from "../trips/trip-store.js";
-import type { PlayerRow } from "../db/schema.js";
 import { MILES_HINT_PACK } from "../rules/hints.js";
 
 export type HintPackReceipt = { hints: number; priceMiles: number };
 
 export type BuyHintPackOutcome =
-  | { kind: "purchased"; player: PlayerRow; receipt: HintPackReceipt; replayed: boolean }
+  | { kind: "purchased"; player: LivePlayer; receipt: HintPackReceipt; replayed: boolean }
   | { kind: "no_player" }
   | { kind: "insufficient_miles" };
 
@@ -56,6 +56,6 @@ export class ShopService {
     );
     if (result.kind === "no_player") return { kind: "no_player" };
     if (result.kind === "insufficient") return { kind: "insufficient_miles" };
-    return { kind: "purchased", player: await withLiveStreak(this.database.db, result.player, now), ...result.value };
+    return { kind: "purchased", player: await withLiveStreak(this.database.db, result.player), ...result.value };
   }
 }

@@ -250,8 +250,22 @@ count of enqueues, `due_at`, `attempts`, short `last_error`). `PlayerBalance.upd
 (`enqueueMirror`, private to `src/balance/`) inside the same transaction, after the player row is locked and updated, for every write that changes
 what the mirror shows: Round result, hint spend, hint pack, Active Rank change, UGS link records (`PUT /v1/me` creation calls it
 too, a no-op because a new player has no link). Every such change bumps `players.version` (D-1, 2026-10-29), so
-`version` orders stored progress revisions and `GET /v1/me/progress` returns it. API 0.6.0 adds `evaluatedAt`
-to API and UGS snapshots: equal versions are ordered by evaluation time because lazy expiry is read-only; the row also carries a `generation` drawn from a sequence (never repeats, even
+`version` orders stored progress revisions and `GET /v1/me/progress` returns it. The game orders copies by `(version, evaluatedAt)`
+(user ruling 2026-11-02, D-1 amended): `evaluatedAt` orders time-derived changes (lazy Trip expiry is read-only) at one version. It is
+the DATABASE clock (`clock_timestamp()`, ms), taken once per Progress view or mirror snapshot in the same statement that judges the
+expiry (`withLiveStreak`), so stamp and judgement are one instant and every instance shares one clock; costs one query per response.
+Every Round and Trip write (`issueRound`, `completeRound`, `spendHint`, `openTrip`, `completeTrip`, `abandonTrip`) reads the database
+clock once after the player lock (`databaseNow(tx)`, one extra query each) and uses it for every expiry, floor and `issued_at`
+comparison in that call, so `issued_at`, deadlines and the response agree with themselves; the process time is passed only to
+`PlayerBalance.update` (row timestamps). Not covered: the `now` the controllers pass to `PlayerBalance` for `updatedAt`, ledger and
+outbox timestamps. `issueRound` moves a segment's `expires_at` without bumping `version`. With one clock, an issue can only extend
+a segment no database-clocked read has yet seen expired, EXCEPT in a window that runs from the issue's `databaseNow(tx)` to its
+COMMIT: if the old expiry falls inside it, a read that starts in that window sees the old expiry (0) and a later read sees the
+extension (non-zero) at one version. Also, a read's snapshot precedes its `clock_timestamp()`, so a stale read can be stamped later
+than a fresher read, and 0 could win at one version until the next read or banked Round. Both are display-only (the server scores
+from the stored streak). Available closure, not taken: bump `version` (a margin) on issues in the last seconds before expiry.
+The UGS copy is
+`schemaVersion` 3 with `evaluatedAt` required; the row also carries a `generation` drawn from a sequence (never repeats, even
 after the row is deleted and re-inserted) and each claim stamps a `claim_id`; the worker deletes or releases a row only if
 both still match its claim, otherwise it is due again at once (migration 0007). The in-process worker (`src/ugs/`, only when
 configured) is policy only (pacing, pauses, backoff, logging) and drives two `MirrorQueue` adapters in `src/ugs/mirror-queue.ts`, deletions first:

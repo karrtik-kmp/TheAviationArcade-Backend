@@ -45,7 +45,7 @@ export class ShopController {
       case "purchased":
         return {
           purchase: { ...outcome.receipt, replayed: outcome.replayed },
-          progress: progressView(outcome.player, now),
+          progress: progressView(outcome.player),
         };
     }
   }

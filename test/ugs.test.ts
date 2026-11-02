@@ -286,13 +286,13 @@ describe("mirror policy", () => {
       createdAt: new Date("2026-10-01T00:00:00.000Z"),
       updatedAt: new Date("2026-10-28T12:00:00.000Z"),
     };
-    const snapshot = mirrorSnapshot(player, new Date("2026-10-28T13:00:00.000Z"));
+    const snapshot = mirrorSnapshot({ ...player, evaluatedAt: new Date("2026-10-28T13:00:00.000Z") });
     expect(Object.keys(snapshot)).toEqual([
       "schemaVersion", "uid", "version", "evaluatedAt", "statusPoints", "miles", "hints", "perfectStreak",
       "certifiedRank", "activeRank", "firstClassUntil", "updatedAt",
     ]);
     expect(snapshot).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       uid: "u",
       version: 9,
       evaluatedAt: "2026-10-28T13:00:00.000Z",
@@ -305,7 +305,7 @@ describe("mirror policy", () => {
       updatedAt: "2026-10-28T12:00:00.000Z",
     });
     expect(typeof snapshot.certifiedRank).toBe("string");
-    expect(mirrorSnapshot({ ...player, firstClassUntil: null }, new Date()).firstClassUntil).toBeNull();
+    expect(mirrorSnapshot({ ...player, firstClassUntil: null, evaluatedAt: new Date() }).firstClassUntil).toBeNull();
   });
 
   it("the copy's uid is the Firebase uid in the principal, and a non-Firebase principal is refused", () => {

@@ -20,9 +20,10 @@ import {
   newExpiry,
   streakReset,
   tripView,
+  databaseNow,
   withLiveStreak,
 } from "./trip-store.js";
-import type { TripView } from "./trip-store.js";
+import type { LivePlayer, TripView } from "./trip-store.js";
 import { completeFullTrip, completionChange, storedCompletion } from "./trip-completion.js";
 import type { CompletionLists } from "./trip-completion.js";
 
@@ -34,20 +35,20 @@ export type OpenTripInput = {
 };
 
 export type OpenTripOutcome =
-  | { kind: "opened" | "replayed"; trip: TripView; player: PlayerRow }
+  | { kind: "opened" | "replayed"; trip: TripView; player: LivePlayer }
   | { kind: "no_player" }
   | { kind: "local_date_mismatch" }
   /** The Idempotency-Key was used before with a different request (U14: a key names one intent). */
   | { kind: "idempotency_key_reused" };
 
 export type AbandonTripOutcome =
-  | { kind: "abandoned"; trip: TripView; replayed: boolean; player: PlayerRow }
+  | { kind: "abandoned"; trip: TripView; replayed: boolean; player: LivePlayer }
   | { kind: "not_found" }
   | { kind: "full" }
   | { kind: "closed" };
 
 export type CompleteTripOutcome =
-  | { kind: "completed"; completion: CompletionLists; replayed: boolean; player: PlayerRow }
+  | { kind: "completed"; completion: CompletionLists; replayed: boolean; player: LivePlayer }
   | { kind: "not_found" }
   /** Fewer than ten banked Rounds (409 trip_incomplete). */
   | { kind: "incomplete" }
@@ -69,8 +70,8 @@ export class TripsService {
   ) {}
 
   /** Every Progress this service returns reads the Perfect Streak through withLiveStreak (U13, lazy expiry), replays included. */
-  private live(player: PlayerRow, now: Date): Promise<PlayerRow> {
-    return withLiveStreak(this.database.db, player, now);
+  private live(player: PlayerRow): Promise<LivePlayer> {
+    return withLiveStreak(this.database.db, player);
   }
 
   /**
@@ -78,22 +79,26 @@ export class TripsService {
    * abandoned with its open Round and the Perfect Streak starts at 0 (D-3; the stored streak is reset only when it is
    * not already 0, so an opening that changes nothing visible does not bump the version).
    *
-   * Idempotency-Key (U14): the key is stored on the segment, UNIQUE per player. A repeat answers with that segment as it
-   * stands now and changes nothing, before any other check (a retry after a dropped response must not abandon what it
-   * just opened, even when its `localDate` has since aged out of the tolerance).
+   * Idempotency-Key (U14): the key is stored on the segment, UNIQUE per player. A repeat whose module, localDate,
+   * utcOffsetMinutes and contentVersion all match the stored opening (user ruling 2026-11-02) answers with that segment as
+   * it stands now and changes nothing; any difference is `idempotency_key_reused`. Either is decided before the date
+   * freshness check (a retry after a dropped response must not abandon what it just opened, even when its `localDate`
+   * has since aged out of the tolerance).
    *
    * A full open segment (ten banked Rounds) is COMPLETED first, in the same transaction (design 2 rule 4, U4): its Cards,
    * counters, awards and Trip hint are recorded exactly as `POST /v1/trips/{id}/complete` would, and that endpoint then
    * answers the stored lists as a replay. The opening response does not carry them. A segment with fewer than ten Rounds
    * is abandoned as before.
    */
-  async openTrip(principal: string, idempotencyKey: string, input: OpenTripInput, now: Date): Promise<OpenTripOutcome> {
+  async openTrip(principal: string, idempotencyKey: string, input: OpenTripInput, processNow: Date): Promise<OpenTripOutcome> {
     type Inner =
       | { kind: "opened"; trip: TripView }
       | { kind: "replayed"; trip: TripView }
       | { kind: "local_date_mismatch" }
       | { kind: "idempotency_key_reused" };
-    const result = await this.balance.update<Inner>(principal, now, async ({ player, tx }): Promise<Step<Inner>> => {
+    const result = await this.balance.update<Inner>(principal, processNow, async ({ player, tx }): Promise<Step<Inner>> => {
+      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
+      const now = await databaseNow(tx);
       const [existing] = await tx
         .select()
         .from(trips)
@@ -158,8 +163,8 @@ export class TripsService {
     // Neither an open (which may post a trip_grant hint through the implicit completion) nor a Trip hint can be refused for funds: only additions post.
     if (result.kind === "insufficient") throw new Error("Opening a Flight Segment was refused for funds.");
     const value = result.value;
-    if (value.kind === "opened") return { kind: "opened", trip: value.trip, player: await this.live(result.player, now) };
-    if (value.kind === "replayed") return { kind: "replayed", trip: value.trip, player: await this.live(result.player, now) };
+    if (value.kind === "opened") return { kind: "opened", trip: value.trip, player: await this.live(result.player) };
+    if (value.kind === "replayed") return { kind: "replayed", trip: value.trip, player: await this.live(result.player) };
     return value;
   }
 
@@ -168,9 +173,11 @@ export class TripsService {
    * replay when it is already abandoned or expired. All ten banked: `full` (complete it instead). Completed: `closed`.
    * A segment of another player, or one that does not exist, is `not_found`.
    */
-  async abandonTrip(principal: string, tripId: string, now: Date): Promise<AbandonTripOutcome> {
+  async abandonTrip(principal: string, tripId: string, processNow: Date): Promise<AbandonTripOutcome> {
     type Inner = Exclude<AbandonTripOutcome, { kind: "abandoned" }> | { kind: "abandoned"; trip: TripView; replayed: boolean };
-    const result = await this.balance.update<Inner>(principal, now, async ({ player, tx }) => {
+    const result = await this.balance.update<Inner>(principal, processNow, async ({ player, tx }) => {
+      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
+      const now = await databaseNow(tx);
       const trip = await lockTrip(tx, principal, tripId);
       if (!trip) return { value: { kind: "not_found" } };
       if (trip.status === "completed") return { value: { kind: "closed" } };
@@ -188,7 +195,7 @@ export class TripsService {
     if (result.kind === "no_player") return { kind: "not_found" };
     if (result.kind === "insufficient") throw new Error("Abandoning a Flight Segment was refused for funds.");
     const value = result.value;
-    if (value.kind === "abandoned") return { ...value, player: await this.live(result.player, now) };
+    if (value.kind === "abandoned") return { ...value, player: await this.live(result.player) };
     return value;
   }
 
@@ -204,14 +211,16 @@ export class TripsService {
    * `incomplete`, except that an open segment past its expiry is `expired` (and is marked abandoned, releasing the streak,
    * as every route does). An abandoned segment is `closed`. ASSUMPTION: expiry wins over incomplete.
    */
-  async completeTrip(principal: string, tripId: string, now: Date): Promise<CompleteTripOutcome> {
+  async completeTrip(principal: string, tripId: string, processNow: Date): Promise<CompleteTripOutcome> {
     type Inner =
       | Exclude<CompleteTripOutcome, { kind: "completed" } | { kind: "closed" } | { kind: "expired" }>
       | { kind: "expired" }
       | { kind: "closed" }
       | { kind: "completed"; completion: CompletionLists; replayed: boolean };
-    const result = await this.balance.update<Inner>(principal, now, async (locked): Promise<Step<Inner>> => {
+    const result = await this.balance.update<Inner>(principal, processNow, async (locked): Promise<Step<Inner>> => {
       const { player, tx } = locked;
+      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
+      const now = await databaseNow(tx);
       const trip = await lockTrip(tx, principal, tripId);
       if (!trip) return { value: { kind: "not_found" } };
       if (trip.status === "completed") {
@@ -240,7 +249,7 @@ export class TripsService {
     // A Trip hint only adds hints, so the step can never be refused for funds.
     if (result.kind === "insufficient") throw new Error("Completing a Flight Segment was refused for funds.");
     const value = result.value;
-    if (value.kind === "completed") return { ...value, player: await this.live(result.player, now) };
+    if (value.kind === "completed") return { ...value, player: await this.live(result.player) };
     return value;
   }
 }

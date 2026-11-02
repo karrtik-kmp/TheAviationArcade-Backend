@@ -8,6 +8,7 @@ import { STARTER_HINTS } from "../rules/hints.js";
 import { certifiedRankFor, rankIndex } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import { withLiveStreak } from "../trips/trip-store.js";
+import type { LivePlayer } from "../trips/trip-store.js";
 
 export type SetActiveRankOutcome =
   | { kind: "set"; player: PlayerRow }
@@ -28,10 +29,11 @@ export class PlayersService {
 
   /**
    * The Perfect Streak to show (U13): the stored streak belongs to the open Flight Segment, so it reads 0 when no segment
-   * is open or the open one has expired (expiry is lazy and the stored value is only reset by the next write).
+   * is open or the open one has expired (expiry is lazy and the stored value is only reset by the next write). Stamped
+   * with the database clock (`evaluatedAt`), the same instant that judged the expiry.
    */
-  live(player: PlayerRow, now: Date): Promise<PlayerRow> {
-    return withLiveStreak(this.database.db, player, now);
+  live(player: PlayerRow): Promise<LivePlayer> {
+    return withLiveStreak(this.database.db, player);
   }
 
   /** Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. */
@@ -45,7 +47,7 @@ export class PlayersService {
    * Dial Active Rank. Choosing Certified clears the stored value so Active follows future promotions again.
    * Runs through PlayerBalance.update (player row lock first), so the existence check, the ceiling check and the
    * UGS mirror enqueue see one consistent row; a player deleted while this waited for the lock is `no_player`.
-   * A changed stored value bumps `version` (D-1, 2026-10-29: every change visible in the UGS copy does); setting
+   * A changed stored value bumps `version` (D-1: version orders stored changes, evaluatedAt the time-derived ones); setting
    * the value it already has changes nothing and queues nothing.
    */
   async setActiveRank(principal: string, rank: Rank, now: Date): Promise<SetActiveRankOutcome> {

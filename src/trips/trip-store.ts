@@ -1,4 +1,4 @@
-import { and, eq, gte, or, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { BalanceChange } from "../balance/player-balance.js";
 import type { Database, Tx } from "../database/database.module.js";
 import { rounds, trips } from "../db/schema.js";
@@ -141,22 +141,35 @@ export async function tripView(tx: Tx, trip: TripRow, liveStreak: number, now: D
   };
 }
 
+/** A player row evaluated at one database instant: the Perfect Streak and `evaluatedAt` below are judged at that instant. */
+export type LivePlayer = PlayerRow & { evaluatedAt: Date };
+
 /**
  * U13 with lazy expiry: the stored Perfect Streak belongs to the open Flight Segment, so it shows as 0 when no segment is
  * open or the open one has expired and no write has marked it yet. EVERY place that builds a Progress view (the routes and
  * the UGS mirror snapshot) passes the player row through here, so they all agree with GET /v1/me/progress.
+ *
+ * The instant is the DATABASE clock (`clock_timestamp()` truncated to milliseconds), taken once in the same statement that
+ * judges the expiry, and returned as `evaluatedAt`: the stamp and the judgement are one instant, and every instance shares
+ * one clock (process clocks can disagree; same reasoning as the ugs_budget). Costs one query per response, streak or not.
  */
-export async function withLiveStreak(db: Database | Tx, player: PlayerRow, now: Date): Promise<PlayerRow> {
-  if (player.perfectStreak === 0) return player;
-  const [open] = await db
-    .select({ id: trips.id })
-    .from(trips)
-    .where(
-      and(
-        eq(trips.playerId, player.id),
-        eq(trips.status, "open"),
-        or(gte(trips.expiresAt, now), gte(trips.roundsBanked, sql`${trips.flightCount}`)),
-      ),
-    );
-  return open ? player : { ...player, perfectStreak: 0 };
+export async function withLiveStreak(db: Database | Tx, player: PlayerRow): Promise<LivePlayer> {
+  const result = await db.execute(sql`
+    SELECT t.at AS at,
+           ${player.perfectStreak}::int > 0 AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.player_id = ${player.id} AND trips.status = 'open'
+               AND (trips.expires_at >= t.at OR trips.rounds_banked >= trips.flight_count)
+           ) AS open
+    FROM (SELECT date_trunc('milliseconds', clock_timestamp()) AS at) t
+  `);
+  const row = result.rows[0] as { at: Date | string; open: boolean };
+  const evaluatedAt = new Date(row.at);
+  return { ...player, perfectStreak: row.open ? player.perfectStreak : 0, evaluatedAt };
+}
+
+/** The database clock, milliseconds, for a write that must agree with withLiveStreak (see issueRound). */
+export async function databaseNow(db: Database | Tx): Promise<Date> {
+  const result = await db.execute(sql`SELECT date_trunc('milliseconds', clock_timestamp()) AS at`);
+  return new Date((result.rows[0] as { at: Date | string }).at);
 }

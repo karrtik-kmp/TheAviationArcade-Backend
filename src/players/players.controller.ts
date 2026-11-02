@@ -22,7 +22,7 @@ export class PlayersController {
     const now = new Date();
     const { player, created } = await this.players.ensurePlayer(principal, now);
     res.status(created ? 201 : 200);
-    return { progress: progressView(await this.players.live(player, now), now) };
+    return { progress: progressView(await this.players.live(player)) };
   }
 
   /**
@@ -43,8 +43,7 @@ export class PlayersController {
   async progress(@Principal() principal: string) {
     const player = await this.players.getPlayer(principal);
     if (!player) throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
-    const now = new Date();
-    return { progress: progressView(await this.players.live(player, now), now) };
+    return { progress: progressView(await this.players.live(player)) };
   }
 
   @Put("active-rank")
@@ -60,7 +59,7 @@ export class PlayersController {
       case "above_certified":
         throw new ApiError(403, "rank_not_certified", "Active Rank cannot be above Certified Rank.");
       case "set":
-        return { progress: progressView(await this.players.live(outcome.player, now), now) };
+        return { progress: progressView(await this.players.live(outcome.player)) };
     }
   }
 }

@@ -334,12 +334,12 @@ switches (contract round 1 (3)). Military content edits (5.0) change `clipper-ca
 
 ## 9. UGS copy impact
 
-Proposal (U1): **no change**; the copy stays `schemaVersion` 2 (balances, rank, streak, `version`, `uid`). Field Award
+Proposal (U1): **no change for Field Awards**; the copy gets no award data (balances, rank, streak, `version`, `uid`; it is `schemaVersion` 3 since 2026-11-02, when `evaluatedAt` became required, and adding awards would need a version 4). Field Award
 and Card progress stay server-only and reach the app through the Logbook and `complete`. Reasons: the copy is a
 first-paint fallback for balances (C3) and a 5 MB-limited, write-budgeted value; the Logbook is not on the first
-paint; adding awards would force a `schemaVersion` 3 and a `version` bump on every award. What does change: the copy's
+paint; adding awards would force a new `schemaVersion` and a `version` bump on every award. What does change: the copy's
 `perfectStreak` follows §3.1, and `complete` asks for a copy write now (`mirrorNow`). If the user wants awards in the
-copy: add `fieldAwardsEarned: FieldAwardId[]` in `schemaVersion` 3 and bump `version` at every earning `complete`
+copy: add `fieldAwardsEarned: FieldAwardId[]` in a later `schemaVersion` (4) and bump `version` at every earning `complete`
 (PlayerBalance needs a "touch" bump without a balance change, a change to invariant 3).
 
 ## 10. Deferred: server answer checks (with B1–B5 and releases)
@@ -562,10 +562,10 @@ Deviations from the plan above, all deliberate:
    edits and the importer's update path never touch it. The Round stores the key it used in `rounds.card_key`; T3 reads that.
 5. **Day streak bookkeeping lives in `player_counters` from T2** (created lazily on a player's first banked Round); T3 adds the
    Award counters to the same row. The Round's local day is stored in `rounds.local_date`.
-6. **Idempotency-Key replay answers before any other check**, so a retry after a dropped response is answered even when its
+6. **An Idempotency-Key replay (all four fields equal, see 7) is answered before the date freshness check**, so a retry after a dropped response is answered even when its
    `localDate` aged out of the tolerance or a newer segment has since replaced it (the replay reports the segment as it stands:
    abandoned if it was replaced).
-7. **Idempotency-Key reuse (API review fix, 2026-10-29):** compare module, localDate, utcOffsetMinutes and
+7. **Idempotency-Key reuse (API review fix 2026-10-29; U14 narrowed, user ruling 2026-11-02):** compare module, localDate, utcOffsetMinutes and
    contentVersion with the stored opening intent; any mismatch is 422 `idempotency_key_reused`. flightCount is fixed
    at ten by validation. Compare before date freshness so unchanged requests still replay after midnight.
 8. **Progress views** (every route and the UGS mirror snapshot) read the Perfect Streak through `withLiveStreak`, so they agree with

@@ -1,17 +1,22 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
 
-    **API review fixes (2026-10-29, version 0.6.0).** Progress and new UGS snapshots include `evaluatedAt`.
-    Compare stored `version` first, then `evaluatedAt` at equal versions; lazy expiry can change the view without
-    writing progress. Old UGS copies may omit the new field: at equal versions prefer the direct API response,
-    and otherwise keep the current value until a timestamped snapshot arrives. Never substitute `updatedAt`.
-    Trip-key reuse with any changed request field now returns 422 `idempotency_key_reused` (previously only
-    `module` was compared). Persist the entire original request with its key and replay it unchanged.
+    **Changelog 0.7.0 (2026-11-02, user rulings).** (1) The game orders copies by `(version, evaluatedAt)`:
+    `version` orders stored changes, `evaluatedAt` orders time-derived changes such as lazy Trip expiry at one
+    version (D-1, amended). (2) The UGS copy is `schemaVersion` 3 and `evaluatedAt` is required (0.6.0 had it
+    optional; no copy of an earlier schema was ever written). (3) `evaluatedAt` is the DATABASE clock at the instant
+    the view was built, and that same instant judges lazy Trip expiry; process clocks never stamp it. (4) U14 is
+    narrowed: a key replays only when module, localDate, utcOffsetMinutes and contentVersion all match what it
+    opened; otherwise 422 `idempotency_key_reused`. Persist the entire original request with its key and replay it
+    unchanged. Never substitute `updatedAt` for an evaluation time.
+
+    **API review fixes (2026-10-29, version 0.6.0).** Progress and UGS snapshots gained `evaluatedAt`; reusing a Trip
+    key with any changed request field became 422 `idempotency_key_reused` (0.5.0 compared only `module`).
 
     **Trip completion (slice T3, built 2026-10-29, version 0.5.0) adds a route and changes one behaviour.** `POST /v1/trips/{tripId}/complete`
     (after the 10th banked Round) returns the segment's outcome, the Field Awards it earned, the Clipper Cards it
@@ -465,6 +470,10 @@ paths:
         expired or a newer segment replaced it. `trip_expired` on this route is defensive: it answers a Round that is
         still inside its own window although its segment ran out (the two clocks share a start, so this is not a normal
         outcome), and a retry for a Round abandoned together with an expired segment.
+
+        On a replay, `progress` is current, not identical to the first answer: it is built fresh (current balances,
+        `version`, lazily expired Perfect Streak, new `evaluatedAt`), while `award` and the rest are the stored ones.
+        Order it against other copies by `(version, evaluatedAt)`.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
         - name: roundId
@@ -1595,17 +1604,17 @@ components:
           minimum: 1
           description: |
             The server's stored player revision. It goes up by one for stored progress changes (a Round result,
-            hint spend, hint pack or changed Active Rank). A higher version wins regardless of evaluation time.
-            At the same version, use the later evaluatedAt: time-derived fields can change without a write.
+            hint spend, hint pack or changed Active Rank). The game orders copies by `(version, evaluatedAt)`
+            (user ruling 2026-11-02): a higher version wins regardless of evaluation time; at the same version
+            the later evaluatedAt wins, because time-derived fields can change without a write.
         evaluatedAt:
           type: string
           format: date-time
           description: |
-            Server instant used to evaluate this view, including lazy Trip expiry and firstClassPass.
-            For snapshots of the same player, compare version first, then this instant at equal versions.
-            Equal pairs are equivalent evaluations. Compare parsed instants, not locale-formatted strings.
-            Reads do not bump version. A legacy UGS copy without evaluatedAt loses to a direct API answer
-            at the same version; otherwise keep the current value until a timestamped snapshot arrives.
+            The DATABASE clock at the instant this view was built (millisecond precision), the same instant that
+            judged lazy Trip expiry and firstClassPass. One clock serves every server instance. For snapshots of
+            the same player, compare version first, then this instant at equal versions. Equal pairs are
+            equivalent evaluations. Compare parsed instants, not locale-formatted strings. Reads do not bump version.
         statusPoints: { type: integer, minimum: 0, description: Lifetime Status Points. }
         miles: { type: integer, minimum: 0 }
         hints: { type: integer, minimum: 0, description: Co-Pilot hints left. }
@@ -1670,16 +1679,15 @@ components:
         expect the copy to lag by minutes (at most one write per player per UGS_MIRROR_MIN_INTERVAL_SEC, default 5 minutes). Never write it. Order two copies, or a copy and a server answer,
         by `version` first (the same stored counter as `Progress.version`), then `evaluatedAt` at equal versions.
         Time-derived lazy Trip expiry can change perfectStreak without a stored version change.
-        New writes always carry evaluatedAt; legacy copies may omit it. At equal versions prefer a direct API
-        response over an untimestamped copy; otherwise keep the current value until a timestamped snapshot arrives.
+        Every copy carries evaluatedAt (required since schemaVersion 3).
         Never use updatedAt as an evaluation timestamp. Use the copy only when `uid` is the signed-in Firebase user: after a UGS link moves, or an
         account is deleted and the UGS player re-linked, the item can still hold the previous owner's copy until the
         server rewrites it, and versions of different owners are not comparable.
-      required: [schemaVersion, uid, version, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
+      required: [schemaVersion, uid, version, evaluatedAt, statusPoints, miles, hints, perfectStreak, certifiedRank, activeRank, firstClassUntil, updatedAt]
       properties:
-        schemaVersion: { type: integer, const: 2, description: "2 since 2026-10-29 (adds `uid`)." }
+        schemaVersion: { type: integer, const: 3, description: "3 since 2026-11-02 (`evaluatedAt` required; 2 added `uid` on 2026-10-29 and was never written to a real player)." }
         uid: { type: string, minLength: 1, maxLength: 128, description: Firebase uid of the player this copy belongs to. }
-        evaluatedAt: { type: string, format: date-time, description: "Server instant used to evaluate this snapshot. Present on new writes; optional only for legacy copies." }
+        evaluatedAt: { type: string, format: date-time, description: "The database instant at which this snapshot was built; orders copies at one `version`." }
         version: { type: integer, minimum: 1, description: "The server's player version at the time of the snapshot." }
         statusPoints: { type: integer, minimum: 0 }
         miles: { type: integer, minimum: 0 }

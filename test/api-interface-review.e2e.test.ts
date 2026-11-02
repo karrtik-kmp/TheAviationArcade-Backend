@@ -111,7 +111,7 @@ describe("API review regressions", () => {
     await expectLedgersBalanced(p);
   });
 
-  it("expiry evaluations at one stored version can be ordered across API and UGS snapshots", async () => {
+  it("D-1 amended (user ruling 2026-11-02): expiry evaluations at one stored version are ordered by database-clock evaluatedAt across API and UGS snapshots", async () => {
     const { PlayersService } = await import("../src/players/players.service.js");
     const { mirrorSnapshot } = await import("../src/ugs/mirror-policy.js");
     const p = await newPlayer();
@@ -127,12 +127,15 @@ describe("API review regressions", () => {
     expect(Date.parse(after.evaluatedAt)).toBeGreaterThan(Date.parse(before.evaluatedAt));
     const service = app.get(PlayersService);
     const player = await service.getPlayer(p.principal);
-    const now = new Date();
-    const mirror = mirrorSnapshot(await service.live(player!, now), now);
+    const mirror = mirrorSnapshot(await service.live(player!));
     expect(mirror.version).toBe(after.version);
     expect(mirror.perfectStreak).toBe(0);
-    expect(mirror.evaluatedAt).toBe(now.toISOString());
     expect(Date.parse(mirror.evaluatedAt)).toBeGreaterThanOrEqual(Date.parse(after.evaluatedAt));
+    // Sanity bracket only: on one host the process and database clocks agree, so this cannot prove which one stamped it
+    // (the process-clock-skew tests do: issueRound and the Round tests pass a skewed clock and still get database-time answers).
+    const dbNow = new Date((await sql.query("SELECT clock_timestamp() AS t")).rows[0].t).getTime();
+    expect(dbNow - Date.parse(mirror.evaluatedAt)).toBeLessThan(5_000);
+    expect(Date.parse(mirror.evaluatedAt)).toBeLessThanOrEqual(dbNow);
     expect(await versionOf(p)).toBe(before.version);
   });
 
@@ -141,7 +144,7 @@ describe("API review regressions", () => {
     { contentVersion: "another-pack" },
     { utcOffsetMinutes: 60 },
     { localDate: "2020-01-01" },
-  ])("rejects a Trip key reused with changed request fields: %j", async (changes) => {
+  ])("U14 (user ruling 2026-11-02): a Trip key reused with a changed module, localDate, utcOffsetMinutes or contentVersion is 422 idempotency_key_reused: %j", async (changes) => {
     const p = await newPlayer();
     const key = newKey();
     const opened = await open(p, "atc-match", key);
@@ -163,14 +166,64 @@ describe("API review regressions", () => {
     const p = await newPlayer();
     const stored = (await app.get(PlayersService).getPlayer(p.principal))!;
     const player = { ...stored, firstClassUntil: new Date("2026-10-29T12:00:00Z") };
-    const before = progressView(player, new Date("2026-10-29T11:59:59Z"));
-    const after = progressView(player, new Date("2026-10-29T12:00:00Z"));
+    const before = progressView({ ...player, evaluatedAt: new Date("2026-10-29T11:59:59Z") });
+    const after = progressView({ ...player, evaluatedAt: new Date("2026-10-29T12:00:00Z") });
     expect(before.firstClassPass).toBe(true);
     expect(after.firstClassPass).toBe(false);
     expect(after.version).toBe(before.version);
     expect(before.evaluatedAt).toBe("2026-10-29T11:59:59.000Z");
     expect(after.evaluatedAt).toBe("2026-10-29T12:00:00.000Z");
-    expect(mirrorSnapshot(player, new Date(after.evaluatedAt)).evaluatedAt).toBe(after.evaluatedAt);
+    expect(mirrorSnapshot({ ...player, evaluatedAt: new Date(after.evaluatedAt) }).evaluatedAt).toBe(after.evaluatedAt);
+  });
+
+  it("D-1 amended: issuing a Round never lets one version read streak 0 and then non-zero, even from a process whose clock lags", async () => {
+    const { RoundsService } = await import("../src/rounds/rounds.service.js");
+    const p = await newPlayer();
+    const tripId = await openTrip(p);
+    await bank(p, tripId);
+    // Still live: issuing moves the segment's expiry without a version bump, and the streak never drops.
+    const live = await progress(p);
+    expect(live.perfectStreak).toBe(1);
+    expect((await issue(p, tripId)).status).toBe(201);
+    const stillLive = await progress(p);
+    expect(stillLive.version).toBe(live.version);
+    expect(stillLive.perfectStreak).toBe(1);
+
+    // Expired by the database clock: a read judges 0 at this version...
+    await ageTrip(tripId);
+    const expired = await progress(p);
+    expect(expired.perfectStreak).toBe(0);
+    // ...and a process clock an hour behind must NOT be able to extend the segment (issueRound judges by the database
+    // clock too). It answers trip_expired, so the streak cannot come back at this version.
+    const lagging = new Date(Date.now() - 3_600_000);
+    const outcome = await app.get(RoundsService).issueRound(p.principal, tripId, lagging);
+    expect(outcome.kind).toBe("trip_expired");
+    const later = await progress(p);
+    expect(later.perfectStreak).toBe(0);
+    expect(later.version).toBeGreaterThanOrEqual(expired.version);
+    expect(Date.parse(later.evaluatedAt)).toBeGreaterThan(Date.parse(expired.evaluatedAt));
+  });
+
+  it("a Round is judged by the database clock: a process clock a few seconds off neither refuses nor under-floors it", async () => {
+    const { RoundsService } = await import("../src/rounds/rounds.service.js");
+    const rounds = app.get(RoundsService);
+    const body = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("atc-match") } as never;
+    const p = await newPlayer();
+    const tripId = await openTrip(p);
+    const issued = await issue(p, tripId);
+    const roundId = issued.body.round.roundId as string;
+    // Process clock 10 s AHEAD: the 3 s floor must still apply (issued_at is database time).
+    const ahead = await rounds.completeRound(p.principal, roundId, body, new Date(Date.now() + 10_000));
+    expect(ahead.kind).toBe("too_fast");
+    // Process clock 10 s BEHIND, after the real floor has passed: must bank, not report too_fast or invalid facts.
+    await new Promise(r => setTimeout(r, MIN_ROUND_MS + 200));
+    const behind = await rounds.completeRound(p.principal, roundId, body, new Date(Date.now() - 10_000));
+    expect(behind.kind).toBe("completed");
+    // spendHint takes a process clock too: a clock far ahead must not expire a live Round.
+    const next = await issue(p, tripId);
+    const hint = await rounds.spendHint(p.principal, next.body.round.roundId as string, new Date(Date.now() + 3_600_000));
+    expect(hint.kind).toBe("spent");
+    await expectLedgersBalanced(p);
   });
 
   it("concurrent uses of one key with different payloads open only the winning intent", async () => {

@@ -104,7 +104,7 @@ export class RoundsController {
         );
       case "completed": {
         const { award, player, promotion, replayed, hintGrants, trip } = outcome.result;
-        return { award, promotion, replayed, hintGrants, trip, progress: progressView(player, now) };
+        return { award, promotion, replayed, hintGrants, trip, progress: progressView(player) };
       }
     }
   }
@@ -129,7 +129,7 @@ export class RoundsController {
       case "no_hints":
         throw new ApiError(409, "insufficient_hints", "No hints left.");
       case "spent":
-        return { hint: { roundId, replayed: outcome.replayed }, progress: progressView(outcome.player, now) };
+        return { hint: { roundId, replayed: outcome.replayed }, progress: progressView(outcome.player) };
     }
   }
 }

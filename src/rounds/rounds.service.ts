@@ -6,7 +6,7 @@ import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import type { Posting } from "../balance/player-balance.js";
 import { contentItems, playerCounters, rounds, trips } from "../db/schema.js";
-import type { PlayerRow, RoundRow } from "../db/schema.js";
+import type { RoundRow } from "../db/schema.js";
 import { militaryCardKey } from "../rules/clipper-cards.js";
 import { checkFlightFacts } from "../rules/flight-facts.js";
 import type { ModuleId } from "../rules/modules.js";
@@ -19,6 +19,7 @@ import { toCounters } from "../trips/counters-store.js";
 import {
   abandonOpenRounds,
   abandonTrip,
+  databaseNow,
   goneReason,
   isExpired,
   isFull,
@@ -27,6 +28,7 @@ import {
   streakReset,
   withLiveStreak,
 } from "../trips/trip-store.js";
+import type { LivePlayer } from "../trips/trip-store.js";
 
 export const ROUND_TTL_SECONDS = 30 * 60;
 
@@ -65,7 +67,7 @@ export type RoundTripState = { tripId: string; roundsBanked: number; perfectStre
 
 export type CompletedRound = {
   award: RoundAward & { firstClassPass: boolean; pleasureCruise: boolean };
-  player: PlayerRow;
+  player: LivePlayer;
   promotion: { from: Rank; to: Rank } | null;
   replayed: boolean;
   hintGrants: HintGrant[];
@@ -92,7 +94,7 @@ export type CompleteRoundOutcome =
   | { kind: "invalid_facts"; reason: string };
 
 export type SpendHintOutcome =
-  | { kind: "spent"; player: PlayerRow; replayed: boolean }
+  | { kind: "spent"; player: LivePlayer; replayed: boolean }
   | { kind: "not_found" }
   | { kind: "expired" }
   | { kind: "closed" }
@@ -130,8 +132,13 @@ export class RoundsService {
    * open Rounds are abandoned in the same transaction, so only one Round can be in flight. A full segment refuses
    * (`trip_full`: complete it). The segment's 30 minute expiry restarts here (U4).
    */
-  async issueRound(principal: string, tripId: string, now: Date): Promise<IssueRoundOutcome> {
-    const result = await this.balance.update<IssueRoundOutcome>(principal, now, async ({ player, tx }) => {
+  async issueRound(principal: string, tripId: string, processNow: Date): Promise<IssueRoundOutcome> {
+    const result = await this.balance.update<IssueRoundOutcome>(principal, processNow, async ({ player, tx }) => {
+      // Issuing moves the segment's expires_at WITHOUT bumping `version`, so the expiry judgement and the new deadline
+      // must come from the same database clock that stamps evaluatedAt (2026-11-02 ruling): otherwise a process clock that
+      // lags could extend a segment that a database-clocked read already saw expired (streak read 0, then 3, at one version).
+      // Taken after the player lock; the Round's own timestamps use it too, so Round and segment deadlines agree.
+      const now = await databaseNow(tx);
       const trip = await lockTrip(tx, principal, tripId);
       if (!trip) return { value: { kind: "trip_not_found" } };
       if (trip.status !== "open") {
@@ -196,12 +203,14 @@ export class RoundsService {
     principal: string,
     roundId: string,
     input: RoundResultInput,
-    now: Date,
+    processNow: Date,
   ): Promise<CompleteRoundOutcome> {
     type Inner =
       | Exclude<CompleteRoundOutcome, { kind: "completed" }>
       | { kind: "completed"; result: Omit<CompletedRound, "player"> };
-    const result = await this.balance.update<Inner>(principal, now, async ({ player, tx }) => {
+    const result = await this.balance.update<Inner>(principal, processNow, async ({ player, tx }) => {
+      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
+      const now = await databaseNow(tx);
       // Lock order player -> trip -> Round: find the segment first, lock it, then lock the Round.
       const [peek] = await tx
         .select({ tripId: rounds.tripId })
@@ -380,7 +389,7 @@ export class RoundsService {
     if (value.kind === "completed") {
       return {
         kind: "completed",
-        result: { ...value.result, player: await withLiveStreak(this.database.db, result.player, now) },
+        result: { ...value.result, player: await withLiveStreak(this.database.db, result.player) },
       };
     }
     return value;
@@ -392,9 +401,11 @@ export class RoundsService {
    * player's own open, unexpired Round qualifies. A debit the balance cannot cover rolls back the Round's
    * hintUsed mark with it.
    */
-  async spendHint(principal: string, roundId: string, now: Date): Promise<SpendHintOutcome> {
+  async spendHint(principal: string, roundId: string, processNow: Date): Promise<SpendHintOutcome> {
     type Inner = Exclude<SpendHintOutcome, { kind: "spent" }> | { kind: "spent"; replayed: boolean };
-    const result = await this.balance.update<Inner>(principal, now, async ({ tx }) => {
+    const result = await this.balance.update<Inner>(principal, processNow, async ({ tx }) => {
+      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
+      const now = await databaseNow(tx);
       // Lock order player -> trip -> Round.
       const [peek] = await tx
         .select({ tripId: rounds.tripId })
@@ -426,7 +437,7 @@ export class RoundsService {
     if (result.kind === "insufficient") return { kind: "no_hints" };
     const value = result.value;
     if (value.kind === "spent") {
-      return { kind: "spent", player: await withLiveStreak(this.database.db, result.player, now), replayed: value.replayed };
+      return { kind: "spent", player: await withLiveStreak(this.database.db, result.player), replayed: value.replayed };
     }
     return value;
   }

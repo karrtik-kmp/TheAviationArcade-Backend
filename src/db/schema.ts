@@ -50,7 +50,8 @@ export const players = pgTable(
     activeRank: text("active_rank"),
     // Set only by a future verified store purchase. Never client-writable.
     firstClassUntil: timestamp("first_class_until", { withTimezone: true }),
-    // Bumped on every change visible in progress or the UGS copy (PlayerBalance owns the bump).
+    // Bumped on every STORED progress change (PlayerBalance owns the bump). It orders stored changes; evaluatedAt (database
+    // clock) orders time-derived views at one version, e.g. lazy Trip expiry. Game rule: order by (version, evaluatedAt).
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),

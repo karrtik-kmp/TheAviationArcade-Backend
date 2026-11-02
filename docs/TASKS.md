@@ -226,7 +226,8 @@ verified email for ranked play).
   (7) The Idempotency-Key replay is answered before the localDate check. None of these is a user ruling yet.
 - 2026-10-29 (T2 review fixes): a Round's own expiry now decides before the segment status, so a retried result stays
   `round_expired` (and `trip_expired` is defensive only); a hint needs a live segment; every Progress view (routes and the UGS
-  mirror) uses `withLiveStreak`; a reused Idempotency-Key with another module is 422 `idempotency_key_reused`. The Military
+  mirror) uses `withLiveStreak`; a reused Idempotency-Key with another module is 422 `idempotency_key_reused` (this compared the module
+  only; commit eccc0c7 widened it to four fields and the user ruled it on 2026-11-02, see Decisions). The Military
   `card_key` stays a runtime freeze (importer on create, first use for older rows); the alternative is a backfill migration that
   fills `card_key` for existing rows once. Spec ambiguities are `ASSUMPTION:` tests (A2, A6, A8, A9, the interim `trip_full`
   block, defensive `trip_expired`, the runtime freeze).
@@ -241,6 +242,21 @@ verified email for ranked play).
   Firebase uid); the game uses a copy only when `uid` is the signed-in user, and compares `version` only between copies
   of one owner. Reason: after a link move or an erase + re-link, the UGS item can hold the previous owner's copy (with
   a higher version) until the worker rewrites it.
+- 2026-11-02 (user): **D-1 amended: the game orders copies by `(version, evaluatedAt)`.** `version` orders stored changes;
+  `evaluatedAt` orders time-derived changes such as lazy Trip expiry at one version. Consequences, all ruled or directed
+  the same day: (a) the UGS copy is `schemaVersion` 3 with `evaluatedAt` required (no real copy of an earlier schema was
+  ever written, UGS has never been contacted, so there is no legacy-copy rule); (b) `evaluatedAt` comes from the database
+  clock, never a process clock (the S7 `ugs_budget` precedent: instances' clocks can disagree), and the same instant
+  judges lazy Trip expiry; (c) API 0.7.0.
+- 2026-11-02 (user): **U14 narrowed.** The same Idempotency-Key replays only when module, localDate, utcOffsetMinutes and
+  contentVersion all equal the stored opening (`flightCount` is fixed at 10); otherwise 422 `idempotency_key_reused`. The
+  comparison precedes date freshness, so an unchanged retry still replays after midnight.
+- 2026-10-29 (implementer's choices in eccc0c7, NOT user rulings; the commit came from Codex outside the project workflow and
+  was independently reviewed afterwards): (1) completed-Flight result replays pass the player through `withLiveStreak`, so an
+  expired Trip reads 0 in both `progress` and `trip`; (2) a replayed result's `progress` is current, not byte-identical to
+  the first answer; (3) `evaluatedAt` was added to Progress and the UGS copy, optional on old copies (superseded by the two
+  user rulings above: required, database clock, schemaVersion 3); (4) lazy expiry stays read-only: no write-on-read;
+  (5) the changed-body message of `idempotency_key_reused`. The ordering and the four-field key rule it proposed are now ruled.
 
 ## Open questions for Josh
 
@@ -249,11 +265,35 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-11-02 (API 0.7.0, user rulings of the day): UGS copy `schemaVersion` 3 with `evaluatedAt` required; the legacy
+  "pre-0.6.0 copy" wording and its test are gone (no real copy was ever written; nothing in `src/` reads `schemaVersion`
+  from stored rows, it is only written). `evaluatedAt` is the database clock: `withLiveStreak(db, player)` now returns a
+  `LivePlayer` and does one query per response (stamp `date_trunc('milliseconds', clock_timestamp())` and the open-segment
+  expiry test in one statement), so stamp and judgement are one instant. `progressView(LivePlayer)` and
+  `mirrorSnapshot(LivePlayer)` are pure and take the stamp from the row. The mirror worker calls `withLiveStreak` for each row
+  (by code; the tick's `now` is no longer used for views). Its test proves the stamp is database time (bracketed by database
+  time, and different from the synthetic tick time); it does not exercise two rows. All six Round/Trip writes (`issueRound`,
+  `completeRound`, `spendHint`, `openTrip`, `completeTrip`, `abandonTrip`) read `databaseNow(tx)` once after the player lock
+  (one extra query each) and use it for every expiry, floor and `issued_at` comparison. A write's `trip` block is judged at that
+  instant; its `progress` block is stamped by `withLiveStreak` after COMMIT, a few ms later, so if `expires_at` falls between the two
+  the same response can show the segment live in `trip` and `perfectStreak` 0 in `progress` (display-only; order by
+  `(version, evaluatedAt)` still holds; found by the independent review 2026-11-02, left as is). Not covered: the process `now` still stamps `PlayerBalance` row timestamps (`updatedAt`, ledger, outbox). Tests: a process
+  clock an hour behind cannot extend an expired segment (`issueRound` gives `trip_expired`), and `completeRound`/`spendHint`
+  with a process clock 10 s ahead (too_fast still applies) or behind (banks). Residual race (display-only, the server scores from
+  the stored streak): the window runs from `databaseNow(tx)` to COMMIT in an issue; if the old expiry falls inside it, a read
+  in that window sees 0 and a later one non-zero at one version. Also a read's snapshot precedes its `clock_timestamp()`, so a
+  stale read can be stamped later than a fresher read and 0 could win at one version until the next read or banked Round. Closure
+  available, not taken: a margin `version` bump on issues in the last seconds. No migration. Verification (PowerShell, cwd `H:\Work\TheAviationArcade\Backend`): typecheck clean;
+  `npm test` 21 files, 502/502; `npm run db:migrate` up to date; `npm run test:e2e` 10 files, 369/369; `npm run build` clean;
+  `npm run contracts:write` no diff; `npm run db:generate` "No schema changes". Independent review 2026-11-02: no blocking
+  defect; removed an unused local in `GET /v1/me/progress` and corrected the wording above. Unproven: no test runs two rows through
+  one mirror tick.
+
 - 2026-10-29 (API/interface review fixes, API 0.6.0): completed-Flight replays now pass the returned player through
   withLiveStreak, so an expired Trip reports zero in both progress and trip. Progress and new UGS snapshots add
   evaluatedAt: version orders stored changes; evaluation time orders time-derived views at equal versions. Reads
-  stay read-only, and legacy UGS copies without the additive field remain valid (prefer the direct API answer at
-  equal versions; never substitute updatedAt). Trip opening compares all mutable request fields with the stored
+  stay read-only (the optional-field and legacy-copy wording of this entry is superseded: 0.7.0 makes evaluatedAt required
+  and database-clocked, see Decisions 2026-11-02). Trip opening compares all mutable request fields with the stored
   intent (module, localDate, utcOffsetMinutes, contentVersion; flightCount is fixed at ten); changed-body reuse is
   422 idempotency_key_reused before date freshness, and identical retries still work across midnight. New
   test/api-interface-review.e2e.test.ts: 8 cases, including each changed field, concurrent conflicting payloads,
@@ -262,8 +302,9 @@ when Google sign-in is offered; the project rule currently allows only email/pas
   the implementation was restored byte for byte. Verification from this folder: npm test 21 files, 502/502;
   npm run test:e2e 10 files, 367/367; npm run typecheck and npm run build clean; git diff --check clean. The first
   full e2e pass exposed an old strict UGS field-list assertion; updated it to assert the worker's exact evaluatedAt,
-  then reran the full suite green. No migration or cloud call. Consumers must adopt the ordering pair and retain
-  the original Trip-open body with its key; README, OpenAPI and architecture/design notes document the contract.
+  then reran the full suite green. No migration or cloud call. Consumers retain the original Trip-open body with its key;
+  README, OpenAPI and architecture/design notes document the contract. Test counts above are eccc0c7's own (Codex), not
+  re-run by the 2026-11-02 session until its entry below.
 
 - 2026-10-29 (T3 complete, implementer's run, before review): from PowerShell in `H:\Work\TheAviationArcade\Backend` (uppercase H),
   Postgres on 5433 up. `npm run db:generate` produced `0010_trip_completion` with only T3's DDL (renamed with `--name`; a second run:
