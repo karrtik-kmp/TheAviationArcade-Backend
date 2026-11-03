@@ -27,6 +27,9 @@ const nonStaff = { Authorization: `Bearer ${emulatorToken("player-1")}` };
 let app: NestExpressApplication;
 let server: ReturnType<NestExpressApplication["getHttpServer"]>;
 let sql: pg.Pool;
+// The sheet beforeEach imported. xlsx bytes embed a zip timestamp, so a sheet rebuilt later can differ (new sha256) when a
+// second boundary falls in between; tests that re-upload "the same sheet" must reuse these exact bytes.
+let sheet: Buffer;
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -49,7 +52,8 @@ beforeEach(async () => {
   await sql.query("DELETE FROM content_imports");
   await sql.query("DELETE FROM admin_audit");
   app.get<MemoryBlobStore>(BLOB_STORE).clear();
-  const res = await request(server).post(`${BASE}/imports`).set(staff).set("Content-Type", XLSX_MIME).send(await clientSheet(6));
+  sheet = await clientSheet(6);
+  const res = await request(server).post(`${BASE}/imports`).set(staff).set("Content-Type", XLSX_MIME).send(sheet);
   expect(res.status).toBe(201);
 });
 
@@ -323,7 +327,7 @@ describe("re-uploading the client sheet after a staff change", () => {
   const upload = (bytes: Buffer, query = "") => request(server).post(`${BASE}/imports${query}`).set(staff).set("Content-Type", XLSX_MIME).send(bytes);
 
   it("with no staff change the identical sheet is still a replay (dry run and apply)", async () => {
-    const bytes = await clientSheet(6);
+    const bytes = sheet;
     const dry = await upload(bytes, "?dryRun=true");
     expect(dry.body).toMatchObject({ dryRun: true, replay: true });
     const res = await upload(bytes);
@@ -332,7 +336,7 @@ describe("re-uploading the client sheet after a staff change", () => {
   });
 
   it("the real lazy card_key freeze (a Round on a Military item with no key) is not an edit: updated_at stays and the sheet still replays", async () => {
-    const bytes = await clientSheet(6);
+    const bytes = sheet;
     // A row older than migration 0009: no frozen key. Set directly, leaving updated_at alone.
     await sql.query("UPDATE content_items SET card_key = NULL WHERE module = $1 AND id = 'mil-a1'", [MODULE]);
     const before = await row("mil-a1");
@@ -361,7 +365,7 @@ describe("re-uploading the client sheet after a staff change", () => {
   });
 
   it("an edit stamped by the database clock still ends the replay when the process clock is a day behind", async () => {
-    const bytes = await clientSheet(6);
+    const bytes = sheet;
     vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 24 * 3_600_000 });
     try {
       const original = await dataOf("mil-a2");
@@ -379,7 +383,7 @@ describe("re-uploading the client sheet after a staff change", () => {
   });
 
   it("a staff restore also counts: the same sheet is planned afterwards, not replayed", async () => {
-    const bytes = await clientSheet(6);
+    const bytes = sheet;
     expect((await retire("mil-a3")).status).toBe(200);
     expect((await restore("mil-a3", { version: 2 })).status).toBe(200);
     const dry = await upload(bytes, "?dryRun=true");
@@ -391,7 +395,7 @@ describe("re-uploading the client sheet after a staff change", () => {
   });
 
   it("a retired item comes back to approved when the same sheet is uploaded again (confirm flow)", async () => {
-    const bytes = await clientSheet(6);
+    const bytes = sheet;
     expect((await retire("mil-a3")).status).toBe(200);
     const dry = await upload(bytes, "?dryRun=true");
     expect(dry.status).toBe(200);
@@ -407,7 +411,7 @@ describe("re-uploading the client sheet after a staff change", () => {
   });
 
   it("an edited item is restored to the client's data when the same sheet is uploaded again", async () => {
-    const bytes = await clientSheet(6);
+    const bytes = sheet;
     const original = await dataOf("mil-a2");
     expect((await patch("mil-a2", { version: 1, data: { ...original, answer: "Staff Wording" } })).status).toBe(200);
     const dry = await upload(bytes, "?dryRun=true");

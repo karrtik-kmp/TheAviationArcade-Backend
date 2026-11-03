@@ -2,10 +2,22 @@ import writeXlsxFile from "write-excel-file/node";
 
 export type TestCell = string | number | null;
 
-/** A one-sheet xlsx from plain rows. null and "" are blank cells. */
+/**
+ * Built files are memoised by content: the writer stamps the zip with the current time, so the same rows built a
+ * second apart would hash differently and turn an intended replay ("upload the same sheet again") into a new import.
+ */
+const built = new Map<string, Promise<Buffer>>();
+
+/** A one-sheet xlsx from plain rows. null and "" are blank cells. Equal rows give byte-identical files. */
 export async function xlsx(rows: TestCell[][]): Promise<Buffer> {
-  const sheet = rows.map((row) => row.map((value) => (value === null || value === "" ? null : { value })));
-  return writeXlsxFile(sheet).toBuffer();
+  const key = JSON.stringify(rows);
+  let bytes = built.get(key);
+  if (!bytes) {
+    const sheet = rows.map((row) => row.map((value) => (value === null || value === "" ? null : { value })));
+    bytes = writeXlsxFile(sheet).toBuffer();
+    built.set(key, bytes);
+  }
+  return Buffer.from(await bytes); // a copy, so no test can change another's buffer
 }
 
 export const CLIENT_HEADER = ["Level", "Correct Answer", "Wrong Answer 1", "Wrong Answer 2", "Wrong Answer 3", "file", "Photographer"];
