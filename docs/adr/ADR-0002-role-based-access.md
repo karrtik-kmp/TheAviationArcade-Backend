@@ -46,6 +46,16 @@ Fixed constraints:
 7. **Photographers only see and change their own uploads.** Publishing, withdrawing, attaching images to content items
    and deciding roles are admin-only.
 
+## Follow-up rulings (user, 2026-11-03, after the plan gate)
+
+- At least one active admin always remains; self-revoke is allowed while another admin exists. Enforced under one
+  transaction-scoped advisory lock taken by every role change, which also re-checks the acting admin.
+- Decisions are fenced by a per-row `revision`; only the legal transitions in `docs/plans/media-pipeline.md` R-b exist.
+- `player` is issued on every `PUT /v1/me` (no backfill), is informational, and is not revocable in this wave.
+- A photographer request needs a verified email and records it for admins only; `DELETE /v1/me` clears that email but
+  keeps role rows and audit rows (decision 1).
+- `roles:grant` accepts only `admin` and runs only when no active admin exists (first admin or recovery), with `--yes`.
+
 ## Options considered
 
 | Option | Verdict |

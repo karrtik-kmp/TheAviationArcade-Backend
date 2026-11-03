@@ -19,7 +19,8 @@ Sources: [ADR-0001](../adr/ADR-0001-image-storage-and-delivery.md), [ADR-0002](.
 ## Architecture decisions (settled)
 
 - Media item = stable id + version; each version = one content-addressed file. Items reference `mediaId`; releases (later)
-  freeze `mediaId` + version + sha256. A new version returns the item to `unverified`.
+  freeze `mediaId` + version + sha256. A new upload or licence edit changes only the draft version; the published
+  version and its credit stay live until an admin publishes the draft (user, 2026-11-03).
 - The storage path is never exposed in any API response; `ImageRef.url` is opaque and expires (`expiresAt`); `sha256` is
   the device cache key.
 - Upload: required `Idempotency-Key`, claimed by a unique-constraint insert in the same transaction as the media row; put
@@ -71,22 +72,69 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Files: `src/db/schema.ts`, `src/db/enums.ts`, `drizzle/0016*`, `src/auth/staff.ts` (→ roles guard),
     `src/config/config.module.ts`, admin controllers' decorators, tests. Depends on: none.
 - [ ] **R-b: role registration and decisions** — M
-  - `PUT /v1/me` issues `player` (idempotent); `POST /v1/me/roles/photographer` (request → `pending`; repeat is a no-op;
-    after `rejected`/`revoked` a new request is allowed); admin `GET /v1/admin/role-requests?state=pending`, admin
-    `POST /v1/admin/accounts/{principal}/roles/{role}/approve|reject|revoke` and grant of `admin`; one audit row each;
-    an admin cannot revoke their own last admin role (no lock-out).
-  - Acceptance: a client can never obtain `photographer` or `admin` without an admin decision; concurrent decisions on
-    one request give one winner (`version_conflict` or state check); openapi documents every route and code.
-  - Files: new `src/accounts/*`, `src/players/players.service.ts` (player role at signup), openapi, tests. Depends on: R-a.
-- [ ] **R-c: `npm run roles:grant -- <uid> <role>` operator command** — S
-  - Direct database write for the very first admin; refuses a uid that is not a Firebase uid shape and any principal of
-    another Firebase project; writes the same audit row as an admin grant (actor `operator:<os user>`).
-  - Files: `scripts/roles-grant.mjs`, `package.json`, README. Depends on: R-a.
+  - **One lock, re-checked actor, revision fence.** Every role-changing transaction (request, approve, reject, admin grant,
+    revoke, signup `player`, the operator command) first takes `pg_advisory_xact_lock(hashtextextended('account-roles', 0))`,
+    then re-reads that the actor still holds an active `admin` row (403 `forbidden` otherwise; the operator is exempt), then
+    writes with `UPDATE ... WHERE principal = $p AND role = $r AND state = <required> AND revision = $rev RETURNING`.
+    Zero rows: 404 `not_found` if no row, else 409 `version_conflict` naming the current state and revision. Every
+    transition bumps `revision` and stamps `decided_at` from the database clock.
+  - **Legal transitions only.** photographer: pending→active (approve), pending→rejected (reject), active→revoked (revoke),
+    rejected/revoked→pending (only the account's own new request). admin: (none)→active or revoked→active (grant, or
+    operator), active→revoked (revoke). player: issued at signup, never decided or revoked in this wave (user, 2026-11-03).
+    Anything else: 409 `version_conflict`.
+  - **At least one active admin, always.** Revoking `admin` is refused with 409 `version_conflict` ("would leave no active
+    admin") when fewer than 2 active admins exist, checked under the lock. Self-revoke is allowed while another admin
+    remains (user, 2026-11-03).
+  - **Routes.**
+    - `PUT /v1/me` issues `player` on every call (not only on create), in its own short transaction after
+      `PlayerBalance.open`, under the role lock: `INSERT ... ('player','active', requested_at = decided_at = db now,
+      decided_by = 'system:signup') ON CONFLICT DO NOTHING RETURNING`; one `role_grant` audit row only when a row was
+      inserted. Existing players get the role on their next sign-in (no backfill); a revoked `player` is never reactivated.
+      Nothing requires `@Roles("player")` in this wave.
+    - `POST /v1/me/roles/photographer` (fixed role, strict empty body): needs a verified email (403 otherwise), no player
+      row. Under the lock: `INSERT ... ('photographer','pending', requested_at = db now, email = token email) ON CONFLICT
+      DO UPDATE SET state = 'pending', ..., revision = revision + 1 WHERE state IN ('rejected','revoked') RETURNING`. No row
+      returned: a no-op, 200 with the current state. Audit `role_request` only when a row changed.
+    - `GET /v1/me/roles` (any signed-in caller): own rows `{ role, state, revision, requestedAt, decidedAt }`.
+    - Admin: `GET /v1/admin/role-requests?state=pending&cursor=&limit=` (oldest first; shows the requester's email, revision);
+      `POST /v1/admin/accounts/{principal}/roles/photographer/approve|reject` and `/roles/{photographer|admin}/revoke`
+      with strict `{ revision, note? }`; `POST /v1/admin/accounts/{principal}/roles/admin/grant` with `{ note? }` (grant is
+      admin only: photographer always goes through request and approval).
+  - **`{principal}` validation** in one shared helper (also used by R-c): URL-decoded, exactly
+    `firebase:<configured FIREBASE_PROJECT_ID>:<uid>`, uid 1-128 chars, no surrounding whitespace, no `:`, `/` or control
+    characters; anything else 400 `invalid_request`.
+  - **Email on a request** (user, 2026-11-03): the requester's verified email is stored on the photographer row, shown to
+    admins only, never used for authorisation; `DELETE /v1/me` clears it (role rows and audit rows otherwise stay,
+    ADR-0002 decision 1; the openapi `DELETE /v1/me` description says so).
+  - **Audit:** target = principal, `detail = { role, from: { state, revision }, to: { state, revision }, note }`, written in
+    the same transaction; nothing on a refusal or no-op. The row's `note` is overwritten per decision, so the audit row is
+    the history.
+  - Acceptance (tests): request body or query carrying a role or state is 400; a pending row grants nothing (403 on an
+    admin probe and a unit guard test); two admins revoking each other concurrently leave exactly one admin; an admin
+    revoked mid-request cannot commit a decision (403, nothing written); a stale-revision approve after reject and
+    re-request is 409; a request never touches an active row; N concurrent `PUT /v1/me` give one `player` row and one audit
+    row; `PUT /v1/me` never reactivates a revoked `player`; `DELETE /v1/me` leaves roles and audit rows and clears the email;
+    a revoke is effective on the next request.
+  - Files: new `src/accounts/*` (role store with the lock and transitions, controllers, principal helper),
+    `src/players/players.service.ts`, `src/app.module.ts`, `src/common/errors.ts` (only if a code is added; none planned),
+    `docs/openapi.yaml`, `test/api.test.ts` (route count), `test/openapi.e2e.test.ts`, new role e2e tests. Not
+    `schema.ts`/`enums.ts`: the schema lands in 0016 with R-a. Depends on: R-a committed.
+- [ ] **R-c: `npm run roles:grant -- <uid> --yes` operator command** — S
+  - First admin and recovery only (user, 2026-11-03): accepts only `admin`; refuses when any active admin exists; builds
+    the principal from the configured `FIREBASE_PROJECT_ID` with the shared principal helper (refuses a full principal of
+    another project, a bad uid, and the `demo-airplane-games` project when `APP_ENV=production`); prints the target
+    database host and name and requires `--yes`; a `revoked` admin row becomes `active` (update, not a second insert).
+  - Runs the compiled role store from `dist/` (the `scripts/bunny-check.mjs` pattern: build, `loadEnvFile`, import), so the
+    lock, revision bump and audit row are the same code as the API; actor `operator:<os user>` cut to 256 chars.
+  - Acceptance tests: refuses wrong project, bad uid, any role but admin, an existing active admin, a missing `--yes`;
+    writes the same audit shape as an API grant.
+  - Files: `scripts/roles-grant.mjs`, `package.json`, README. Depends on: R-b's role store (same lane, after R-b).
 
 ### Checkpoint 0 (after R-a–R-c)
 
-- [ ] green suites; independent review (security focus: no privilege without a decision); commit; push; message the
-  website session (its `STAFF_EMAILS` rule is superseded for backend routes).
+- [ ] green suites; `code-reviewer` (security focus: no privilege without a decision, last-admin invariant, stale
+  decisions); commit; push; message the website session (its `STAFF_EMAILS` rule is superseded for backend routes;
+  `GET /v1/me/roles` and the request route for its photographer screens).
 
 ### Phase 1: foundation
 
@@ -96,10 +144,18 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
     `PUT /v1/admin/content/{module}/items/{id}/media`), `GET /v1/media?ids=`, schemas `MediaItem`, `MediaLicence`,
     `ImageRef`, and `media_invalid` in `x-planned-enum` to `docs/openapi.yaml`, each operation `x-planned: true` with a
     note.
+  - Contract details from the plan gate: 413 `invalid_request` with the route-scoped limit, the larger body read only
+    after the token and role are verified; 415 for another Content-Type; required `Idempotency-Key` (trip shape, 400
+    when missing); opaque `cursor` with a length cap (malformed 400), `nextCursor: string | null`, default `limit` 50;
+    `ImageRef.url` and `expiresAt` both set or both null (with a `reason` enum), `expiresAt` = the signed expiry in whole
+    seconds; `GET /v1/media?ids=` takes 1-50 strictly parsed ids, collapses duplicates, keeps request order, `no-store`,
+    never returns owner principals; `media_invalid` documents both meanings (bad bytes, unknown media id); `MediaItem`
+    exposes `revision`, `draftVersion`, `publishedVersion`.
   - Acceptance: the parity test treats every new operation as planned (each answers 404 `not_found` today); no built
     route changes; `info.version` unchanged.
   - Verify: `npm run test:e2e -- openapi` green; `npm test` green.
-  - Files: `docs/openapi.yaml`. Depends on: none.
+  - Files: `docs/openapi.yaml`, `test/openapi.e2e.test.ts` (planned path samples). Depends on: R-b (same hot files;
+    lane 1, after R-b).
 - [ ] **T1: Pure image sniffer and CDN link signer** — S
   - `src/content/media/image-sniff.ts`: JPEG (SOI + SOFn dimensions) and PNG (signature + IHDR) only; returns type,
     width, height or a reason. `src/platform/cdn-signer.ts`: Bunny advanced token `HS256-` + base64url(HMAC-SHA256(key,
@@ -110,16 +166,33 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Verify: unit tests (added to the `vitest.config.ts` include list).
   - Files: the two sources, two tests, `vitest.config.ts`. Depends on: none. **Parallel with T0.**
 - [ ] **T2: Schema and migration 0017** — M
-  - Tables `media_items` (id, state, current_version, licence fields, created/updated by and at), `media_versions`
-    (media_id, version, sha256, content_type, byte_size, width, height, blob_key, created_at/by; UNIQUE (media_id,
-    version)), `media_upload_keys` (idempotency key PK, principal, sha256, media_id, created_at),
-    `content_items.media_id` (FK, NULL), `media_items.owner` (uploader principal). Audit actions `media_upload`, `media_edit`, `media_publish`, `media_withdraw`,
-    `content_media_link`. TS lists in `src/db/enums.ts`; S5 parity tests.
-  - Acceptance: generated with `npm run db:generate` (second run: no changes); CHECK lists equal the TS lists; existing
-    tests green.
-  - Verify: `npm test`, `npm run test:e2e`.
-  - Files: `src/db/schema.ts`, `src/db/enums.ts`, `drizzle/0017*`, parity test expectations. Depends on: R-a (migration
-    order); T3 needs it.
+  - `media_items`: `id bigint GENERATED ALWAYS AS IDENTITY` (rendered `med-<n>` in the API, parsed strictly with
+    `^med-[1-9][0-9]{0,15}$`), `owner` (uploader principal), `state` (`unverified|published|withdrawn`, TS-list parity),
+    `revision` (>= 1, the optimistic fence for every write: licence, state, new version), `draft_version` (latest upload)
+    and `published_version` NULL (what players and releases see; user 2026-11-03: a published image and credit stay live
+    until an admin publishes the change), `created_by`/`updated_by` (1-256), timestamps from the database clock (no
+    `defaultNow`). No FK from the item to its versions (circular); a service invariant with a test instead.
+  - `media_versions` (media_id FK, version >= 1, UNIQUE (media_id, version)): `sha256 ~ '^[0-9a-f]{64}$'`, `content_type IN
+    ('image/jpeg','image/png')`, `byte_size BETWEEN 1 AND 5242880`, `width`/`height BETWEEN 1 AND 4096`, the licence fields
+    per version (so a published credit is frozen with its file): `credit_name` <= 200, `licence_name` <= 200,
+    `licence_url`/`source_url` `~ '^https?://'` and <= 2048, `attribution_text` <= 1000, `credit_required` boolean;
+    `blob_key` derived from sha256 and type (not stored), and a CHECK that a version may be published only with a licence
+    name and, when `credit_required`, a credit name.
+  - `media_upload_keys`: PK (principal, idempotency_key), key CHECK `^[A-Za-z0-9_-]{1,128}$`, `operation`
+    (`create`|`version`), `media_id` NOT NULL FK, `version`, `sha256`, `created_at`. Claimed with `INSERT ... ON CONFLICT
+    DO NOTHING RETURNING` after the item/version insert in the same transaction; no row = roll back and replay from the
+    stored key (sha256 equal = 200 replay, else 422 `idempotency_key_reused`). `POST .../versions` also takes a required
+    `Idempotency-Key`.
+  - `content_items.media_id bigint NULL` FK ON DELETE NO ACTION (media is never deleted), indexed.
+  - Indexes: `media_items (owner, id DESC)`, `(state, id DESC)`, `media_versions (sha256)`. Keyset cursor = opaque
+    base64url of the id (never `created_at`).
+  - Audit actions `media_upload`, `media_version`, `media_edit`, `media_publish`, `media_withdraw`, `content_media_link`;
+    TS lists + S5 parity for every new enumerated CHECK.
+  - Acceptance: generated with `npm run db:generate` (second run: no changes); `npm run contracts:write` produces no diff;
+    CHECK violations tested (unpublishable licence, non-http URL, bad sha256, oversize); the same idempotency key from two
+    principals gives two independent items.
+  - Files: `src/db/schema.ts`, `src/db/enums.ts`, `drizzle/0017*`, `drizzle/meta/*`, `test/schema-parity*`. Depends on:
+    R-a committed (0016 final). Lane 2; R-b must not touch these files.
 
 ### Checkpoint A (after T0–T2)
 
@@ -139,17 +212,17 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Files: `src/content/media/{media.module,media.controller,media.service}.ts`, `src/app.setup.ts`,
     `src/app.module.ts`, `docs/openapi.yaml`, `src/common/errors.ts`, the test. Depends on: T1, T2.
 - [ ] **T4: New version, licence edit, publish, withdraw** — M
-  - `POST .../{mediaId}/versions?expectedVersion=` (same pipeline; back to `unverified`; identical bytes → 200
-    `changed: false`), `PATCH .../{mediaId}` `{ version, licence?, note? }`, `POST .../publish` and `.../withdraw`
-    `{ version }`. Refusals returned, not thrown, inside transactions (`ExpectedRollback` pattern).
-  - Acceptance: stale version → 409 `version_conflict` and nothing changes; publish without a licence name, or without a
-    credit when `creditRequired`, → 422 `content_invalid`; publishing a published item → 409 `nothing_to_publish`; every
-    change writes one audit row with a field diff; licence text stored verbatim (trim only). A photographer may add
-    versions and edit the licence of **its own** items only (others: 404, existence not leaked); publish and withdraw
-    are `@Roles("admin")`.
+  - `POST .../{mediaId}/versions` (required `Idempotency-Key`, `?revision=`), `PATCH .../{mediaId}` `{ revision, licence?,
+    note? }` (strict; absent keeps a field, `null` clears it; edits the draft version's licence), `POST .../publish` and
+    `.../withdraw` `{ revision }` (`@Roles("admin")`). Every write is fenced by `media_items.revision` (stale → 409
+    `version_conflict`, nothing changes). A photographer's new version or licence edit changes only the draft; the
+    `published_version` and its credit stay live until an admin publishes (user, 2026-11-03). Publishing checks the draft's
+    licence (422 `content_invalid`); publishing an unchanged published draft → 409 `nothing_to_publish`.
+  - Photographers act on **their own** items only (others: 404, existence not leaked). Refusals returned, not thrown,
+    inside transactions (`ExpectedRollback`). One audit row per change with a field diff; licence text verbatim (trim only;
+    control characters refused).
   - Verify: e2e in the same file; openapi moves these routes to built.
   - Files: media service/controller, openapi, the test. Depends on: T3.
-
 ### Checkpoint B (after T3–T4)
 
 - [ ] green suites; independent review; commit; push.
@@ -207,12 +280,17 @@ Plane of the Day.
 
 ## Parallel lanes
 
-- Phase 0 first (R-a owns migration 0016; R-b ∥ R-c after it). T0 ∥ T1 can run beside Phase 0 (disjoint files).
-- T2 after R-a (owns migration 0017).
-- T5 ∥ T6 (disjoint files).
-- Independent of this plan and safe to run beside Phase 1–2: design slices **R0** (pure answer check) and **R1**
-  (commercial Card gate), which touch `src/rules/` and `src/content/documents/` only.
-- Serial: anything touching `drizzle/`, `src/db/schema.ts`, or the route-count/openapi tests at the same time.
+One working tree, no worktrees (user, 2026-11-03), disjoint file ownership, one test database per implementer.
+
+- **Gate:** R-a and T1 (with review fixes) are committed and pushed before anything below starts, so 0016 is final
+  before T2 generates 0017.
+- **Lane 1 (sequential):** R-b, then R-c, then T0. Owns `src/accounts/*`, `src/players/players.service.ts`,
+  `src/app.module.ts`, `src/common/errors.ts`, `docs/openapi.yaml`, `test/api.test.ts`, `test/openapi.e2e.test.ts`, the
+  role e2e tests, `scripts/roles-grant.mjs`, `package.json`, README.
+- **Lane 2:** T2. Owns `src/db/schema.ts`, `src/db/enums.ts`, `drizzle/0017*`, `drizzle/meta/*`, `test/schema-parity*`.
+- **Lead only:** `vitest.config.ts` (new unit test includes) and `docs/TASKS.md`.
+- Later: T3 → T4 (sequential); T5 ∥ T6 (disjoint files); T7.
+- Review: one `code-reviewer` pass per checkpoint; security focus on R-b and R-c; T0 and T2 need a parity check.
 
 ## Risks and mitigations
 
@@ -229,4 +307,9 @@ Plane of the Day.
 ## Open questions
 
 None. Settled 2026-11-03: contract approved; licence name always and credit when `creditRequired` (source URL
-optional); photographers upload, admins publish; roles per ADR-0002.
+optional); photographers upload, admins publish; roles per ADR-0002. Plan-gate rulings (user, 2026-11-03): a
+published image and credit stay live until an admin publishes a change; a photographer request records the
+requester's verified email for admins only (cleared by `DELETE /v1/me`); `player` is informational and not
+revocable in this wave; roles and audit rows survive `DELETE /v1/me`; self-revoke is allowed while another admin
+remains; `roles:grant` runs only when no active admin exists, accepts only `admin` and needs `--yes`. Plan gate
+2026-11-03: `senior-lead` and `backend-expert` approved with changes, all applied above.
