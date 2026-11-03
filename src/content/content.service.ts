@@ -20,6 +20,7 @@ import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
 import { lockContentModule, readContentStamp } from "./content-lock.js";
 import { compareIds } from "./content-modules.js";
+import { formatMediaId } from "./item-media-id.js";
 import { ContentDocumentsService } from "./documents/content-documents.service.js";
 import { planHash, planImport } from "./import-plan.js";
 import { CONTENT_STATUSES, type ContentStatus } from "../db/enums.js";
@@ -77,6 +78,8 @@ export type ItemView = {
   source: string;
   version: number;
   data: unknown;
+  /** The linked image (`med-<n>`), null when none. */
+  mediaId: string | null;
   updatedAt: string;
 };
 
@@ -301,6 +304,7 @@ export class ContentService {
         source: r.source,
         version: r.version,
         data: r.data,
+        mediaId: formatMediaId(r.mediaId),
         updatedAt: r.updatedAt.toISOString(),
       }));
   }
@@ -342,12 +346,14 @@ export class ContentService {
   /** The module's items as an xlsx in the client's column wording, natural id order. */
   async exportWorkbook(mapping: ContentModuleMapping): Promise<Buffer> {
     const rows = await this.database.db.select().from(contentItems).where(eq(contentItems.module, mapping.module));
-    const items: StoredItem[] = rows
-      .sort((a, b) => compareIds(a.id, b.id))
-      .flatMap((r) =>
-        isRank(r.rank) && isStatus(r.status) ? [{ id: r.id, rank: r.rank, status: r.status, version: r.version, data: r.data }] : [],
-      );
-    return writeSheet(mapping.exportRows(items));
+    const valid = rows.sort((a, b) => compareIds(a.id, b.id)).filter((r) => isRank(r.rank) && isStatus(r.status));
+    const items: StoredItem[] = valid.flatMap((r) =>
+      isRank(r.rank) && isStatus(r.status) ? [{ id: r.id, rank: r.rank, status: r.status, version: r.version, data: r.data }] : [],
+    );
+    // The module mapping writes one row per item after the header, in order; the link is appended as a last "Media Id" column.
+    // The importers read columns by name and ignore this one, so a re-imported export never changes a link.
+    const sheet = mapping.exportRows(items);
+    return writeSheet(sheet.map((line, i) => [...line, i === 0 ? "Media Id" : (formatMediaId(valid[i - 1]?.mediaId ?? null) ?? "")]));
   }
 
   /** Read and map the sheet. File-level problems (not an xlsx, too big, no header row) are 400. */

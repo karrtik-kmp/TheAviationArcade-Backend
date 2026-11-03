@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Res, StreamableFile } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Put, Query, Res, StreamableFile } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
 import { Principal } from "../auth/firebase-auth.guard.js";
@@ -14,6 +14,7 @@ import type { ContentModuleMapping } from "./content-module.js";
 import { contentMappingFor } from "./content-modules.js";
 import { ContentItemEditService } from "./content-item-edit.service.js";
 import { ContentService } from "./content.service.js";
+import { MEDIA_ID_PATTERN } from "./item-media-id.js";
 import { XLSX_MIME } from "./xlsx.js";
 
 // dryRun and confirm are the only query parameters; anything else, or a bad value, is a 400.
@@ -44,6 +45,8 @@ const editBody = z.strictObject({
 type EditBody = z.infer<typeof editBody>;
 const versionBody = z.strictObject({ version: itemVersion });
 type VersionBody = z.infer<typeof versionBody>;
+const mediaBody = z.strictObject({ mediaId: z.union([z.string().regex(MEDIA_ID_PATTERN), z.null()]), expectedVersion: itemVersion });
+type MediaBody = z.infer<typeof mediaBody>;
 const ITEM_ID_MAX = 64;
 
 function isModuleId(value: string): value is ModuleId {
@@ -157,6 +160,18 @@ export class ContentController {
   ) {
     const mapping = mappingFor(module);
     return this.edits.edit(mapping, itemId(id), body.version, { rank: body.rank, data: body.data }, principal);
+  }
+
+  /** Link (or with null unlink) the item's image. Optimistic on `expectedVersion`; see ContentItemEditService.setMedia. */
+  @Put(":module/items/:id/media")
+  async linkMedia(
+    @Principal() principal: string,
+    @Param("module") module: string,
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(mediaBody, "Expected { mediaId: \"med-<n>\" | null, expectedVersion: integer } and nothing else.")) body: MediaBody,
+  ) {
+    const mapping = mappingFor(module);
+    return this.edits.setMedia(mapping.module, itemId(id), body.expectedVersion, body.mediaId, principal);
   }
 
   @Post(":module/items/:id/retire")

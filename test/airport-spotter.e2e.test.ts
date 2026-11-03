@@ -118,7 +118,7 @@ describe.skipIf(!haveSheet)("Airport Spotter import of the client's real sheet",
     await upload(stripped);
     const bytes = await exportBytes();
     const sheet = (await readFirstSheet(bytes)) as TestCell[][];
-    expect(sheet[0]).toEqual(["Id", "Version", "LEVEL", "Correct Airport", "Wrong Airport 1", "Wrong Airport 2", "Wrong Airport 3", "File name", "Status"]);
+    expect(sheet[0]).toEqual(["Id", "Version", "LEVEL", "Correct Airport", "Wrong Airport 1", "Wrong Airport 2", "Wrong Airport 3", "File name", "Status", "Media Id"]);
     expect(sheet).toHaveLength(46);
     expect(sheet[1]?.slice(0, 8)).toEqual(["apt-a1", 1, "Captain", "LAX", "DEN", "LAS", "PIT", "api_lax_10_22_26_1.jpg"]);
     const same = await upload(bytes);

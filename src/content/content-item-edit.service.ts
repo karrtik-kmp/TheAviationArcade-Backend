@@ -5,7 +5,7 @@ import { ApiError } from "../common/errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import type { AdminAuditAction, ContentStatus } from "../db/enums.js";
-import { adminAudit, contentItems } from "../db/schema.js";
+import { adminAudit, contentItems, mediaItems } from "../db/schema.js";
 import type { ContentItemRow } from "../db/schema.js";
 import { militaryCardKey } from "../rules/clipper-cards.js";
 import { isRank } from "../rules/ranks.js";
@@ -15,6 +15,7 @@ import { lockContentModule, readContentStamp } from "./content-lock.js";
 import { canonicalJson, diffItem, planImport } from "./import-plan.js";
 import type { ExistingItem, FieldDiff } from "./import-plan.js";
 import type { ItemView } from "./content.service.js";
+import { formatMediaId, parseMediaId } from "./item-media-id.js";
 
 const MILITARY = "aircraft-identifier-military";
 
@@ -36,6 +37,7 @@ function view(row: ContentItemRow): ItemView {
     source: row.source,
     version: row.version,
     data: row.data,
+    mediaId: formatMediaId(row.mediaId),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -112,6 +114,34 @@ export class ContentItemEditService {
         row,
         diff: [{ field: "status", from: stored.status, to: status }],
         action: status === "retired" ? "content_retire" : "content_restore",
+      };
+    });
+  }
+
+  /**
+   * Link the item to a media item (`med-<n>`) or, with null, remove the link. Any existing media item may be linked, whatever its
+   * state: the contract does not restrict it, and readers only ever see the published version. Linking the stored value is
+   * `changed: false`. The link is a staff write (version bump, source `admin`, `updated_at`), so it also ends a client-sheet replay.
+   */
+  async setMedia(module: string, id: string, expectedVersion: number, mediaId: string | null, principal: string): Promise<ItemChange> {
+    const wanted = mediaId === null ? null : parseMediaId(mediaId);
+    if (wanted === undefined) throw new ApiError(422, "media_invalid", "mediaId must be a media id such as med-12, or null.");
+    return this.run(module, id, expectedVersion, principal, async (tx, stored, _existing, now) => {
+      if (wanted !== null) {
+        const [found] = await tx.select({ id: mediaItems.id }).from(mediaItems).where(eq(mediaItems.id, wanted)).limit(1);
+        if (!found) throw new ApiError(422, "media_invalid", "No such media item. Nothing was changed.");
+      }
+      if (stored.mediaId === wanted) return { kind: "unchanged" };
+      const [row] = await tx
+        .update(contentItems)
+        .set({ mediaId: wanted, version: sql`${contentItems.version} + 1`, source: "admin", updatedAt: now, updatedBy: principal })
+        .where(and(eq(contentItems.module, module), eq(contentItems.id, id), eq(contentItems.version, stored.version)))
+        .returning();
+      return {
+        kind: "changed",
+        row,
+        diff: [{ field: "media", from: formatMediaId(stored.mediaId), to: formatMediaId(wanted) }],
+        action: "content_media_link",
       };
     });
   }

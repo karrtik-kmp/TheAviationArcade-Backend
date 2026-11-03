@@ -456,9 +456,9 @@ describe("export and round trip", () => {
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(res.headers["content-disposition"]).toMatch(new RegExp(`^attachment; filename="${MODULE}-\\d{4}-\\d{2}-\\d{2}\\.xlsx"$`));
     const rows = await exportedRows();
-    expect(rows[0]).toEqual(["Id", "Version", "Level", "Correct Answer", "Wrong Answer 1", "Wrong Answer 2", "Wrong Answer 3", "file", "Photographer", "Status"]);
+    expect(rows[0]).toEqual(["Id", "Version", "Level", "Correct Answer", "Wrong Answer 1", "Wrong Answer 2", "Wrong Answer 3", "file", "Photographer", "Status", "Media Id"]);
     expect(rows.slice(1).map((r) => r[0])).toEqual(Array.from({ length: 12 }, (_, i) => `mil-a${i + 1}`));
-    expect(rows[1]).toEqual(["mil-a1", 1, "Trainee", "Aircraft 1", "Wrong 1a", "Wrong 1b", "Wrong 1c", "MA_test_1.jpg", "Photographer 1", "approved"]);
+    expect(rows[1]).toEqual(["mil-a1", 1, "Trainee", "Aircraft 1", "Wrong 1a", "Wrong 1b", "Wrong 1c", "MA_test_1.jpg", "Photographer 1", "approved", null]);
     expect(rows[4]?.[2]).toBe("Check Airman");
     expect(rows[5]?.[2]).toBe("Chief Pilot");
   });

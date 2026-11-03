@@ -424,6 +424,168 @@ describe("re-uploading the client sheet after a staff change", () => {
   });
 });
 
+describe("PUT .../items/:id/media (media plan T6)", () => {
+  const link = (id: string, body: unknown, headers: Record<string, string> = staff) => request(server).put(`${ITEM(id)}/media`).set(headers).send(body as object);
+  const made: number[] = [];
+  async function newMedia(state: "unverified" | "published" | "withdrawn" = "unverified"): Promise<string> {
+    const published = state === "published" ? 1 : null;
+    const { rows } = await sql.query(
+      `INSERT INTO media_items (owner, state, draft_version, published_version, created_by, updated_by, created_at, updated_at)
+       VALUES ($1, $2, 1, $3, $1, $1, now(), now()) RETURNING id`,
+      [STAFF_PRINCIPAL, state, published],
+    );
+    made.push(Number(rows[0].id));
+    return `med-${rows[0].id}`;
+  }
+  afterAll(async () => {
+    await sql.query("DELETE FROM content_items"); // the foreign key to the media rows
+    if (made.length > 0) await sql.query("DELETE FROM media_items WHERE id = ANY($1::bigint[])", [made]);
+  });
+
+  it("401 without a token and 403 for a non-staff caller", async () => {
+    expect((await request(server).put(`${ITEM("mil-a1")}/media`).send({ mediaId: null, expectedVersion: 1 })).status).toBe(401);
+    const res = await link("mil-a1", { mediaId: null, expectedVersion: 1 }, nonStaff);
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("forbidden");
+  });
+
+  it("the body is strict", async () => {
+    const bad: unknown[] = [
+      {}, { mediaId: null }, { expectedVersion: 1 }, { mediaId: null, expectedVersion: 0 }, { mediaId: null, expectedVersion: "1" },
+      { mediaId: "med-1", expectedVersion: 1, extra: 1 }, { mediaId: "x", expectedVersion: 1 }, { mediaId: "med-0", expectedVersion: 1 },
+      { mediaId: "MED-1", expectedVersion: 1 }, { mediaId: 5, expectedVersion: 1 }, { mediaId: "med-01", expectedVersion: 1 },
+    ];
+    for (const body of bad) {
+      const res = await link("mil-a1", body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body.error.code).toBe("invalid_request");
+    }
+    expect((await row("mil-a1")).version).toBe(1);
+  });
+
+  it("links, lists, then unlinks: version + 1, source admin, a media diff and one content_media_link audit row each", async () => {
+    const media = await newMedia();
+    const res = await link("mil-a2", { mediaId: media, expectedVersion: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.changed).toBe(true);
+    expect(res.body.item).toMatchObject({ id: "mil-a2", version: 2, source: "admin", mediaId: media });
+    expect(res.body.diff).toEqual([{ field: "media", from: null, to: media }]);
+    expect(await row("mil-a2")).toMatchObject({ version: 2, source: "admin", updated_by: STAFF_PRINCIPAL, media_id: media.slice(4) });
+    const list = await request(server).get(`${BASE}/items`).set(staff);
+    expect(list.body.items.find((i: { id: string }) => i.id === "mil-a2").mediaId).toBe(media);
+    expect(list.body.items.find((i: { id: string }) => i.id === "mil-a3").mediaId).toBeNull();
+
+    const back = await link("mil-a2", { mediaId: null, expectedVersion: 2 });
+    expect(back.status).toBe(200);
+    expect(back.body.diff).toEqual([{ field: "media", from: media, to: null }]);
+    expect(back.body.item).toMatchObject({ version: 3, mediaId: null });
+    const log = await audits("content_media_link");
+    expect(log).toHaveLength(2);
+    expect(log[0]).toMatchObject({ actor: STAFF_PRINCIPAL, action: "content_media_link", target: MODULE });
+    expect(log[0].detail).toEqual({ id: "mil-a2", fromVersion: 1, version: 2, diff: res.body.diff });
+    expect((await row("mil-a3")).version).toBe(1);
+  });
+
+  it("linking the stored value (or unlinking an unlinked item) is changed: false, with no bump and no audit row", async () => {
+    const media = await newMedia("published");
+    const none = await link("mil-a1", { mediaId: null, expectedVersion: 1 });
+    expect(none.status).toBe(200);
+    expect(none.body).toMatchObject({ changed: false, diff: [], item: { version: 1, mediaId: null } });
+    expect((await link("mil-a1", { mediaId: media, expectedVersion: 1 })).body.changed).toBe(true);
+    const same = await link("mil-a1", { mediaId: media, expectedVersion: 2 });
+    expect(same.body).toMatchObject({ changed: false, diff: [], item: { version: 2, mediaId: media } });
+    expect(await audits("content_media_link")).toHaveLength(1);
+  });
+
+  it("any existing media item may be linked, whatever its state", async () => {
+    for (const [i, state] of (["unverified", "published", "withdrawn"] as const).entries()) {
+      const media = await newMedia(state);
+      const res = await link(`mil-a${i + 1}`, { mediaId: media, expectedVersion: 1 });
+      expect(res.status, state).toBe(200);
+      expect(res.body.item.mediaId).toBe(media);
+    }
+  });
+
+  it("a stale version is 409 version_conflict, an unknown media item is 422 media_invalid, an unknown item or module is 404; nothing is written", async () => {
+    const media = await newMedia();
+    expect((await link("mil-a1", { mediaId: media, expectedVersion: 1 })).status).toBe(200);
+    const stale = await link("mil-a1", { mediaId: null, expectedVersion: 1 });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe("version_conflict");
+
+    const unknown = await link("mil-a2", { mediaId: "med-999999999", expectedVersion: 1 });
+    expect(unknown.status).toBe(422);
+    expect(unknown.body.error.code).toBe("media_invalid");
+
+    const noItem = await link("mil-a99", { mediaId: media, expectedVersion: 1 });
+    expect(noItem.status).toBe(404);
+    expect(noItem.body.error.code).toBe("not_found");
+    expect((await link("x".repeat(200), { mediaId: null, expectedVersion: 1 })).status).toBe(404);
+    expect((await request(server).put("/v1/admin/content/atc-match/items/mil-a1/media").set(staff).send({ mediaId: null, expectedVersion: 1 })).status).toBe(404);
+
+    expect(await row("mil-a1")).toMatchObject({ version: 2, media_id: media.slice(4) });
+    expect((await row("mil-a2")).version).toBe(1);
+    expect(await audits("content_media_link")).toHaveLength(1);
+  });
+
+  it("a link made during the module lock is 409 import_in_progress", async () => {
+    const media = await newMedia();
+    const holder = await sql.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`content-import:${MODULE}`]);
+      const res = await link("mil-a1", { mediaId: media, expectedVersion: 1 });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("import_in_progress");
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    expect((await row("mil-a1")).version).toBe(1);
+  });
+
+  it("an import never changes a link, and the export carries a Media Id column that the import ignores", async () => {
+    const media = await newMedia();
+    for (const id of ["mil-a1", "mil-a2", "mil-a3", "mil-a4", "mil-a5", "mil-a6"]) {
+      expect((await link(id, { mediaId: media, expectedVersion: 1 })).status).toBe(200);
+    }
+    await sql.query("UPDATE content_items SET media_id = NULL WHERE module = $1 AND id = 'mil-a6'", [MODULE]);
+
+    const exported = await request(server).get(`${BASE}/export`).set(staff).buffer(true).parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => cb(null, Buffer.concat(chunks)));
+    });
+    expect(exported.status).toBe(200);
+    const cells = await readFirstSheet(exported.body as Buffer);
+    expect(cells[0]!.at(-1)).toBe("Media Id");
+    expect(cells.slice(1).map((r) => [r[0], r.at(-1) ?? ""])).toEqual([
+      ["mil-a1", media], ["mil-a2", media], ["mil-a3", media], ["mil-a4", media], ["mil-a5", media], ["mil-a6", ""],
+    ]);
+    // Re-importing the export (Media Id column included) leaves every link as it is.
+    expect((await request(server).post(`${BASE}/imports`).set(staff).set("Content-Type", XLSX_MIME).send(exported.body as Buffer)).status).toBe(201);
+
+    // A different client sheet updates rows but never touches media_id.
+    const changed = await clientSheet(6, (rows) => { rows[8]![6] = "Someone Else"; });
+    const dry = await request(server).post(`${BASE}/imports?dryRun=true`).set(staff).set("Content-Type", XLSX_MIME).send(changed);
+    expect(dry.body.counts.updated).toBeGreaterThan(0);
+    const applied = await request(server).post(`${BASE}/imports?confirm=${dry.body.planHash}`).set(staff).set("Content-Type", XLSX_MIME).send(changed);
+    expect(applied.status).toBe(201);
+    const stored = (await sql.query("SELECT id, media_id FROM content_items WHERE module = $1 ORDER BY id", [MODULE])).rows;
+    expect(stored.map((r) => [r.id, r.media_id === null ? null : `med-${r.media_id}`])).toEqual([
+      ["mil-a1", media], ["mil-a2", media], ["mil-a3", media], ["mil-a4", media], ["mil-a5", media], ["mil-a6", null],
+    ]);
+  });
+
+  it("a link counts as a staff write: the client sheet no longer replays", async () => {
+    const media = await newMedia();
+    expect((await request(server).post(`${BASE}/imports?dryRun=true`).set(staff).set("Content-Type", XLSX_MIME).send(sheet)).body.replay).toBe(true);
+    expect((await link("mil-a1", { mediaId: media, expectedVersion: 1 })).status).toBe(200);
+    const dry = await request(server).post(`${BASE}/imports?dryRun=true`).set(staff).set("Content-Type", XLSX_MIME).send(sheet);
+    expect(dry.body.replay).toBe(false);
+  });
+});
+
 describe("concurrency and the module lock", () => {
   it("two edits with the same version: exactly one wins, the other is a 409 and nothing is applied twice", async () => {
     const [a, b] = await Promise.all([
