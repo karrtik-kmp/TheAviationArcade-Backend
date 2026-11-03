@@ -16,11 +16,11 @@ import { XLSX_MIME } from "./xlsx.js";
 
 // dryRun and confirm are the only query parameters; anything else, or a bad value, is a 400.
 // confirm is the planHash (sha256 hex) from a dry run of the same file.
-const importQuery = z.strictObject({
+export const importQuery = z.strictObject({
   dryRun: z.enum(["true", "false"]).optional(),
   confirm: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
-type ImportQuery = z.infer<typeof importQuery>;
+export type ImportQuery = z.infer<typeof importQuery>;
 
 export const MAX_COVERAGE_IDS = 2000;
 /** Ids are short (`mil-a31`); the cap keeps 2000 of them inside the route's JSON limit (see app.setup.ts). */

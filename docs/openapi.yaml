@@ -1344,6 +1344,141 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/admin/content/documents/field-awards/imports:
+    post:
+      tags: [admin]
+      operationId: importFieldAwards
+      summary: Re-import a later Field Awards sheet into the draft
+      description: |
+        Staff only. The body is the client's updated Field Awards sheet, raw `.xlsx` (Content-Type
+        `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; the same unpack and cell-reference guards
+        as the content import). The first worksheet is read; its header is `Field Award`, `Current criteria`, `Threshold`.
+        The result is **edits in the `field-awards` draft**, not a new version: nothing reaches players until staff publish it with
+        `POST /v1/admin/content/documents/field-awards/publish`.
+
+        Each row is matched to an award by its name (case-insensitive; the sheet has no id, and ten of the 28 Unity code ids differ from
+        the sheet's own naming, so the catalog title, the title in force and the draft title all count). `title` and `criteria` are the
+        cells, trimmed and otherwise verbatim. `target` is read from the Threshold cell only when that cell differs from the Threshold
+        cell of the version in force, and must then start with a whole number of at least 1 ("100,000 Miles" is 100000); a cell that is
+        unchanged keeps the target as it is. The sheet has no `hidden` column, so `hidden` is never touched. The plan is the diff
+        against the preview (the version in force with the draft overlay on top): a field the sheet shows differently from the
+        preview is a change, whoever made the earlier edit. An import never adds, renames away or removes an award.
+
+        Errors, all in one 422 `import_invalid` with a `report` (row 0 = the whole file), and nothing is written: a row that is not an
+        award we have, an award missing from the sheet, an award listed twice, a target that is not a whole number of at least 1, a
+        title or criteria over the draft limits, a missing cell, and a result that the document validators (the checks of a publish)
+        refuse.
+
+        `dryRun=true` returns the plan (200) and writes and stores nothing. A plan that changes anything must be applied with
+        `confirm=<planHash>` from a dry run of the same sheet: without it 422 `import_invalid` (do a dry run first); if the draft
+        or the version in force changed since the dry run (an edit, a discard, a publish, another import) it is 409 `plan_changed` and
+        nothing is written. Applying stores the original file in file storage (content-addressed by sha256, kept) and writes the edits
+        through the same path as `PATCH .../draft`: under the per-document lock, draft revision + 1, and a `history` entry with the
+        principal, `action: import` and the file's `fileSha256` (copied into the publish audit row). A sheet that changes nothing
+        answers 200 `applied: false` and writes and stores nothing.
+      parameters:
+        - name: dryRun
+          in: query
+          required: false
+          schema: { type: string, enum: ["true", "false"], default: "false" }
+        - name: confirm
+          in: query
+          required: false
+          description: The `planHash` of a dry run of the same sheet. Required to apply a plan that changes anything; not accepted together with `dryRun=true`.
+          schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+        - name: X-File-Name
+          in: header
+          required: false
+          description: Original file name for the receipt. Sanitised and cut to 200 characters; never used as a path.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: "A dry-run plan, or an apply of a sheet that changes nothing (`applied: false`)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/FieldAwardsImportDryRun" }
+                  - { $ref: "#/components/schemas/FieldAwardsImportApplied" }
+        "201":
+          description: The changes were written to the draft.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FieldAwardsImportApplied" }
+        "400":
+          description: |
+            Not an `.xlsx` (wrong content type, unreadable, no `Field Award` / `Current criteria` / `Threshold` header), a bad `dryRun`
+            or `confirm`, or too large once unpacked or too many rows or columns.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: |
+            `plan_changed`: the `confirm` hash no longer matches the plan, because the draft or the version in force changed since the
+            dry run. Nothing was written; run a new dry run.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [plan_changed]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: Upload over 5 MB.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: |
+            The sheet has at least one error (with a `report`), or a plan that changes something was applied without `confirm` (no report;
+            do a dry run first), or the stored draft does not validate (`content_invalid`; discard it). Nothing was written. Also
+            returned by `dryRun`.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [import_invalid, content_invalid]
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/ImportInvalid" }
+                  - { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: |
+            `storage_unavailable`: file storage is down, not configured, or refused the upload (nothing written). Also `auth_unavailable`
+            and `service_unavailable` (content not ready, or the lock timed out). All carry `Retry-After` except a storage refusal a retry
+            will not fix.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [auth_unavailable, service_unavailable, storage_unavailable]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/admin/content/documents/{name}/draft:
     get:
       tags: [admin]
@@ -2010,7 +2145,7 @@ components:
           description: |
             The pending overlay. `field-awards`: `{ awards: { <id>: { title?, criteria?, target?, hidden? } } }`; `clipper-cards`:
             `{ names: { <cardKey>: name } }`; `aircraft-tags`: `{ tags: { <cardKey>: [tag] }, ackClientTagRemoval: { <cardKey>: true } }`. Every
-            document also carries `history`: `[{ principal, action: edit|discard, at, draftVersion }]`, every editor and discarder since the last
+            document also carries `history`: `[{ principal, action: edit|discard|import, at, draftVersion, fileSha256? }]` (`fileSha256` on an import only), every editor, importer and discarder since the last
             publish (kept across a discard, copied into the publish audit row, cleared by a publish). Empty when there is no draft.
         changeCount: { type: integer, minimum: 0 }
         changes:
@@ -2078,7 +2213,7 @@ components:
       additionalProperties: false
       required: [row, level, message]
       properties:
-        row: { type: integer, minimum: 1, description: 1-based sheet row. }
+        row: { type: integer, minimum: 0, description: "1-based sheet row; 0 = the whole file (only the Field Awards import: an award missing from the sheet, or the result failing the document validators)." }
         id: { type: string }
         level: { type: string, enum: [error, conflict, warning] }
         message: { type: string }
@@ -2185,6 +2320,83 @@ components:
       properties:
         replayed: { type: boolean, const: true }
         import: { $ref: "#/components/schemas/ImportSummary" }
+    FieldAwardsImportChange:
+      type: object
+      additionalProperties: false
+      required: [field, from, to]
+      properties:
+        field: { type: string, enum: [title, criteria, target] }
+        from:
+          description: The value in the preview (version in force plus draft overlay).
+          oneOf: [{ type: string }, { type: integer }]
+        to:
+          description: The value the sheet carries.
+          oneOf: [{ type: string }, { type: integer }]
+    FieldAwardsImportAward:
+      type: object
+      additionalProperties: false
+      required: [id, changes]
+      properties:
+        id: { type: string, description: The Field Award's Unity code id. }
+        changes:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/FieldAwardsImportChange" }
+    FieldAwardsImportCounts:
+      type: object
+      additionalProperties: false
+      required: [rows, awardsChanged, awardsUnchanged, fieldChanges]
+      properties:
+        rows: { type: integer, minimum: 0, description: Award rows read from the sheet. }
+        awardsChanged: { type: integer, minimum: 0 }
+        awardsUnchanged: { type: integer, minimum: 0 }
+        fieldChanges: { type: integer, minimum: 0 }
+    FieldAwardsImportDryRun:
+      type: object
+      additionalProperties: false
+      required: [dryRun, publishedVersion, draftVersion, counts, planHash, requiresConfirm, awards]
+      properties:
+        dryRun: { type: boolean, const: true }
+        publishedVersion:
+          description: The version in force the plan was made against.
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: "null" }
+        draftVersion: { type: integer, minimum: 0, description: The draft revision the plan was made against. }
+        counts: { $ref: "#/components/schemas/FieldAwardsImportCounts" }
+        planHash: { type: string, pattern: "^[0-9a-f]{64}$", description: "Present as ?confirm= when applying. Covers the changes, the version in force and the draft revision." }
+        requiresConfirm: { type: boolean, description: True when the plan changes anything. }
+        awards:
+          type: array
+          description: Only the awards that change, in catalog order. Empty when the sheet matches the preview.
+          items: { $ref: "#/components/schemas/FieldAwardsImportAward" }
+    FieldAwardsImportApplied:
+      type: object
+      additionalProperties: false
+      required: [applied, publishedVersion, draftVersion, counts, planHash, requiresConfirm, awards]
+      properties:
+        applied: { type: boolean, description: "False: the sheet changes nothing, so nothing was written or stored." }
+        publishedVersion:
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: "null" }
+        draftVersion: { type: integer, minimum: 0, description: "The draft revision after the write (unchanged when `applied` is false)." }
+        counts: { $ref: "#/components/schemas/FieldAwardsImportCounts" }
+        planHash: { type: string, pattern: "^[0-9a-f]{64}$", description: The hash of the plan that was applied. }
+        requiresConfirm: { type: boolean }
+        awards:
+          type: array
+          items: { $ref: "#/components/schemas/FieldAwardsImportAward" }
+        file:
+          description: Present when `applied` is true.
+          type: object
+          additionalProperties: false
+          required: [fileName, sha256, byteSize, blobKey]
+          properties:
+            fileName: { type: string }
+            sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+            byteSize: { type: integer, minimum: 1 }
+            blobKey: { type: string, description: "Where the original upload is kept (`imports/field-awards/<sha256>.xlsx`)." }
     ImportInvalid:
       type: object
       additionalProperties: false

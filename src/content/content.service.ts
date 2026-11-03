@@ -14,7 +14,8 @@ import { RANKS, isRank } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import { FLIGHTS_PER_TRIP } from "../rules/trips.js";
 import { rowToDealItem } from "./deal-items.js";
-import { BLOB_STORE, StorageRequestError, StorageUnavailableError } from "../storage/blob-store.js";
+import { BLOB_STORE } from "../storage/blob-store.js";
+import { storeImportBlob } from "./import-blob.js";
 import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
 import { compareIds } from "./content-modules.js";
@@ -22,7 +23,7 @@ import { ContentDocumentsService } from "./documents/content-documents.service.j
 import { planHash, planImport } from "./import-plan.js";
 import { CONTENT_STATUSES, type ContentStatus } from "../db/enums.js";
 import type { ExistingItem, FieldDiff, ImportPlan } from "./import-plan.js";
-import { SpreadsheetError, XLSX_MIME, readFirstSheet, writeSheet } from "./xlsx.js";
+import { SpreadsheetError, readFirstSheet, writeSheet } from "./xlsx.js";
 
 const BATCH = 500;
 const PLAN_CHANGED_MESSAGE =
@@ -158,19 +159,7 @@ export class ContentService {
     this.assertConfirmed(early.plan, confirm); // fail before storing anything
     const warnings = early.warnings;
     const blobKey = `imports/${module}/${sha256}.xlsx`;
-    try {
-      await this.blobs.put(blobKey, bytes, XLSX_MIME);
-    } catch (error) {
-      if (error instanceof StorageUnavailableError) {
-        throw new ApiError(503, "storage_unavailable", "File storage is unavailable. Retry shortly.", { "Retry-After": "5" });
-      }
-      if (error instanceof StorageRequestError) {
-        // Refused for a reason a retry will not fix (e.g. bad credentials): our configuration, not the caller's. Status only in the log.
-        this.logger.error(`file storage refused the import upload (status ${error.status})`);
-        throw new ApiError(503, "storage_unavailable", "File storage is unavailable.");
-      }
-      throw error;
-    }
+    await storeImportBlob(this.blobs, this.logger, blobKey, bytes);
 
     const applied = await this.database.withTransaction(async (tx): Promise<ApplyResult> => {
       // Serialises imports per module, so two uploads can never plan against the same stale rows. Try, never

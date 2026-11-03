@@ -1,12 +1,21 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { ApiError } from "../../common/errors.js";
 import { DatabaseService } from "../../database/database.module.js";
 import type { Tx } from "../../database/database.module.js";
 import type { ContentDocumentName } from "../../db/enums.js";
 import { adminAudit } from "../../db/schema.js";
 import { SEED_COMMERCIAL_CARD_KEYS } from "../../rules/aircraft-tags.js";
+import { FIELD_AWARD_CATALOG } from "../../rules/field-award-catalog.js";
+import { BLOB_STORE } from "../../storage/blob-store.js";
+import type { BlobStore } from "../../storage/blob-store.js";
+import type { ImportIssue } from "../content-module.js";
+import { storeImportBlob } from "../import-blob.js";
+import { SpreadsheetError, readFirstSheet } from "../xlsx.js";
 import { CanonicalJsonError } from "./canonical.js";
+import { fieldAwardsPlanHash, normaliseName, parseFieldAwardsSheet, planFieldAwardsImport } from "./field-awards-import.js";
+import type { BaseAward, FieldAwardsPlan, PlannedAward, SheetAward } from "./field-awards-import.js";
 import { ContentDocumentsService } from "./content-documents.service.js";
 import { findDraft, lockDraft, saveDraft } from "./draft-store.js";
 import {
@@ -65,6 +74,24 @@ export type PublishResult = {
   manifestVersion: string;
 };
 
+type AwardsImportPlanned = { plan: FieldAwardsPlan; merged: DraftEdits; publishedVersion: number | null; draftVersion: number };
+
+type AwardsImportView = {
+  /** The version in force and the draft revision the plan was made against. */
+  publishedVersion: number | null;
+  draftVersion: number;
+  counts: FieldAwardsPlan["counts"];
+  /** Present this as ?confirm= when applying a plan with `requiresConfirm`. */
+  planHash: string;
+  requiresConfirm: boolean;
+  /** Only the awards that change, in catalog order. */
+  awards: PlannedAward[];
+};
+export type FieldAwardsImportDryRun = { dryRun: true } & AwardsImportView;
+export type FieldAwardsImportApplied =
+  | ({ applied: false } & AwardsImportView)
+  | ({ applied: true; file: { fileName: string; sha256: string; byteSize: number; blobKey: string } } & AwardsImportView);
+
 type Preview = {
   published: Record<string, unknown> | undefined;
   publishedVersion: number | null;
@@ -92,6 +119,7 @@ export class ContentAdminService {
   constructor(
     private readonly database: DatabaseService,
     private readonly documents: ContentDocumentsService,
+    @Inject(BLOB_STORE) private readonly blobs: BlobStore,
   ) {}
 
   async list(): Promise<DraftView[]> {
@@ -223,6 +251,126 @@ export class ContentAdminService {
   }
 
   // ---------------------------------------------------------------------------------------------------------------
+  // Re-importing a later Field Awards sheet (slice A2). The sheet becomes edits in the field-awards DRAFT; publishing is the
+  // ordinary publish route, so nothing reaches players until staff publish.
+
+  /** Plans without writing or storing anything. A plan with any error is 422 import_invalid and carries the report. */
+  async dryRunFieldAwardsImport(bytes: Uint8Array): Promise<FieldAwardsImportDryRun> {
+    const sheet = await this.readAwardsSheet(bytes);
+    return this.database.withTransaction(async (tx) => {
+      const planned = await this.planAwardsImport(tx, sheet);
+      return { dryRun: true, ...this.awardsImportView(planned) };
+    }, READ_SNAPSHOT);
+  }
+
+  /**
+   * Writes the plan into the draft. A plan that changes anything needs `confirm` = the planHash of a dry run (missing: 422
+   * import_invalid; the draft or the version in force moved since: 409 plan_changed). The hash covers the draft revision, so an
+   * edit that landed after the dry run can never be overwritten or silently merged: the confirm goes stale. The write is the PATCH
+   * path: per-name advisory lock, draft revision + 1, a history entry (principal, action "import", the file's sha256). The original
+   * file is stored first (content-addressed, kept). A plan with no change writes and stores nothing (`applied: false`).
+   */
+  async applyFieldAwardsImport(bytes: Uint8Array, fileName: string, principal: string, confirm?: string): Promise<FieldAwardsImportApplied> {
+    const sheet = await this.readAwardsSheet(bytes);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const early = await this.database.withTransaction(async (tx) => this.planAwardsImport(tx, sheet), READ_SNAPSHOT);
+    this.assertAwardsConfirmed(early, confirm); // fail before storing anything
+    if (early.plan.awards.length === 0) return { applied: false, ...this.awardsImportView(early) };
+
+    const blobKey = `imports/field-awards/${sha256}.xlsx`;
+    await storeImportBlob(this.blobs, this.logger, blobKey, bytes);
+
+    const result = await this.database.withTransaction(async (tx) => {
+      await lockDraft(tx, "field-awards");
+      await lockSeed(tx);
+      const { edits, draftVersion } = await this.loadEdits(tx, "field-awards");
+      const locked = await this.planAwardsImport(tx, sheet, { edits, draftVersion });
+      this.assertAwardsConfirmed(locked, confirm);
+      if (locked.plan.awards.length === 0) return { applied: false as const, ...this.awardsImportView(locked) };
+      const merged = withHistory(locked.merged as DraftEdits, principal, "import", draftVersion + 1, new Date(), sha256);
+      const saved = await saveDraft(tx, "field-awards", draftVersion, merged, principal);
+      this.logger.log(`${principal} imported ${fileName} (${sha256.slice(0, 12)}) into the field-awards draft: ${locked.plan.counts.fieldChanges} field change(s)`);
+      return { applied: true as const, ...this.awardsImportView(locked), draftVersion: saved, file: { fileName, sha256, byteSize: bytes.length, blobKey } };
+    });
+    return result;
+  }
+
+  private async readAwardsSheet(bytes: Uint8Array): Promise<{ rows: SheetAward[]; issues: ImportIssue[] }> {
+    try {
+      return parseFieldAwardsSheet(await readFirstSheet(bytes));
+    } catch (error) {
+      if (error instanceof SpreadsheetError) throw new ApiError(400, "invalid_request", error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Matches the sheet to the awards of the preview (version in force + draft overlay), diffs it, and runs the document validators on the
+   * result. Any problem is 422 import_invalid with the full report. `merged` = the overlay with the plan's edits in it.
+   */
+  private async planAwardsImport(
+    db: Reader,
+    sheet: { rows: SheetAward[]; issues: ImportIssue[] },
+    known?: { edits: DraftEdits; draftVersion: number },
+  ): Promise<AwardsImportPlanned> {
+    const { edits, draftVersion } = known ?? (await this.loadEdits(db, "field-awards"));
+    const preview = await this.preview(db, "field-awards", edits);
+    const catalogTitle = new Map<string, string>(FIELD_AWARD_CATALOG.map((d) => [d.id, d.title]));
+    const publishedTitle = new Map<string, string>(((preview.published?.["awards"] as { id: string; title: string }[] | undefined) ?? []).map((a) => [a.id, a.title]));
+    const base: BaseAward[] = (preview.body["awards"] as (Omit<BaseAward, "names"> & { title: string })[]).map((a) => ({
+      id: a.id,
+      title: a.title,
+      criteria: a.criteria,
+      target: a.target,
+      thresholdCell: a.thresholdCell,
+      names: [...new Set([catalogTitle.get(a.id), publishedTitle.get(a.id), a.title].filter((n): n is string => n !== undefined).map(normaliseName))],
+    }));
+    const plan = planFieldAwardsImport(sheet.rows, sheet.issues, base);
+    let merged: DraftEdits = edits;
+    if (plan.issues.length === 0 && plan.awards.length > 0) {
+      merged = mergeEdits("field-awards", edits, { awards: plan.awards.map(({ id, changes }) => ({ id, ...Object.fromEntries(changes.map((c) => [c.field, c.to])) })) });
+      const after = await this.preview(db, "field-awards", merged);
+      try {
+        validateDocument("field-awards", after.body, after.next);
+      } catch (error) {
+        if (!(error instanceof DocumentValidationError || error instanceof CanonicalJsonError)) throw error;
+        plan.issues.push({ row: 0, level: "error", message: `The Field Awards document would not be valid: ${error.message}` });
+      }
+    }
+    if (plan.issues.length > 0) {
+      throw new ApiError(422, "import_invalid", `The import has ${plan.issues.length} error(s); nothing was imported.`, {}, { report: plan.issues });
+    }
+    return { plan, merged, publishedVersion: preview.publishedVersion, draftVersion };
+  }
+
+  private awardsImportView(planned: AwardsImportPlanned) {
+    return {
+      publishedVersion: planned.publishedVersion,
+      draftVersion: planned.draftVersion,
+      counts: planned.plan.counts,
+      planHash: fieldAwardsPlanHash(planned, planned.plan),
+      requiresConfirm: planned.plan.awards.length > 0,
+      awards: planned.plan.awards,
+    };
+  }
+
+  private assertAwardsConfirmed(planned: AwardsImportPlanned, confirm: string | undefined): void {
+    if (confirm === undefined) {
+      if (planned.plan.awards.length === 0) return;
+      throw new ApiError(
+        422,
+        "import_invalid",
+        `This import would change ${planned.plan.awards.length} Field Award(s) in the draft. Run it with ?dryRun=true first, review the changes, then repeat it with ?confirm=<planHash> from that dry run. Nothing was imported.`,
+      );
+    }
+    if (confirm !== fieldAwardsPlanHash(planned, planned.plan)) {
+      throw new ApiError(
+        409,
+        "plan_changed",
+        "The draft or the version in force changed since the dry run, so the confirmed plan no longer applies. Run a new dry run and review it. Nothing was imported.",
+      );
+    }
+  }
 
   private async view(db: Reader, name: ContentDocumentName): Promise<DraftView> {
     const { edits, draftVersion } = await this.loadEdits(db, name);

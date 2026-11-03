@@ -29,6 +29,7 @@ export default defineConfig({
       "test/content-documents.test.ts",
       "test/logbook.test.ts",
       "test/content-publish.test.ts", "test/rate-limit-store.test.ts",
+      "test/field-awards-import.test.ts",
     ],
   },
 });

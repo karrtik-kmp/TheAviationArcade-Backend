@@ -81,6 +81,7 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   // Default headers, and no X-Powered-By. Before the body parser so a 413 carries them too.
   app.useSecurityHeaders();
   app.use("/v1/admin/content/:module/imports", staffBodyReader(app, readXlsx));
+  app.use("/v1/admin/content/documents/field-awards/imports", staffBodyReader(app, readXlsx));
   app.use("/v1/admin/content/:module/trip-coverage", staffBodyReader(app, readCoverageJson));
   // JSON only (no urlencoded). Round results are a few hundred bytes; 16 KB is generous.
   app.useBodyParser("json", { limit: "16kb" });

@@ -93,22 +93,24 @@ export const publishRequest = z.strictObject({ draftVersion, note: text(300).opt
 const MAX_HISTORY = 1000;
 const historyEntry = z.strictObject({
   principal: z.string().min(1).max(256),
-  action: z.enum(["edit", "discard"]),
+  action: z.enum(["edit", "discard", "import"]),
   at: z.string().max(40),
   draftVersion: z.number().int().min(1),
+  /** action "import" only: sha256 of the uploaded sheet (the file is kept in the BlobStore under that digest). */
+  fileSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 const history = z.array(historyEntry).max(MAX_HISTORY).optional();
 export type HistoryEntry = z.infer<typeof historyEntry>;
 
 // What is stored in content_drafts.edits. Parsed again on every read, so a hand-edited row cannot reach a published document.
-const storedAward = z.strictObject({
+export const STORED_AWARD = z.strictObject({
   title: text(200).optional(),
   criteria: text(2000).optional(),
   target: z.number().int().min(1).max(MAX_TARGET).optional(),
   hidden: z.boolean().optional(),
 });
 export const STORED_EDITS = {
-  "field-awards": z.strictObject({ awards: z.partialRecord(z.enum(FIELD_AWARD_IDS), storedAward).optional(), history }),
+  "field-awards": z.strictObject({ awards: z.partialRecord(z.enum(FIELD_AWARD_IDS), STORED_AWARD).optional(), history }),
   "clipper-cards": z.strictObject({ names: z.record(cardKey, text(500)).optional(), history }),
   "aircraft-tags": z.strictObject({ tags: z.record(cardKey, z.array(z.enum(AIRCRAFT_TAGS)).refine(distinct)).optional(), ackClientTagRemoval: z.record(cardKey, z.literal(true)).optional(), history }),
 } as const;
@@ -123,8 +125,15 @@ export type DraftEdits = {
 };
 
 /** The overlay with one more history entry (the newest 1000 are kept). */
-export function withHistory(edits: DraftEdits, principal: string, action: "edit" | "discard", draftVersion: number, at: Date): DraftEdits {
-  const entry: HistoryEntry = { principal, action, at: at.toISOString(), draftVersion };
+export function withHistory(
+  edits: DraftEdits,
+  principal: string,
+  action: "edit" | "discard" | "import",
+  draftVersion: number,
+  at: Date,
+  fileSha256?: string,
+): DraftEdits {
+  const entry: HistoryEntry = { principal, action, at: at.toISOString(), draftVersion, ...(fileSha256 !== undefined ? { fileSha256 } : {}) };
   return { ...edits, history: [...(edits.history ?? []), entry].slice(-MAX_HISTORY) };
 }
 
