@@ -43,5 +43,9 @@ sign-off.
   behaviour against current official docs, not memory.
 - Delegate scoped implementation to subagents with explicit file ownership; get an independent review
   for non-trivial changes; integrate and verify yourself.
+- Named agents: user-level `senior-lead`, `backend-expert`, `frontend-expert`, `devops-expert`, `researcher`,
+  `implementer`, `code-reviewer` (`~/.claude/agents/`); repo-level `game-domain-expert`, `rules-sync`
+  (`.claude/agents/`). Per wave: plan → `senior-lead` + the relevant experts in parallel → `implementer`s →
+  `code-reviewer` → commit. Tiny mechanical changes skip the plan gate.
 - Focused commits, inspect staged files, record actual verification in `docs/TASKS.md`.
 - Work on `main` (no worktrees or side branches); push to `origin` after each verified piece.
