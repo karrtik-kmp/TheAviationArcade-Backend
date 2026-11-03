@@ -37,7 +37,7 @@ A repository class per table (services own their SQL; add a cross-aggregate serv
 case spans two) · a response envelope repeating the status, or non-HTTP codes (433/327) · our own JWT/
 password/OTP auth (Firebase owns credentials) · HMAC request signing (the secret ships in the app; use
 Firebase App Check later if genuine-app proof is needed) · runtime secret fetch from Infisical (secrets come
-from the host's environment/secret manager) · player uploads/multer (the one upload we do accept is a staff-only xlsx on `/v1/admin/content/:module/imports`: route-scoped raw body, 5 MB, nothing else changes) · socket.io · nodemailer/Twilio/OTP
+from the host's environment/secret manager) · player uploads/multer (the uploads we do accept are role-gated and route-scoped, raw body only: a staff xlsx on `/v1/admin/content/:module/imports` and a JPEG/PNG on `/v1/admin/media`, 5 MB each; players never upload) · image resizing or transcoding, a public image URL or a URL stored in a row (links are signed per request) · socket.io · nodemailer/Twilio/OTP
 (Firebase handles email flows) · Stripe/PayPal (the product sells nothing on the web; digital goods go
 through the stores) · mongodump-style restore scripts (use the managed Postgres provider's backups / PITR)
 · `google-play-billing-validator` (stale; use the Play Developer API v3 directly).
@@ -112,11 +112,42 @@ Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only ke
   objects. The first files stored are staff xlsx imports at `backend/imports/<module>/<sha256>.xlsx`. Built and
   tested against an in-memory fake and a stubbed signer; the real zone is probed only with the user's sign-off
   (`npm run bunny:check`).
-- Private by default: no public pull zone for originals; serve through authenticated routes or
-  short-lived signed URLs. A public CDN pull zone only for content that is meant to be public.
+- Private by default: the Storage Zone itself is never public and files there can only be read with the zone
+  password. Game images are delivered through one token-authenticated pull zone with short-lived signed links (below).
 - The read-write Storage Zone Password (S3 secret) comes from the host environment, never the repo or
   logs; not the Bunny account API key. No zone creation or other Bunny account change without user sign-off.
 - Verify with a probe like the website's `npm run bunny:check` (upload one random object, compare bytes, delete).
+
+### Game images (media pipeline; [ADR-0001](adr/ADR-0001-image-storage-and-delivery.md), plan [media-pipeline](plans/media-pipeline.md))
+
+Built and in API 0.16.0, tested against the in-memory blob store and a stubbed signer. Nothing here has run against the
+real Bunny zone: the pull zone, token key and Edge Rules are created only with the user's sign-off (plan T10).
+
+- **Storage.** Image bytes are content-addressed in the shared zone at `backend/content/photos/<sha256>.<jpg|png>` (the
+  extension follows the sniffed type; JPEG and PNG only, 5 MB). The same bytes always land on the same key.
+- **Upload path.** Backend only: staff post the raw image to `/v1/admin/media` (and `.../versions`), authorised by role
+  (`photographer` for own items, `admin` for all). A pure sniffer checks magic bytes and reads the dimensions; the
+  blob is put first, then the rows are written. The website and Unity never write to Bunny.
+- **Tables.** `media_items` is the image (owner, state `unverified` | `published` | `withdrawn`, a draft version
+  pointer, a published version pointer, an optimistic `revision`); `media_versions` holds one row per upload: path,
+  hash, size, type, dimensions and the **licence fields of that version** (credit, licence name and URL, credit-required
+  flag). A version is draft until published. A version that was ever live is never changed: new bytes or a new licence
+  make a new version, and an old live version stays as it was for any release that froze it. No row stores a URL.
+- **Delivery.** One Bunny pull zone on the shared zone with zone-wide advanced token authentication. The backend signs
+  one HS256 link per file (`src/platform/cdn-signer.ts`): valid 24 h, **one signature per file, no IP binding**. The
+  token key (`BUNNY_CDN_TOKEN_KEY`) lives only in the backend environment and is never logged, stored or returned; the
+  host is `BUNNY_CDN_HOST` with no default. Both are set or neither, both are required in production, and while they are
+  set `BUNNY_STORAGE_PREFIX` must be `backend/` (the signer only signs paths under `/backend/content/photos/`).
+  Without them (outside production) a preview carries `url: null` with reason `cdn_not_configured`.
+- **Edge Rules (planned, plan T10, not created yet).** Block every request outside `/backend/content/photos/` (token auth
+  covers the whole pull zone, so this keeps the website's private photos and the other `backend/` objects unreachable),
+  edge cache 1 year (the path is a content hash), browser cache 24 h (matches the link lifetime).
+- **Who gets links.** Staff: `GET /v1/admin/media/{mediaId}` returns a signed preview of the item's draft version in any
+  state (photographers only for their own items; the list route carries no links). `GET /v1/media?ids=` (any signed-in
+  caller, the website's server included, at most 50 ids) returns `ImageRef`s for **published** items only and signs the
+  published version with its frozen licence; unknown, unpublished and withdrawn ids are simply absent.
+- **Not built yet.** `ImageRef` on dealt Trips and Rounds (T9 / R4) and releases that freeze media versions (R2), both
+  Wave B; Plane of the Day.
 
 ## Admin content store (Phase 5.0, decided 2026-10-28, user)
 
@@ -171,7 +202,7 @@ Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only ke
 - **Callers.** The website reaches this API server-to-server through its Worker; browsers never call it, so there is
   no CORS configuration (none is added).
 - **Not built (follow-ups).** Releases and versioned packages, player content delivery, server answer checks,
-  photo upload and serving, edit-in-place endpoints, importers for the other seven modules, Field
+  edit-in-place endpoints, importers for the other seven modules, Field
   Awards (the backend owns the catalog, thresholds and progress since C12, 2026-10-28; built after the Trips contract),
   website integration.
 

@@ -58,7 +58,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
 
 ### Phase 0: roles (ADR-0002) — before any media route
 
-- [ ] **R-a: `account_roles` schema and the roles guard** — M
+- [x] **R-a: `account_roles` schema and the roles guard** — M
   - Migration **0016**: `account_roles` (principal, role `player|photographer|admin`, state
     `pending|active|rejected|revoked`, requested_at, decided_at, decided_by, note; unique (principal, role)); audit actions
     `role_request`, `role_approve`, `role_reject`, `role_grant`, `role_revoke`; TS lists + S5 parity. `RolesGuard` +
@@ -71,7 +71,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Verify: typecheck, unit, e2e; `db:generate` second run no changes.
   - Files: `src/db/schema.ts`, `src/db/enums.ts`, `drizzle/0016*`, `src/auth/staff.ts` (→ roles guard),
     `src/config/config.module.ts`, admin controllers' decorators, tests. Depends on: none.
-- [ ] **R-b: role registration and decisions** — M
+- [x] **R-b: role registration and decisions** — M
   - **One lock, re-checked actor, revision fence.** Every role-changing transaction (request, approve, reject, admin grant,
     revoke, signup `player`, the operator command) first takes `pg_advisory_xact_lock(hashtextextended('account-roles', 0))`,
     then re-reads that the actor still holds an active `admin` row (403 `forbidden` otherwise; the operator is exempt), then
@@ -119,7 +119,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
     `src/players/players.service.ts`, `src/app.module.ts`, `src/common/errors.ts` (only if a code is added; none planned),
     `docs/openapi.yaml`, `test/api.test.ts` (route count), `test/openapi.e2e.test.ts`, new role e2e tests. Not
     `schema.ts`/`enums.ts`: the schema lands in 0016 with R-a. Depends on: R-a committed.
-- [ ] **R-c: `npm run roles:grant -- <uid> --yes` operator command** — S
+- [x] **R-c: `npm run roles:grant -- <uid> --yes` operator command** — S
   - First admin and recovery only (user, 2026-11-03): accepts only `admin`; refuses when any active admin exists; builds
     the principal from the configured `FIREBASE_PROJECT_ID` with the shared principal helper (refuses a full principal of
     another project, a bad uid, and the `demo-airplane-games` project when `APP_ENV=production`); prints the target
@@ -132,13 +132,13 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
 
 ### Checkpoint 0 (after R-a–R-c)
 
-- [ ] green suites; `code-reviewer` (security focus: no privilege without a decision, last-admin invariant, stale
+- [x] green suites; `code-reviewer` (security focus: no privilege without a decision, last-admin invariant, stale
   decisions); commit; push; message the website session (its `STAFF_EMAILS` rule is superseded for backend routes;
   `GET /v1/me/roles` and the request route for its photographer screens).
 
 ### Phase 0b: role follow-ups (user, 2026-11-03, from the website's adoption of ADR-0002)
 
-- [ ] **R-d: role block, typed admin email, email edit** — M (gate: senior-lead + backend-expert, APPROVE WITH CHANGES,
+- [x] **R-d: role block, typed admin email, email edit** — M (gate: senior-lead + backend-expert, APPROVE WITH CHANGES,
   all folded in below)
   - **Why.** The website moves its staff screens fully to backend roles (website session, 2026-11-03). User rulings:
     (1) an admin row shows an email **typed at grant**, display only, never used for authorisation, and an admin can
@@ -209,7 +209,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
 
 ### Phase 1: foundation
 
-- [ ] **T0: Record the media contract as `x-planned`** — S
+- [x] **T0: Record the media contract as `x-planned`** — S
   - Add the staff routes (`POST /v1/admin/media`, `POST .../{mediaId}/versions`, `PATCH .../{mediaId}`,
     `POST .../publish`, `POST .../withdraw`, `GET /v1/admin/media`, `GET .../{mediaId}`,
     `PUT /v1/admin/content/{module}/items/{id}/media`), `GET /v1/media?ids=`, schemas `MediaItem`, `MediaLicence`,
@@ -227,7 +227,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Verify: `npm run test:e2e -- openapi` green; `npm test` green.
   - Files: `docs/openapi.yaml`, `test/openapi.e2e.test.ts` (planned path samples). Depends on: R-b (same hot files;
     lane 1, after R-b).
-- [ ] **T1: Pure image sniffer and CDN link signer** — S
+- [x] **T1: Pure image sniffer and CDN link signer** — S
   - `src/content/media/image-sniff.ts`: JPEG (SOI + SOFn dimensions) and PNG (signature + IHDR) only; returns type,
     width, height or a reason. `src/platform/cdn-signer.ts`: Bunny advanced token `HS256-` + base64url(HMAC-SHA256(key,
     path + expires [+ sorted signed params])), per-file path, no IP, query form `?token=&expires=`.
@@ -236,7 +236,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
     `/backend/content/photos/`.
   - Verify: unit tests (added to the `vitest.config.ts` include list).
   - Files: the two sources, two tests, `vitest.config.ts`. Depends on: none. **Parallel with T0.**
-- [ ] **T2: Schema and migration 0017** — M
+- [x] **T2: Schema and migration 0017** — M
   - `media_items`: `id bigint GENERATED ALWAYS AS IDENTITY` (rendered `med-<n>` in the API, parsed strictly with
     `^med-[1-9][0-9]{0,14}$`, 15 digits so ids stay JS-safe integers), `owner` (uploader principal), `state` (`unverified|published|withdrawn`, TS-list parity),
     `revision` (>= 1, the optimistic fence for every write: licence, state, new version), `draft_version` (latest upload)
@@ -267,11 +267,11 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
 
 ### Checkpoint A (after T0–T2)
 
-- [ ] typecheck, unit, e2e green; independent review of T0–T2; commit per task; push.
+- [x] typecheck, unit, e2e green; independent review of T0–T2; commit per task; push.
 
 ### Phase 2: staff media
 
-- [ ] **T3: Upload a new media item** — M
+- [x] **T3: Upload a new media item** — M
   - `POST /v1/admin/media` (raw bytes through a route-scoped body reader, 5 MB, `@Roles("photographer")` (admin
     included), required
     `Idempotency-Key`). Sniff → hash → `put` `content/photos/<sha256>.<ext>` → `get` and compare the hash → one
@@ -284,7 +284,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Verify: e2e `test/media.e2e.test.ts` against `MemoryBlobStore`; the route moves from `x-planned` to built in openapi.
   - Files: `src/content/media/{media.module,media.controller,media.service}.ts`, `src/app.setup.ts`,
     `src/app.module.ts`, `docs/openapi.yaml`, `src/common/errors.ts`, the test. Depends on: T1, T2.
-- [ ] **T4: New version, licence edit, publish, withdraw** — M
+- [x] **T4: New version, licence edit, publish, withdraw** — M
   - `POST .../{mediaId}/versions` (required `Idempotency-Key`, `?revision=`), `PATCH .../{mediaId}` `{ revision, licence?,
     note? }` (strict; absent keeps a field, `null` clears it; edits the draft version's licence), `POST .../publish` and
     `.../withdraw` `{ revision }` (`@Roles("admin")`). **Licence edits never touch the live version** (lead, from
@@ -305,11 +305,11 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Files: media service/controller, openapi, the test. Depends on: T3.
 ### Checkpoint B (after T3–T4)
 
-- [ ] green suites; independent review; commit; push.
+- [x] green suites; independent review; commit; push.
 
 ### Phase 3: reading images
 
-- [ ] **T5: Staff list and get with a preview link** — M
+- [x] **T5: Staff list and get with a preview link** — M
   - `GET /v1/admin/media?state=&cursor=&limit=` (newest first, `limit` <= 100, opaque cursor) and
     `GET .../{mediaId}` (item, version history, preview `ImageRef` signed in any state). Photographers see only their
     own items; admins see all. Config `BUNNY_CDN_HOST` and
@@ -319,7 +319,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
     T1 signer; the key never appears in logs or responses.
   - Verify: e2e; config unit tests.
   - Files: media controller/service, `src/config/config.module.ts`, `.env.example`, tests. Depends on: T1, T4.
-- [ ] **T6: Link a content item to a media item** — S
+- [x] **T6: Link a content item to a media item** — S
   - `PUT /v1/admin/content/{module}/items/{id}/media` (`@Roles("admin")`) `{ mediaId | null, expectedVersion }` through the A1 edit service
     (module lock, version bump, `content_media_link` audit); items list and export gain a `mediaId` column (import
     ignores it).
@@ -328,7 +328,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Verify: e2e in `test/content-items-edit.e2e.test.ts`.
   - Files: `src/content/content-item-edit.service.ts`, `content.controller.ts`, `content.service.ts` (list/export),
     openapi, the test. Depends on: T2. **Parallel with T5** (disjoint files).
-- [ ] **T7: Website batch read** — S
+- [x] **T7: Website batch read** — S
   - `GET /v1/media?ids=` (signed-in caller, at most 50 ids, `published` only; others absent), `X-Client: web` accepted
     as today.
   - Acceptance: unpublished, withdrawn and unknown ids are absent (no 404); response order follows `ids`; links signed per
@@ -338,12 +338,12 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
 
 ### Checkpoint C (after T5–T7)
 
-- [ ] green suites; independent review over T5–T7; commit; push; message the website and Unity sessions with the
+- [x] green suites; independent review over T5–T7; commit; push; message the website and Unity sessions with the
   contract (ADR-0001 action item 6).
 
 ### Phase 4: documentation and live setup
 
-- [ ] **T8: Docs and config surface** — S
+- [x] **T8: Docs and config surface** — S
   - README env table (`BUNNY_CDN_HOST`, `BUNNY_CDN_TOKEN_KEY`), ARCHITECTURE "File storage" (pull zone, token auth, Edge
     Rules, media table), `docs/TASKS.md` row 5.R and the verification record, design doc §2 cross-references.
   - Verify: links resolve; no secret values.

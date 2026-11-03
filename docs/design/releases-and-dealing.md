@@ -90,6 +90,14 @@ The pull zone, token key and Edge Rules (ADR-0001) are created only with that si
 
 ## 2. Photos (in scope now)
 
+> **Status 2026-11-03.** Superseded in shape by [Backend ADR-0001](../adr/ADR-0001-image-storage-and-delivery.md) and
+> [the media plan](../plans/media-pipeline.md): the built storage is `media_items` / `media_versions` (migration 0017, not the
+> `content_photos` table below), the routes are `/v1/admin/media*`, `PUT /v1/admin/content/{module}/items/{id}/media` and
+> `GET /v1/media` (API 0.16.0), and delivery is the token-signed Bunny pull zone of §2.3. See
+> [ARCHITECTURE "Game images"](../ARCHITECTURE.md#game-images-media-pipeline-adr-0001-plan-media-pipeline). The text below
+> is the earlier design, kept for the record. **Still open for Wave B:** `ImageRef` on dealt Trips and Rounds (T9 / R4),
+> releases that freeze the media versions they use (R2), the live pull zone and Edge Rules (T10, needs sign-off), and Plane of the Day. Migrations 0016 (roles), 0017 (media) and 0018 are taken, so the migration numbers named below shift: releases come after 0018.
+
 ### 2.1 Tables (migration 0016)
 
 `content_photos` (insert-only, trigger refuses UPDATE/DELETE): `sha256` text PK (`^[0-9a-f]{64}$`), `content_type`
@@ -113,7 +121,7 @@ edits, retire, restore never touch it). `admin_audit_action_check` gains `photo_
 ### 2.3 Serving to players
 
 Decided in [Backend ADR-0001](../adr/ADR-0001-image-storage-and-delivery.md) (user, 2026-11-03), replacing the
-earlier backend-streamed recommendation: a Bunny pull zone on the shared zone with zone-wide token authentication;
+earlier backend-streamed recommendation (built in the media plan T1-T7; see the status note above): a Bunny pull zone on the shared zone with zone-wide token authentication;
 the backend signs one HS256 link per file (24 h, no IP binding, key `BUNNY_CDN_TOKEN_KEY`, host `BUNNY_CDN_HOST`) only
 for callers allowed to see the image (unverified: staff; published: any signed-in player and the website); an Edge
 Rule blocks everything outside `/backend/content/photos/`; edge cache 1 year, device cache 24 h. The media row stores
@@ -338,7 +346,7 @@ derived ones; picks/matches/selections rules as ASSUMPTION tests; a `republish` 
 
 For the user:
 
-- **Q-U7 photo route: decided** (user, 2026-11-03): Bunny CDN with token-signed links, see Backend ADR-0001.
+- **Q-U7 photo route: decided** (user, 2026-11-03): Bunny CDN with token-signed links, see [Backend ADR-0001](../adr/ADR-0001-image-storage-and-delivery.md). Built (media plan T0-T8, API 0.16.0); not yet live on Bunny (T10) and not yet on dealt Trips and Rounds (T9 / R4).
 - **Q-U9 non-client content.** ATC, Call Sign and Code Search packs are public reference data (OurAirports, FAA JO 7340.2);
   Tail's labels and crops were authored by us. Moving them into the backend as content **contradicts "use only
   client-supplied content"**. Recommended: wait for the client's content, or explicitly allow reference data for these four.
