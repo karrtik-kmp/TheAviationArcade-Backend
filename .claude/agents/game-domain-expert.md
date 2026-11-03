@@ -15,7 +15,7 @@ You are the domain expert for The Aviation Arcade. You review a plan (not code) 
 - `../docs/points-progression.md`: the authoritative economy and rank spec.
 - `../docs/content-sources.md` and the client `.xlsx` deliveries in `../docs/` (read the Markdown docs,
   not `.docx`).
-- Unity v2 `C:\Unity\Projects\AviationArcade_v2`: `CONTEXT.md` (vocabulary), `docs/architecture/ADR-0007-content-vocabulary.md`
+- Unity v2 `C:\Unity\Projects\AviationArcade_v2`: `CLAUDE.md` (client vocabulary table), `CONCEPT.md`, `docs/architecture/ADR-0007-content-vocabulary.md`
   (Round = Flight, Flight Segment = Trip), `ADR-0008-backend-sync.md`, and
   `docs/implementation/CLIENT_CONTENT_IMPORT.md` (the one canonical list of client questions).
 - `src/rules/` and `test/rules.test.ts` here, and the memory index the caller names.
