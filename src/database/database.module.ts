@@ -50,7 +50,7 @@ export function poolOptions(
 
 /**
  * The rate limiter's own small pool, so a flood of limiter calls cannot take connections or wait on locks
- * from gameplay. Waits are short on purpose: a limiter call that cannot run quickly fails open (see
+ * from gameplay. Waits are short on purpose (statement and lock 500 ms, connection 1.5 s):a limiter call that cannot run quickly fails open (see
  * PostgresThrottlerStorage) instead of holding a request. Same database URL and TLS settings as the main pool.
  */
 export function limiterPoolOptions(
@@ -60,8 +60,12 @@ export function limiterPoolOptions(
     connectionString: config.databaseUrl,
     ssl: sslOptions(config),
     max: config.rateLimitPoolMax,
-    connectionTimeoutMillis: 250,
-    idleTimeoutMillis: 30_000,
+    // One timeout covers both establishing a connection (TLS + SCRAM, possibly cross-region) and waiting in the queue for a
+    // free client; pg-pool cannot separate them. A queue timeout fails open for that request only (isPoolAcquireTimeout).
+    connectionTimeoutMillis: 1500,
+    // pg-pool never reaps the last client for idleness (min), so a quiet instance does not reconnect on every request.
+    min: 1,
+    idleTimeoutMillis: 5 * 60_000,
     keepAlive: true,
     application_name: "airplane-games-backend-ratelimit",
     statement_timeout: 500,

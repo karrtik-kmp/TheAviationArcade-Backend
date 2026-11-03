@@ -18,8 +18,26 @@ export const CLEANUP_BATCH = 500;
 export const CLEANUP_BUDGET_MS = 200;
 /** After a pass that ran out of budget with rows left, the next pass may start this soon instead of after the interval. */
 export const CLEANUP_BACKLOG_RETRY_MS = 5_000;
-/** Upper bound on remembered refusals per process (entries also expire on their own). */
+/** Upper bound on remembered refusals per process (entries also expire on their own). At the cap the oldest inserted entry is evicted. */
 export const LOCAL_REFUSAL_MAX = 10_000;
+/** Waiting for a free limiter connection is repeated in the log at most this often. */
+export const POOL_BUSY_WARN_MS = 60_000;
+/** The message pg-pool gives a request that waited connectionTimeoutMillis in its queue for a free client (pg-pool/index.js). */
+const POOL_ACQUIRE_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
+
+/**
+ * True when the error is pg-pool's "no free client within connectionTimeoutMillis" (a busy pool), as opposed to a failure to
+ * establish a connection ("Connection terminated due to connection timeout", ECONNREFUSED, auth, TLS) or a statement error.
+ * Drizzle may wrap driver errors, so the `cause` chain is followed.
+ */
+export function isPoolAcquireTimeout(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current.message === POOL_ACQUIRE_TIMEOUT_MESSAGE) return true;
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /** The library does not export its record type from the package root. */
 export type ThrottlerStorageRecord = Awaited<ReturnType<ThrottlerStorage["increment"]>>;
@@ -47,8 +65,8 @@ export function hashKey(key: string): string {
  * 0014): a row-locked, atomic port of the library's own ThrottlerStorageService.increment, evaluated on the database clock,
  * so results match the in-memory store for the same sequence of requests.
  *
- * Isolation from gameplay: in the app this runs on its own small pool (limiterPoolOptions: 250 ms to get a connection,
- * 500 ms statement and lock timeout), so a flood of limiter calls cannot take connections from, or wait on locks held by,
+ * Isolation from gameplay: in the app this runs on its own small pool (limiterPoolOptions: 1.5 s to establish a connection
+ * or to wait for a free one, 500 ms statement and lock timeout, one connection kept warm), so a flood of limiter calls cannot take connections from, or wait on locks held by,
  * gameplay transactions. Within one process, calls for the same key run one after another (the row lock would serialise
  * them in the database anyway), so a flood from one key holds at most one pool connection.
  *
@@ -64,33 +82,49 @@ export function hashKey(key: string): string {
  * the library reports repeated refusals differently under a punitive block, so that mode always asks the database). It is not consulted while degraded. If someone deletes the row
  * by hand, a locally remembered refusal can outlast it by up to one window.
  *
- * Failure policy: FAIL OPEN, to the library's in-memory store. If the counter call fails (database down, pool exhausted,
- * timeout), requests are not refused and are not delayed again for COUNTER_RETRY_MS: they are counted per process instead,
+ * Time: every interval here (refusal expiry, retry delay, reminder) is measured on a monotonic clock (performance.now), so a
+ * wall-clock step cannot stretch a remembered refusal beyond what the store would hold. Only `degradedSince` is wall time,
+ * for display.
+ *
+ * Failure policy: FAIL OPEN, to the library's in-memory store. If the counter call fails (database down, connection or
+ * statement error, timeout), requests are not refused and are not delayed again for COUNTER_RETRY_MS: they are counted per process instead,
  * so limits degrade to per-instance rather than disappearing, and a limiter fault never takes the API down. Failing closed
  * would turn a counter outage into an outage of every route. A warning is logged when the counter fails, repeated at most
  * every DEGRADED_REMINDER_MS while it stays down, and one line when it recovers. `degradedSince` is exposed (readiness
  * body). Readiness is not failed for it: the API still serves and limits still hold per instance, and a failing probe
  * would pull every instance out of rotation for a fault that taking them out cannot fix.
  *
+ * A busy pool is not a failed database: when a call waits connectionTimeoutMillis for a free limiter connection (pg-pool's
+ * queue timeout, see isPoolAcquireTimeout) only that one request is counted by the fallback; the process is not degraded
+ * and the next request asks the database again.
+ *
  * Cleanup of expired rows is opportunistic: a bounded, fire-and-forget pass at most once per CLEANUP_INTERVAL_MS per
- * process that deletes batches until one comes back short or CLEANUP_BUDGET_MS has passed. Its failure is ignored.
+ * process that deletes batches until one comes back short or CLEANUP_BUDGET_MS has passed. Its failure is ignored. It never
+ * competes with counter calls for the small pool: a pass is skipped, or stops between batches, when callers are waiting
+ * for a client or no client is idle.
  */
 export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplicationShutdown {
   private readonly logger = new Logger("RateLimit");
   private readonly fallback = new ThrottlerStorageService();
-  private degradedUntil = 0;
+  private degradedUntil = Number.NEGATIVE_INFINITY;
   private degradedSinceMs: number | undefined;
+  private degradedSinceMono = 0;
   private lastWarn = 0;
-  private lastCleanup = 0;
+  private lastBusyWarn = Number.NEGATIVE_INFINITY;
+  private lastCleanup = Number.NEGATIVE_INFINITY;
   private cleaning = false;
   private backlog = false;
   private readonly refusals = new Map<string, LocalRefusal>();
   private readonly chains = new Map<string, Promise<unknown>>();
 
-  /** `ownedPool`, when given, is closed on shutdown. */
+  /**
+   * `ownedPool`, when given, is closed on shutdown and consulted so cleanup yields to counter calls. `clock` is a monotonic
+   * millisecond source (tests inject their own).
+   */
   constructor(
     private readonly database: Pick<DatabaseService, "db">,
     private readonly ownedPool?: pg.Pool,
+    private readonly clock: () => number = () => performance.now(),
   ) {}
 
   /** When the shared counter was first found unavailable (ms since epoch), or undefined while it works. */
@@ -137,7 +171,7 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
     blockDuration: number,
     throttlerName: string,
   ): Promise<ThrottlerStorageRecord> | ThrottlerStorageRecord | undefined {
-    const now = Date.now();
+    const now = this.clock();
     if (now < this.degradedUntil) return this.fallback.increment(key, ttl, limit, blockDuration, throttlerName);
     const refusal = this.refusals.get(id);
     if (!refusal) return undefined;
@@ -161,7 +195,7 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
     blockDuration: number,
     throttlerName: string,
   ): Promise<ThrottlerStorageRecord> {
-    const startedAt = Date.now();
+    const startedAt = this.clock();
     try {
       const result = await this.database.db.execute(
         sql`SELECT * FROM rate_limit_increment(${throttlerName}, ${hashKey(key)}, ${ttl}::bigint, ${limit}::integer, ${blockDuration}::bigint)`,
@@ -170,7 +204,7 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
       if (!row) throw new Error("rate_limit_increment returned no row");
       if (this.degradedSinceMs !== undefined) {
         this.logger.log(
-          `Shared rate-limit counter recovered after ${Math.round((Date.now() - this.degradedSinceMs) / 1000)} s.`,
+          `Shared rate-limit counter recovered after ${Math.round((this.clock() - this.degradedSinceMono) / 1000)} s.`,
         );
         this.degradedSinceMs = undefined;
       }
@@ -185,13 +219,24 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
       else this.refusals.delete(id);
       return record;
     } catch (error) {
-      const now = Date.now();
+      const now = this.clock();
+      if (isPoolAcquireTimeout(error)) {
+        // Every limiter connection was busy for the whole wait: this request only is counted per process.
+        if (now - this.lastBusyWarn >= POOL_BUSY_WARN_MS) {
+          this.lastBusyWarn = now;
+          this.logger.warn("No free rate-limit connection in time; counting this request per instance (pool busy).");
+        }
+        return this.fallback.increment(key, ttl, limit, blockDuration, throttlerName);
+      }
       this.degradedUntil = now + COUNTER_RETRY_MS;
       if (this.degradedSinceMs === undefined || now - this.lastWarn >= DEGRADED_REMINDER_MS) {
         const reason = error instanceof Error ? error.message : String(error);
         const since =
-          this.degradedSinceMs === undefined ? "" : ` (degraded for ${Math.round((now - this.degradedSinceMs) / 1000)} s)`;
-        this.degradedSinceMs ??= now;
+          this.degradedSinceMs === undefined ? "" : ` (degraded for ${Math.round((now - this.degradedSinceMono) / 1000)} s)`;
+        if (this.degradedSinceMs === undefined) {
+          this.degradedSinceMs = Date.now(); // wall time, display only
+          this.degradedSinceMono = now;
+        }
         this.lastWarn = now;
         this.logger.warn(`Shared rate-limit counter unavailable (${reason}); counting per instance until it recovers${since}.`);
       }
@@ -205,10 +250,11 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
       this.refusals.delete(id);
       return;
     }
+    // Map keeps insertion order: re-inserting moves a key to the back, and at the cap the front (oldest) goes. O(1).
+    this.refusals.delete(id);
     if (this.refusals.size >= LOCAL_REFUSAL_MAX) {
-      const now = Date.now();
-      for (const [k, v] of this.refusals) if (now >= v.safeUntil) this.refusals.delete(k);
-      if (this.refusals.size >= LOCAL_REFUSAL_MAX) return;
+      const oldest = this.refusals.keys().next();
+      if (!oldest.done) this.refusals.delete(oldest.value);
     }
     this.refusals.set(id, {
       limit,
@@ -221,9 +267,10 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
   }
 
   private maybeCleanup(): void {
-    const now = Date.now();
+    const now = this.clock();
     const wait = this.backlog ? CLEANUP_BACKLOG_RETRY_MS : CLEANUP_INTERVAL_MS;
     if (this.cleaning || now - this.lastCleanup < wait) return;
+    if (this.poolBusy()) return;
     this.cleaning = true;
     this.lastCleanup = now;
     void this.cleanup()
@@ -231,6 +278,12 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
       .finally(() => {
         this.cleaning = false;
       });
+  }
+
+  /** True when counter calls are waiting for a client, or no client is idle to spare. Always false without an owned pool. */
+  private poolBusy(): boolean {
+    const pool = this.ownedPool;
+    return pool !== undefined && (pool.waitingCount > 0 || pool.idleCount === 0);
   }
 
   /**
@@ -257,7 +310,7 @@ export class PostgresThrottlerStorage implements ThrottlerStorage, OnApplication
         this.backlog = false;
         return total;
       }
-      if (performance.now() - started >= budgetMs) {
+      if (performance.now() - started >= budgetMs || this.poolBusy()) {
         this.backlog = true;
         return total;
       }
