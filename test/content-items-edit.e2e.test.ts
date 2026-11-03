@@ -228,6 +228,23 @@ describe("PATCH an item", () => {
     expect((await row("mil-a4")).card_key).toBe(before);
   });
 
+  it("a Military item with no stored card_key (older than migration 0009) freezes the key of the PRE-edit answer", async () => {
+    await sql.query("UPDATE content_items SET card_key = NULL WHERE module = $1 AND id = 'mil-a4'", [MODULE]);
+    const res = await patch("mil-a4", { version: 1, data: await with_("mil-a4", { answer: "A Totally Different Aircraft" }) });
+    expect(res.status).toBe(200);
+    const after = await row("mil-a4");
+    expect(after.data.answer).toBe("A Totally Different Aircraft");
+    expect(after.card_key).toBe(militaryCardKey("Aircraft 4"));
+    // a rank-only edit of another null-key item also freezes it, from its unchanged answer
+    await sql.query("UPDATE content_items SET card_key = NULL WHERE module = $1 AND id = 'mil-a5'", [MODULE]);
+    expect((await patch("mil-a5", { version: 1, rank: "captain" })).status).toBe(200);
+    expect((await row("mil-a5")).card_key).toBe(militaryCardKey("Aircraft 5"));
+    // an unchanged request writes nothing, so the key stays null
+    await sql.query("UPDATE content_items SET card_key = NULL WHERE module = $1 AND id = 'mil-a6'", [MODULE]);
+    expect((await patch("mil-a6", { version: 1 })).body.changed).toBe(false);
+    expect((await row("mil-a6")).card_key).toBeNull();
+  });
+
   it("the export and the list reflect the edit, with the new version", async () => {
     await patch("mil-a2", { version: 1, data: await with_("mil-a2", { answer: "Exported Edit" }) });
     const res = await request(server)
@@ -293,6 +310,63 @@ describe("retire and restore", () => {
     expect(await coverage()).toBe(before - 1);
     await restore("mil-a1", { version: 2 });
     expect(await coverage()).toBe(before);
+  });
+});
+
+describe("re-uploading the client sheet after a staff change", () => {
+  const upload = (bytes: Buffer, query = "") => request(server).post(`${BASE}/imports${query}`).set(staff).set("Content-Type", XLSX_MIME).send(bytes);
+
+  it("with no staff change the identical sheet is still a replay (dry run and apply)", async () => {
+    const bytes = await clientSheet(6);
+    const dry = await upload(bytes, "?dryRun=true");
+    expect(dry.body).toMatchObject({ dryRun: true, replay: true });
+    const res = await upload(bytes);
+    expect(res.status).toBe(200);
+    expect(res.body.replayed).toBe(true);
+    // a card_key freeze (a Round) is not an edit
+    await sql.query("UPDATE content_items SET card_key = card_key WHERE module = $1", [MODULE]);
+    expect((await upload(bytes)).body.replayed).toBe(true);
+  });
+
+  it("a staff restore also counts: the same sheet is planned afterwards, not replayed", async () => {
+    const bytes = await clientSheet(6);
+    expect((await retire("mil-a3")).status).toBe(200);
+    expect((await restore("mil-a3", { version: 2 })).status).toBe(200);
+    const dry = await upload(bytes, "?dryRun=true");
+    expect(dry.body.replay).toBe(false);
+    const res = await upload(bytes, dry.body.requiresConfirm ? `?confirm=${dry.body.planHash}` : "");
+    expect(res.status).toBe(201);
+    expect(res.body.replayed).toBe(false);
+    expect(await row("mil-a3")).toMatchObject({ status: "approved", version: 3 });
+  });
+
+  it("a retired item comes back to approved when the same sheet is uploaded again (confirm flow)", async () => {
+    const bytes = await clientSheet(6);
+    expect((await retire("mil-a3")).status).toBe(200);
+    const dry = await upload(bytes, "?dryRun=true");
+    expect(dry.status).toBe(200);
+    expect(dry.body.replay).toBe(false);
+    expect(dry.body.requiresConfirm).toBe(true);
+    expect(dry.body.rows.find((r: { id: string }) => r.id === "mil-a3")).toMatchObject({ action: "update" });
+    expect((await upload(bytes)).status).toBe(422);
+    const res = await upload(bytes, `?confirm=${dry.body.planHash}`);
+    expect(res.status).toBe(201);
+    expect(res.body.replayed).toBe(false);
+    expect(await row("mil-a3")).toMatchObject({ status: "approved", version: 3, source: "client_sheet" });
+    expect((await upload(bytes)).body.replayed).toBe(true); // nothing changed since: a replay again
+  });
+
+  it("an edited item is restored to the client's data when the same sheet is uploaded again", async () => {
+    const bytes = await clientSheet(6);
+    const original = await dataOf("mil-a2");
+    expect((await patch("mil-a2", { version: 1, data: { ...original, answer: "Staff Wording" } })).status).toBe(200);
+    const dry = await upload(bytes, "?dryRun=true");
+    expect(dry.body.replay).toBe(false);
+    expect(dry.body.requiresConfirm).toBe(true);
+    const res = await upload(bytes, `?confirm=${dry.body.planHash}`);
+    expect(res.status).toBe(201);
+    expect(await dataOf("mil-a2")).toEqual(original);
+    expect(await row("mil-a2")).toMatchObject({ version: 3, source: "client_sheet" });
   });
 });
 

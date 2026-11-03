@@ -1,6 +1,6 @@
 ﻿import { createHash, randomUUID } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { ApiError } from "../common/errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
@@ -112,8 +112,8 @@ export class ContentService {
    */
   async dryRun(mapping: ContentModuleMapping, bytes: Uint8Array): Promise<DryRunResult | DryRunReplay> {
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const latest = await this.latestImport(mapping.module);
-    if (latest?.sha256 === sha256) return { dryRun: true, replay: true, import: summary(latest) };
+    const latest = await this.replayableImport(mapping.module, sha256);
+    if (latest) return { dryRun: true, replay: true, import: summary(latest) };
     const parsed = await this.parse(mapping, bytes);
     const { plan, warnings } = this.check(mapping, parsed, await this.loadExisting(mapping.module));
     return {
@@ -131,7 +131,8 @@ export class ContentService {
 
   /**
    * Apply an import. Identical bytes replay the earlier result (no writes) only while that receipt is the
-   * module's LATEST import; once a later import exists the same bytes are planned like any other file (an
+   * module's LATEST import and no item changed since (a staff edit or retire makes the client sheet authoritative
+   * again, so then the bytes are planned); once a later import exists the same bytes are planned like any other file (an
    * old export then conflicts on stale versions instead of silently "succeeding"), and a successful apply
    * refreshes the existing receipt (the (module, sha256) pair is unique) so it is the latest again. Otherwise
    * the original file is stored first (content-addressed by sha256, so an orphan after a failed commit is
@@ -152,8 +153,8 @@ export class ContentService {
   ): Promise<ApplyResult> {
     const module = mapping.module;
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const latest = await this.latestImport(module);
-    if (latest?.sha256 === sha256) return { replayed: true, import: summary(latest) };
+    const latest = await this.replayableImport(module, sha256);
+    if (latest) return { replayed: true, import: summary(latest) };
 
     const parsed = await this.parse(mapping, bytes);
     const early = this.check(mapping, parsed, await this.loadExisting(module));
@@ -166,8 +167,8 @@ export class ContentService {
       // Serialises imports per module, so two uploads can never plan against the same stale rows. Try, never
       // wait: a waiting import would hold a pooled connection, so a busy module is a retryable 409 instead.
       await lockContentModule(tx, module);
-      const raced = await this.latestImport(module, tx);
-      if (raced?.sha256 === sha256) return { replayed: true, import: summary(raced) };
+      const raced = await this.replayableImport(module, sha256, tx);
+      if (raced) return { replayed: true, import: summary(raced) };
 
       // Plan again against the locked, current rows: never overwrite a version that changed since the first look.
       const current = await this.loadExisting(module, tx);
@@ -416,6 +417,24 @@ export class ContentService {
       if (isRank(r.rank) && isStatus(r.status)) map.set(r.id, { id: r.id, rank: r.rank, status: r.status, version: r.version, data: r.data });
     }
     return map;
+  }
+
+  /**
+   * The receipt to replay for these bytes, or undefined to plan normally: the module's latest receipt has this sha256
+   * AND no item of the module changed after it. A staff edit or retire stamps `updated_at` (an import's own writes
+   * stamp the receipt's `created_at`, never later), so a later `updated_at` means the stored content no longer matches
+   * the sheet and re-uploading the client's sheet must plan (and restore the client's data) instead of being a no-op.
+   * Item timestamps are used rather than audit rows because they cover every writer, not only the known actions.
+   */
+  private async replayableImport(module: string, sha256: string, tx?: Tx): Promise<ContentImportRow | undefined> {
+    const latest = await this.latestImport(module, tx);
+    if (latest?.sha256 !== sha256) return undefined;
+    const [edited] = await (tx ?? this.database.db)
+      .select({ id: contentItems.id })
+      .from(contentItems)
+      .where(and(eq(contentItems.module, module), gt(contentItems.updatedAt, latest.createdAt)))
+      .limit(1);
+    return edited ? undefined : latest;
   }
 
   /** The module's most recent import receipt (ties broken by id, so the order is always defined). */

@@ -6,6 +6,7 @@ import type { Tx } from "../database/database.module.js";
 import type { AdminAuditAction, ContentStatus } from "../db/enums.js";
 import { adminAudit, contentItems } from "../db/schema.js";
 import type { ContentItemRow } from "../db/schema.js";
+import { militaryCardKey } from "../rules/clipper-cards.js";
 import { isRank } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import type { ContentModuleMapping } from "./content-module.js";
@@ -13,6 +14,14 @@ import { lockContentModule } from "./content-lock.js";
 import { canonicalJson, diffItem, planImport } from "./import-plan.js";
 import type { ExistingItem, FieldDiff } from "./import-plan.js";
 import type { ItemView } from "./content.service.js";
+
+const MILITARY = "aircraft-identifier-military";
+
+/** The Card key of the answer as stored (null when there is none, as the lazy freeze treats it). */
+function militaryKeyOfStored(data: unknown): string | null {
+  const answer = (data as { answer?: unknown } | null)?.answer;
+  return (typeof answer === "string" ? militaryCardKey(answer) : "") || null;
+}
 
 export type ItemEdit = { rank?: Rank | undefined; data?: unknown };
 
@@ -36,7 +45,8 @@ type Outcome = { ok: true; value: ItemChange } | { ok: false; error: ApiError };
  * Staff edit-in-place of one content item: edit (rank / payload), retire, restore. Each is optimistic (the caller's
  * `version` must equal the stored one) and runs in one transaction under the module lock the import apply uses.
  * A change bumps the version, records source `admin` and the actor, and appends one admin_audit row with the
- * field-level diff. `card_key` is never touched (Clipper Card keys are frozen at first import). An unchanged
+ * field-level diff. A Clipper Card key is frozen at first import and an edit never moves it; the one exception is a Military item
+ * with no stored key (a row older than migration 0009), which gets the key of its PRE-edit answer in the same UPDATE. An unchanged
  * request writes nothing: no bump, no audit row. A retired item stays retired when edited.
  */
 @Injectable()
@@ -70,7 +80,17 @@ export class ContentItemEditService {
       const diff = diffItem(stored, { rank, data });
       const [row] = await tx
         .update(contentItems)
-        .set({ rank, data, version: sql`${contentItems.version} + 1`, source: "admin", updatedAt: now, updatedBy: principal })
+        .set({
+          rank,
+          data,
+          // A Military row older than migration 0009 has no frozen key; freeze it from the STORED answer so this edit
+          // cannot move it (the lazy freeze in rounds / the Card catalog would otherwise read the new answer).
+          ...(mapping.module === MILITARY && stored.cardKey === null ? { cardKey: militaryKeyOfStored(stored.data) } : {}),
+          version: sql`${contentItems.version} + 1`,
+          source: "admin",
+          updatedAt: now,
+          updatedBy: principal,
+        })
         .where(and(eq(contentItems.module, mapping.module), eq(contentItems.id, id), eq(contentItems.version, stored.version)))
         .returning();
       return { kind: "changed", row, diff, action: "content_edit" };

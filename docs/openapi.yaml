@@ -1065,7 +1065,10 @@ paths:
         admin-export imports need no confirm. Otherwise the original file is stored in file storage
         (content-addressed by sha256, kept) and the rows are written in one transaction: 201 with the
         receipt. Identical bytes replay the earlier receipt first, but only while that receipt is
-        the module's latest import: 200 with `replayed: true` and no writes, so a retry is safe. Once a later
+        the module's latest import and no item of the module has been edited, retired or restored since: 200 with
+        `replayed: true` and no writes, so a retry is safe. After a staff edit, retire or restore the same client sheet
+        is planned like any other file, so uploading it again restores the client's data (a retired item it lists
+        returns to `approved`; an update needs `confirm`). Once a later
         import exists the same bytes are planned like any other file (a stale export is a conflict). A dry run
         of bytes that would replay answers `replay: true` with the receipt only. File storage down is 503 `storage_unavailable`
         (nothing written). Imported rows are `approved`; nothing reaches players.
@@ -1301,8 +1304,11 @@ paths:
         non-blank and unique in the module, retired items included: otherwise 422 `import_invalid` with the reasons in
         `message`. On a change the version goes up by one, `source` becomes `admin`, and one append-only audit row
         (`content_edit`) records the actor and the field-level `diff`. Sending the stored values (or only `version`) is
-        200 `changed: false`: no bump, no audit row. A retired item stays retired when edited. The Clipper Card key
-        (`card_key`) is set once when the item is created and never changes with an edit.
+        200 `changed: false`: no bump, no audit row. A retired item stays retired when edited (a restore or a client
+        sheet that lists it again returns it to `approved`). The Clipper Card key (`card_key`) is frozen when the item
+        is first imported, or, for a Military item stored before the key existed (`card_key` null), when the first
+        Round or Card catalog needs it. An edit never moves it: for such an older item the edit freezes the key from
+        the answer as stored before the edit, in the same update.
 
         Runs in one transaction under the same per-module lock the import apply takes.
       parameters:
