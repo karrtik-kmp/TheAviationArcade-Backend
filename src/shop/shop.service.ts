@@ -28,10 +28,9 @@ export class ShopService {
    * ledger ref: a key already billed returns the original receipt and charges nothing, so a retry after a
    * dropped response is safe. A different key is a new purchase.
    */
-  async buyHintPack(principal: string, key: string, now: Date): Promise<BuyHintPackOutcome> {
+  async buyHintPack(principal: string, key: string): Promise<BuyHintPackOutcome> {
     const result = await this.balance.update<{ receipt: HintPackReceipt; replayed: boolean }>(
       principal,
-      now,
       async (locked) => {
         const billed = await locked.posted("miles", "hint_pack", key);
         if (billed !== null) {

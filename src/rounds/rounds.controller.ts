@@ -52,7 +52,7 @@ export class RoundsController {
     if (!z.uuid().safeParse(body.tripId).success) {
       throw new ApiError(404, "trip_not_found", "No such Flight Segment for this player.");
     }
-    const outcome = await this.rounds.issueRound(principal, body.tripId, new Date());
+    const outcome = await this.rounds.issueRound(principal, body.tripId);
     switch (outcome.kind) {
       case "no_player":
         throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
@@ -82,8 +82,7 @@ export class RoundsController {
     )
     body: RoundResultBody,
   ) {
-    const now = new Date();
-    const outcome = await this.rounds.completeRound(principal, roundId, body, now);
+    const outcome = await this.rounds.completeRound(principal, roundId, body);
     switch (outcome.kind) {
       case "not_found":
         throw new ApiError(404, "round_not_found", "No such Round for this player.");
@@ -117,8 +116,7 @@ export class RoundsController {
     @Param("roundId", new RoundIdPipe()) roundId: string,
     @Body(new ZodValidationPipe(emptyBody, "Expected no body.")) _body: undefined,
   ) {
-    const now = new Date();
-    const outcome = await this.rounds.spendHint(principal, roundId, now);
+    const outcome = await this.rounds.spendHint(principal, roundId);
     switch (outcome.kind) {
       case "not_found":
         throw new ApiError(404, "round_not_found", "No such Round for this player.");

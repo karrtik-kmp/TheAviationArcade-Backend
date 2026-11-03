@@ -19,7 +19,6 @@ import { toCounters } from "../trips/counters-store.js";
 import {
   abandonOpenRounds,
   abandonTrip,
-  databaseNow,
   goneReason,
   isExpired,
   isFull,
@@ -132,13 +131,12 @@ export class RoundsService {
    * open Rounds are abandoned in the same transaction, so only one Round can be in flight. A full segment refuses
    * (`trip_full`: complete it). The segment's 30 minute expiry restarts here (U4).
    */
-  async issueRound(principal: string, tripId: string, processNow: Date): Promise<IssueRoundOutcome> {
-    const result = await this.balance.update<IssueRoundOutcome>(principal, processNow, async ({ player, tx }) => {
+  async issueRound(principal: string, tripId: string): Promise<IssueRoundOutcome> {
+    const result = await this.balance.update<IssueRoundOutcome>(principal, async ({ player, now, tx }) => {
       // Issuing moves the segment's expires_at WITHOUT bumping `version`, so the expiry judgement and the new deadline
       // must come from the same database clock that stamps evaluatedAt (2026-11-02 ruling): otherwise a process clock that
       // lags could extend a segment that a database-clocked read already saw expired (streak read 0, then 3, at one version).
-      // Taken after the player lock; the Round's own timestamps use it too, so Round and segment deadlines agree.
-      const now = await databaseNow(tx);
+      // `now` is taken after the player lock; the Round's own timestamps use it too, so Round and segment deadlines agree.
       const trip = await lockTrip(tx, principal, tripId);
       if (!trip) return { value: { kind: "trip_not_found" } };
       if (trip.status !== "open") {
@@ -203,14 +201,12 @@ export class RoundsService {
     principal: string,
     roundId: string,
     input: RoundResultInput,
-    processNow: Date,
   ): Promise<CompleteRoundOutcome> {
     type Inner =
       | Exclude<CompleteRoundOutcome, { kind: "completed" }>
       | { kind: "completed"; result: Omit<CompletedRound, "player"> };
-    const result = await this.balance.update<Inner>(principal, processNow, async ({ player, tx }) => {
-      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
-      const now = await databaseNow(tx);
+    const result = await this.balance.update<Inner>(principal, async ({ player, now, tx }) => {
+      // One clock for the whole call: the database's (locked.now, read after the player lock).
       // Lock order player -> trip -> Round: find the segment first, lock it, then lock the Round.
       const [peek] = await tx
         .select({ tripId: rounds.tripId })
@@ -404,11 +400,10 @@ export class RoundsService {
    * player's own open, unexpired Round qualifies. A debit the balance cannot cover rolls back the Round's
    * hintUsed mark with it.
    */
-  async spendHint(principal: string, roundId: string, processNow: Date): Promise<SpendHintOutcome> {
+  async spendHint(principal: string, roundId: string): Promise<SpendHintOutcome> {
     type Inner = Exclude<SpendHintOutcome, { kind: "spent" }> | { kind: "spent"; replayed: boolean };
-    const result = await this.balance.update<Inner>(principal, processNow, async ({ tx }) => {
-      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
-      const now = await databaseNow(tx);
+    const result = await this.balance.update<Inner>(principal, async ({ now, tx }) => {
+      // One clock for the whole call: the database's (locked.now, read after the player lock).
       // Lock order player -> trip -> Round.
       const [peek] = await tx
         .select({ tripId: rounds.tripId })

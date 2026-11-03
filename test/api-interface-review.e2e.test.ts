@@ -193,10 +193,9 @@ describe("API review regressions", () => {
     await ageTrip(tripId);
     const expired = await progress(p);
     expect(expired.perfectStreak).toBe(0);
-    // ...and a process clock an hour behind must NOT be able to extend the segment (issueRound judges by the database
-    // clock too). It answers trip_expired, so the streak cannot come back at this version.
-    const lagging = new Date(Date.now() - 3_600_000);
-    const outcome = await app.get(RoundsService).issueRound(p.principal, tripId, lagging);
+    // ...and issueRound judges by the same database clock (it has no other: A3), so it answers trip_expired and the streak
+    // cannot come back at this version. (The process-clock-skew case is test/db-clock.e2e.test.ts.)
+    const outcome = await app.get(RoundsService).issueRound(p.principal, tripId);
     expect(outcome.kind).toBe("trip_expired");
     const later = await progress(p);
     expect(later.perfectStreak).toBe(0);
@@ -204,7 +203,7 @@ describe("API review regressions", () => {
     expect(Date.parse(later.evaluatedAt)).toBeGreaterThan(Date.parse(expired.evaluatedAt));
   });
 
-  it("a Round is judged by the database clock: a process clock a few seconds off neither refuses nor under-floors it", async () => {
+  it("a Round is judged by the database clock alone: the 3 s floor applies, then it banks, then a hint spends", async () => {
     const { RoundsService } = await import("../src/rounds/rounds.service.js");
     const rounds = app.get(RoundsService);
     const body = { finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("atc-match") } as never;
@@ -212,16 +211,16 @@ describe("API review regressions", () => {
     const tripId = await openTrip(p);
     const issued = await issue(p, tripId);
     const roundId = issued.body.round.roundId as string;
-    // Process clock 10 s AHEAD: the 3 s floor must still apply (issued_at is database time).
-    const ahead = await rounds.completeRound(p.principal, roundId, body, new Date(Date.now() + 10_000));
+    // The 3 s floor applies (issued_at is database time).
+    const ahead = await rounds.completeRound(p.principal, roundId, body);
     expect(ahead.kind).toBe("too_fast");
-    // Process clock 10 s BEHIND, after the real floor has passed: must bank, not report too_fast or invalid facts.
+    // After the real floor has passed: must bank, not report too_fast or invalid facts.
     await new Promise(r => setTimeout(r, MIN_ROUND_MS + 200));
-    const behind = await rounds.completeRound(p.principal, roundId, body, new Date(Date.now() - 10_000));
+    const behind = await rounds.completeRound(p.principal, roundId, body);
     expect(behind.kind).toBe("completed");
-    // spendHint takes a process clock too: a clock far ahead must not expire a live Round.
+    // A live Round's hint spends.
     const next = await issue(p, tripId);
-    const hint = await rounds.spendHint(p.principal, next.body.round.roundId as string, new Date(Date.now() + 3_600_000));
+    const hint = await rounds.spendHint(p.principal, next.body.round.roundId as string);
     expect(hint.kind).toBe("spent");
     await expectLedgersBalanced(p);
   });

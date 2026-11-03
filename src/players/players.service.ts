@@ -37,8 +37,8 @@ export class PlayersService {
   }
 
   /** Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. */
-  async ensurePlayer(principal: string, now: Date): Promise<{ player: PlayerRow; created: boolean }> {
-    return this.balance.open(principal, now, {
+  async ensurePlayer(principal: string): Promise<{ player: PlayerRow; created: boolean }> {
+    return this.balance.open(principal, {
       postings: [{ account: "hints", delta: STARTER_HINTS, kind: "starter", ref: "starter" }],
     });
   }
@@ -50,8 +50,8 @@ export class PlayersService {
    * A changed stored value bumps `version` (D-1: version orders stored changes, evaluatedAt the time-derived ones); setting
    * the value it already has changes nothing and queues nothing.
    */
-  async setActiveRank(principal: string, rank: Rank, now: Date): Promise<SetActiveRankOutcome> {
-    const result = await this.balance.update<{ aboveCertified: Rank | null }>(principal, now, async ({ player }) => {
+  async setActiveRank(principal: string, rank: Rank): Promise<SetActiveRankOutcome> {
+    const result = await this.balance.update<{ aboveCertified: Rank | null }>(principal, async ({ player }) => {
       const certified = certifiedRankFor(player.statusPoints);
       if (rankIndex(rank) > rankIndex(certified)) return { value: { aboveCertified: certified } };
       return { value: { aboveCertified: null }, profile: { activeRank: rank === certified ? null : rank } };
@@ -64,7 +64,7 @@ export class PlayersService {
   }
 
   /** Erase this backend data for the principal (PlayerBalance.erase). Idempotent. Returns whether a player existed. */
-  async deletePlayer(principal: string, now: Date): Promise<boolean> {
-    return this.balance.erase(principal, now);
+  async deletePlayer(principal: string): Promise<boolean> {
+    return this.balance.erase(principal);
   }
 }

@@ -467,7 +467,7 @@ describe("minimum interval between copy writes (C3)", () => {
     const t = nextNow();
     const running = worker.tick(t);
     await inflight.promise;
-    await balance.update(player.principal, new Date(), async () => ({ value: 0, republish: true, mirrorNow: true }));
+    await balance.update(player.principal, async () => ({ value: 0, republish: true, mirrorNow: true }));
     expect(await outbox(player.principal)).toMatchObject({ urgent: true }); // kept: due_at is the lease while claimed
     gate.resolve();
     expect((await running).written).toBe(1);
@@ -543,12 +543,12 @@ describe("minimum interval between copy writes (C3)", () => {
     const player = await newPlayer();
     expect((await player.link()).status).toBe(201);
     const balance = app.get(PlayerBalance);
-    const now = new Date();
+    const approxNow = new Date(); // only to place `last`; the assertion uses the instant the call itself used (locked.now, database time)
     const cases: { last: Date | null; dueNow: boolean }[] = [
       { last: null, dueNow: false },
-      { last: new Date(now.getTime() - 100_000), dueNow: false },
-      { last: new Date(now.getTime() - 400_000), dueNow: false },
-      { last: new Date(now.getTime() - 100_000), dueNow: true },
+      { last: new Date(approxNow.getTime() - 100_000), dueNow: false },
+      { last: new Date(approxNow.getTime() - 400_000), dueNow: false },
+      { last: new Date(approxNow.getTime() - 100_000), dueNow: true },
     ];
     for (const { last, dueNow } of cases) {
       await sql.query("DELETE FROM ugs_mirror_outbox");
@@ -556,7 +556,11 @@ describe("minimum interval between copy writes (C3)", () => {
       if (last) {
         await sql.query("INSERT INTO ugs_mirror_pace (player_id, ugs_player_id, last_mirrored_at) VALUES ($1, $2, $3)", [player.principal, player.ugsId, last]);
       }
-      await balance.update(player.principal, now, async () => ({ value: 0, republish: true, ...(dueNow ? { mirrorNow: true as const } : {}) }));
+      let now = approxNow;
+      await balance.update(player.principal, async (locked) => {
+        now = locked.now;
+        return { value: 0, republish: true, ...(dueNow ? { mirrorNow: true as const } : {}) };
+      });
       expect(time((await outbox(player.principal)).due_at)).toBe(mirrorDueAt(now, last, INTERVAL_SEC, dueNow).getTime());
     }
   });
@@ -567,18 +571,21 @@ describe("minimum interval between copy writes (C3)", () => {
     const balance = app.get(PlayerBalance);
     await sql.query("INSERT INTO ugs_mirror_pace (player_id, ugs_player_id, last_mirrored_at) VALUES ($1, $2, now())", [player.principal, player.ugsId]);
     await sql.query("DELETE FROM ugs_mirror_outbox");
-    await balance.update(player.principal, new Date(), async () => ({ value: 0, republish: true }));
+    await balance.update(player.principal, async () => ({ value: 0, republish: true }));
     const waiting = time((await outbox(player.principal)).due_at);
     expect(waiting).toBeGreaterThan(Date.now() + INTERVAL_MS - 10_000);
-    await balance.update(player.principal, new Date(), async () => ({ value: 0, republish: true })); // coalesces, still waiting
+    await balance.update(player.principal, async () => ({ value: 0, republish: true })); // coalesces, still waiting
     expect(time((await outbox(player.principal)).due_at)).toBe(waiting);
-    const now = new Date();
-    await balance.update(player.principal, now, async () => ({ value: 0, republish: true, mirrorNow: true }));
+    let now = new Date();
+    await balance.update(player.principal, async (locked) => {
+      now = locked.now;
+      return { value: 0, republish: true, mirrorNow: true };
+    });
     expect(time((await outbox(player.principal)).due_at)).toBe(now.getTime());
 
     await sql.query("UPDATE ugs_mirror_outbox SET due_at = now() + interval '1 hour', attempts = 2 WHERE player_id = $1", [player.principal]);
     const backing = time((await outbox(player.principal)).due_at);
-    await balance.update(player.principal, new Date(), async () => ({ value: 0, republish: true, mirrorNow: true }));
+    await balance.update(player.principal, async () => ({ value: 0, republish: true, mirrorNow: true }));
     expect(time((await outbox(player.principal)).due_at)).toBe(backing);
   });
 

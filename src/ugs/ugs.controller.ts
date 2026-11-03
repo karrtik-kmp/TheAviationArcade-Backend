@@ -22,7 +22,7 @@ export class UgsController {
     @Body(new ZodValidationPipe(linkBody, "Expected { ugsToken }.")) body: LinkBody,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const outcome = await this.links.link(principal, body.ugsToken, new Date());
+    const outcome = await this.links.link(principal, body.ugsToken);
     res.status(outcome.created ? 201 : 200);
     return { link: { linkedAt: outcome.linkedAt.toISOString() } };
   }

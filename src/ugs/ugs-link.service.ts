@@ -49,7 +49,7 @@ export class UgsLinkService {
     return principal.slice(prefix.length);
   }
 
-  async link(principal: string, ugsToken: string, now: Date): Promise<LinkOutcome> {
+  async link(principal: string, ugsToken: string): Promise<LinkOutcome> {
     const ugs: UgsConfig | undefined = this.config.ugs;
     if (!ugs || !this.client) {
       throw new ApiError(404, "not_found", "The UGS progress mirror is not enabled on this server.");
@@ -72,11 +72,13 @@ export class UgsLinkService {
     const [current] = await this.database.db.select().from(ugsLinks).where(eq(ugsLinks.playerId, principal));
     if (current && current.ugsPlayerId === ugsPlayerId) return { created: false, linkedAt: current.linkedAt };
 
-    const wait = this.perPrincipal.hit(principal, now.getTime());
+    // Process clock on purpose: the per-principal limiter is in memory and per instance (rate limiting, out of scope for A3).
+    const processNow = Date.now();
+    const wait = this.perPrincipal.hit(principal, processNow);
     if (wait > 0) {
       throw new ApiError(429, "rate_limited", "Too many link attempts. Try again later.", { "Retry-After": String(wait) });
     }
-    if ((await this.proofBudget.reserve(1, now.getTime())) < 1) {
+    if ((await this.proofBudget.reserve(1, processNow)) < 1) {
       this.logger.warn({ event: "ugs_link_proof_budget_empty" });
       throw new ApiError(503, "service_unavailable", "UGS is busy. Retry shortly.", { "Retry-After": "5" });
     }
@@ -92,14 +94,14 @@ export class UgsLinkService {
     if (!proven) throw new ApiError(403, "forbidden", "UGS account is not linked to this sign-in");
 
     try {
-      return await this.record(principal, ugsPlayerId, now);
+      return await this.record(principal, ugsPlayerId);
     } catch (error) {
       if (error instanceof LinkHeldError) {
         // Re-checked against the identities just fetched: if the UGS player no longer carries the holder's uid,
         // the holder's link is stale (the UGS player belongs to this sign-in now) and moves to the caller.
         const identities = proof.kind === "ok" ? proof.externalIds : [];
         if (this.holderStillProven(error.holder, identities)) throw conflict();
-        return this.record(principal, ugsPlayerId, now, error.holder).catch((retry: unknown) => this.mapRecordError(retry));
+        return this.record(principal, ugsPlayerId, error.holder).catch((retry: unknown) => this.mapRecordError(retry));
       }
       return this.mapRecordError(error);
     }
@@ -123,8 +125,8 @@ export class UgsLinkService {
   }
 
   /** Writes go through PlayerBalance.linkUgs (player lock, link rows, version rule, enqueue). The proof is already done. */
-  private async record(principal: string, ugsPlayerId: string, now: Date, moveFrom?: string): Promise<LinkOutcome> {
-    const result = await this.balance.linkUgs(principal, ugsPlayerId, now, moveFrom);
+  private async record(principal: string, ugsPlayerId: string, moveFrom?: string): Promise<LinkOutcome> {
+    const result = await this.balance.linkUgs(principal, ugsPlayerId, moveFrom);
     if (result.kind === "no_player") throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");
     if (result.kind === "held") throw new LinkHeldError(result.holder);
     return { created: result.created, linkedAt: result.linkedAt };

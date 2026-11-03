@@ -35,8 +35,7 @@ export class ShopController {
     @Headers("idempotency-key") rawKey: string | undefined,
     @Body(new ZodValidationPipe(emptyBody, "Expected no body.")) _body: undefined,
   ) {
-    const now = new Date();
-    const outcome = await this.shop.buyHintPack(principal, idempotencyKey(rawKey), now);
+    const outcome = await this.shop.buyHintPack(principal, idempotencyKey(rawKey));
     switch (outcome.kind) {
       case "no_player":
         throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");

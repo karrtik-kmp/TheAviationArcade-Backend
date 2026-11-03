@@ -19,8 +19,7 @@ export class PlayersController {
   /** Sign-in handshake: creates the player on first call, then returns progress. Idempotent. */
   @Put()
   async signIn(@Principal() principal: string, @Res({ passthrough: true }) res: Response) {
-    const now = new Date();
-    const { player, created } = await this.players.ensurePlayer(principal, now);
+    const { player, created } = await this.players.ensurePlayer(principal);
     res.status(created ? 201 : 200);
     return { progress: progressView(await this.players.live(player)) };
   }
@@ -36,7 +35,7 @@ export class PlayersController {
   @Delete()
   @HttpCode(204)
   async deleteAccount(@Principal() principal: string): Promise<void> {
-    await this.players.deletePlayer(principal, new Date());
+    await this.players.deletePlayer(principal);
   }
 
   @Get("progress")
@@ -51,8 +50,7 @@ export class PlayersController {
     @Principal() principal: string,
     @Body(new ZodValidationPipe(activeRankBody, "Expected { rank }.")) body: ActiveRankBody,
   ) {
-    const now = new Date();
-    const outcome = await this.players.setActiveRank(principal, body.rank, now);
+    const outcome = await this.players.setActiveRank(principal, body.rank);
     switch (outcome.kind) {
       case "no_player":
         throw new ApiError(404, "player_not_found", "Call PUT /v1/me first.");

@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { BalanceChange } from "../balance/player-balance.js";
+import { databaseClock } from "../database/clock.js";
 import type { Database, Tx } from "../database/database.module.js";
 import { rounds, trips } from "../db/schema.js";
 import type { PlayerRow, TripRow } from "../db/schema.js";
@@ -161,15 +162,10 @@ export async function withLiveStreak(db: Database | Tx, player: PlayerRow): Prom
              WHERE trips.player_id = ${player.id} AND trips.status = 'open'
                AND (trips.expires_at >= t.at OR trips.rounds_banked >= trips.flight_count)
            ) AS open
-    FROM (SELECT date_trunc('milliseconds', clock_timestamp()) AS at) t
+    FROM (SELECT ${databaseClock()} AS at) t
   `);
   const row = result.rows[0] as { at: Date | string; open: boolean };
   const evaluatedAt = new Date(row.at);
   return { ...player, perfectStreak: row.open ? player.perfectStreak : 0, evaluatedAt };
 }
 
-/** The database clock, milliseconds, for a write that must agree with withLiveStreak (see issueRound). */
-export async function databaseNow(db: Database | Tx): Promise<Date> {
-  const result = await db.execute(sql`SELECT date_trunc('milliseconds', clock_timestamp()) AS at`);
-  return new Date((result.rows[0] as { at: Date | string }).at);
-}

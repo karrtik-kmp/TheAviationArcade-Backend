@@ -65,7 +65,6 @@ export class TripsController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const key = idempotencyKey(rawKey);
-    const now = new Date();
     const outcome = await this.trips.openTrip(
       principal,
       key,
@@ -75,7 +74,6 @@ export class TripsController {
         utcOffsetMinutes: body.utcOffsetMinutes,
         contentVersion: body.contentVersion,
       },
-      now,
     );
     switch (outcome.kind) {
       case "no_player":
@@ -110,8 +108,7 @@ export class TripsController {
     @Param("tripId", new TripIdPipe()) tripId: string,
     @Body(new ZodValidationPipe(emptyBody, "Expected no body.")) _body: undefined,
   ) {
-    const now = new Date();
-    const outcome = await this.trips.completeTrip(principal, tripId, now);
+    const outcome = await this.trips.completeTrip(principal, tripId);
     switch (outcome.kind) {
       case "not_found":
         throw new ApiError(404, "trip_not_found", "No such Flight Segment for this player.");
@@ -134,8 +131,7 @@ export class TripsController {
     @Param("tripId", new TripIdPipe()) tripId: string,
     @Body(new ZodValidationPipe(emptyBody, "Expected no body.")) _body: undefined,
   ) {
-    const now = new Date();
-    const outcome = await this.trips.abandonTrip(principal, tripId, now);
+    const outcome = await this.trips.abandonTrip(principal, tripId);
     switch (outcome.kind) {
       case "not_found":
         throw new ApiError(404, "trip_not_found", "No such Flight Segment for this player.");

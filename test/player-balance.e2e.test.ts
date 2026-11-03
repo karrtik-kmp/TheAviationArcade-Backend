@@ -27,7 +27,6 @@ afterAll(async () => {
   await context.close();
 });
 
-const NOW = new Date("2026-10-29T12:00:00.000Z");
 
 async function newPlayer(opts: { miles?: number; hints?: number; linked?: boolean } = {}): Promise<string> {
   const id = `firebase:demo-airplane-games:bal-${randomUUID()}`;
@@ -64,7 +63,7 @@ async function ledgerSums(id: string) {
 describe("PlayerBalance.update", () => {
   it("answers no_player for a missing row and never runs the callback", async () => {
     let ran = false;
-    const result = await balance.update(`firebase:demo-airplane-games:none-${randomUUID()}`, NOW, async () => {
+    const result = await balance.update(`firebase:demo-airplane-games:none-${randomUUID()}`, async () => {
       ran = true;
       return { value: 1 };
     });
@@ -74,7 +73,7 @@ describe("PlayerBalance.update", () => {
 
   it("an Active Rank change bumps the version and enqueues; the same value again changes nothing", async () => {
     const id = await newPlayer({ linked: true });
-    const first = await balance.update(id, NOW, async () => ({ value: null, profile: { activeRank: "trainee" as const } }));
+    const first = await balance.update(id, async () => ({ value: null, profile: { activeRank: "trainee" as const } }));
     expect(first.kind === "ok" && first.player.activeRank).toBe("trainee");
     expect((await row(id)).version).toBe(2);
     const queued = await outbox(id);
@@ -82,7 +81,7 @@ describe("PlayerBalance.update", () => {
     expect(queued[0].version).toBe(2);
 
     await sql.query("DELETE FROM ugs_mirror_outbox WHERE player_id = $1", [id]);
-    const again = await balance.update(id, NOW, async () => ({ value: null, profile: { activeRank: "trainee" as const } }));
+    const again = await balance.update(id, async () => ({ value: null, profile: { activeRank: "trainee" as const } }));
     expect(again.kind === "ok" && again.player.version).toBe(2);
     expect((await row(id)).version).toBe(2);
     expect(await outbox(id)).toEqual([]);
@@ -90,7 +89,7 @@ describe("PlayerBalance.update", () => {
 
   it("postings write ledger rows, bump the version once and enqueue once", async () => {
     const id = await newPlayer({ miles: 100, hints: 3, linked: true });
-    const result = await balance.update(id, NOW, async () => ({
+    const result = await balance.update(id, async () => ({
       value: "done",
       change: {
         statusPoints: 7,
@@ -112,7 +111,7 @@ describe("PlayerBalance.update", () => {
 
   it("an all-zero change is still a progress event (an unfinished Round bumps the version and enqueues)", async () => {
     const id = await newPlayer({ linked: true });
-    const result = await balance.update(id, NOW, async () => ({
+    const result = await balance.update(id, async () => ({
       value: null,
       change: { statusPoints: 0, perfectStreak: 0, postings: [{ account: "miles" as const, delta: 0, kind: "round_award" as const, ref: "r0" }] },
     }));
@@ -123,7 +122,7 @@ describe("PlayerBalance.update", () => {
 
   it("a zero posting writes no ledger row", async () => {
     const id = await newPlayer();
-    await balance.update(id, NOW, async () => ({
+    await balance.update(id, async () => ({
       value: null,
       change: { postings: [{ account: "miles" as const, delta: 0, kind: "round_award" as const, ref: "zero" }] },
     }));
@@ -132,7 +131,7 @@ describe("PlayerBalance.update", () => {
 
   it("a step with no change leaves everything alone", async () => {
     const id = await newPlayer({ linked: true });
-    const result = await balance.update(id, NOW, async () => ({ value: "lock only" }));
+    const result = await balance.update(id, async () => ({ value: "lock only" }));
     expect(result.kind === "ok" && result.value).toBe("lock only");
     expect((await row(id)).version).toBe(1);
     expect(await outbox(id)).toEqual([]);
@@ -140,7 +139,7 @@ describe("PlayerBalance.update", () => {
 
   it("an insufficient debit rolls back a row the caller wrote through p.tx", async () => {
     const id = await newPlayer({ miles: 10 });
-    const result = await balance.update(id, NOW, async ({ tx }) => {
+    const result = await balance.update(id, async ({ tx }) => {
       await tx.execute(dsql`UPDATE players SET perfect_streak = 9 WHERE id = ${id}`);
       return { value: null, change: { postings: [{ account: "miles" as const, delta: -11, kind: "hint_pack" as const, ref: "k" }] } };
     });
@@ -153,10 +152,10 @@ describe("PlayerBalance.update", () => {
     const pool = context.get<pg.Pool>(PG_POOL);
     const id = await newPlayer({ miles: 1 });
     // Warm one client so the count below is stable.
-    await balance.update(id, NOW, async () => ({ value: null }));
+    await balance.update(id, async () => ({ value: null }));
     const before = pool.totalCount;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await balance.update(id, NOW, async () => ({
+      const result = await balance.update(id, async () => ({
         value: null,
         change: { postings: [{ account: "miles" as const, delta: -5, kind: "hint_pack" as const, ref: `k${attempt}` }] },
       }));
@@ -168,7 +167,7 @@ describe("PlayerBalance.update", () => {
 
   it("a profile change and a balance change in one step bump the version once", async () => {
     const id = await newPlayer({ linked: true });
-    const result = await balance.update(id, NOW, async () => ({
+    const result = await balance.update(id, async () => ({
       value: null,
       profile: { activeRank: "trainee" as const },
       change: { statusPoints: 5 },
@@ -182,7 +181,7 @@ describe("PlayerBalance.update", () => {
 
   it("an insufficient hints debit is reported as hints", async () => {
     const id = await newPlayer({ hints: 0 });
-    const result = await balance.update(id, NOW, async () => ({
+    const result = await balance.update(id, async () => ({
       value: null,
       change: { postings: [{ account: "hints" as const, delta: -1, kind: "round_spend" as const, ref: "h" }] },
     }));
@@ -191,11 +190,11 @@ describe("PlayerBalance.update", () => {
 
   it("posted() finds a prior entry and null otherwise", async () => {
     const id = await newPlayer();
-    await balance.update(id, NOW, async () => ({
+    await balance.update(id, async () => ({
       value: null,
       change: { postings: [{ account: "hints" as const, delta: 10, kind: "hint_pack" as const, ref: "key-1" }] },
     }));
-    const seen = await balance.update(id, NOW, async (p) => ({
+    const seen = await balance.update(id, async (p) => ({
       value: {
         hit: await p.posted("hints", "hint_pack", "key-1"),
         miss: await p.posted("hints", "hint_pack", "key-2"),
@@ -207,7 +206,7 @@ describe("PlayerBalance.update", () => {
 
   it("republish enqueues at the unchanged version", async () => {
     const id = await newPlayer({ linked: true });
-    await balance.update(id, NOW, async () => ({ value: null, republish: true as const }));
+    await balance.update(id, async () => ({ value: null, republish: true as const }));
     expect((await row(id)).version).toBe(1);
     const queued = await outbox(id);
     expect(queued).toHaveLength(1);
@@ -217,7 +216,7 @@ describe("PlayerBalance.update", () => {
   it("two concurrent update() calls serialise and keep SUM(ledger) equal to the balance", async () => {
     const id = await newPlayer({ miles: 100 });
     const debit = (ref: string) =>
-      balance.update(id, NOW, async () => ({
+      balance.update(id, async () => ({
         value: ref,
         change: { postings: [{ account: "miles" as const, delta: -60, kind: "hint_pack" as const, ref }] },
       }));
@@ -229,7 +228,7 @@ describe("PlayerBalance.update", () => {
 
   it("nothing is enqueued for an unlinked player", async () => {
     const id = await newPlayer();
-    await balance.update(id, NOW, async () => ({ value: null, change: { statusPoints: 1 }, republish: true as const }));
+    await balance.update(id, async () => ({ value: null, change: { statusPoints: 1 }, republish: true as const }));
     expect(await outbox(id)).toEqual([]);
     expect((await row(id)).version).toBe(2);
   });
@@ -241,7 +240,7 @@ const freshId = () => `firebase:demo-airplane-games:bal-${randomUUID()}`;
 describe("PlayerBalance.open", () => {
   it("is idempotent under 6 concurrent calls: one creator, one starter ledger row, version 1", async () => {
     const id = freshId();
-    const results = await Promise.all(Array.from({ length: 6 }, () => balance.open(id, NOW, STARTER)));
+    const results = await Promise.all(Array.from({ length: 6 }, () => balance.open(id, STARTER)));
     expect(results.filter((r) => r.created)).toHaveLength(1);
     expect(results.every((r) => r.player.id === id)).toBe(true);
     expect(await row(id)).toMatchObject({ hints: 3, miles: 0, version: 1 });
@@ -251,7 +250,7 @@ describe("PlayerBalance.open", () => {
 
   it("returns an existing player unchanged and writes nothing", async () => {
     const id = await newPlayer({ miles: 40, hints: 2 });
-    const result = await balance.open(id, NOW, STARTER);
+    const result = await balance.open(id, STARTER);
     expect(result.created).toBe(false);
     expect(result.player).toMatchObject({ miles: 40, hints: 2, version: 1 });
     expect(await ledgerSums(id)).toEqual({ miles: 40, hints: 2 });
@@ -261,23 +260,27 @@ describe("PlayerBalance.open", () => {
 describe("PlayerBalance.erase", () => {
   it("on a linked player leaves one ugs_mirror_deletions row due after the lease, and removes the player and queue", async () => {
     const id = await newPlayer({ linked: true, hints: 1 });
-    await balance.update(id, NOW, async () => ({ value: null, republish: true as const }));
+    await balance.update(id, async () => ({ value: null, republish: true as const }));
     expect(await outbox(id)).toHaveLength(1);
-    expect(await balance.erase(id, NOW)).toBe(true);
+    const before = (await sql.query("SELECT date_trunc('milliseconds', clock_timestamp()) AS t")).rows[0].t as Date;
+    expect(await balance.erase(id)).toBe(true);
+    const after = (await sql.query("SELECT clock_timestamp() AS t")).rows[0].t as Date;
     expect(await row(id)).toBeUndefined();
     expect(await outbox(id)).toEqual([]);
     const deletions = (await sql.query("SELECT * FROM ugs_mirror_deletions WHERE ugs_player_id = $1", [`ugs-${id}`])).rows;
     expect(deletions).toHaveLength(1);
-    expect(deletions[0].created_at.getTime()).toBe(NOW.getTime()); // the injected clock, not new Date()
-    expect(deletions[0].due_at.getTime()).toBeGreaterThan(NOW.getTime());
+    // Stamped by the database clock inside the transaction: between two reads of that clock around the call.
+    expect(deletions[0].created_at.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(deletions[0].created_at.getTime()).toBeLessThanOrEqual(after.getTime());
+    expect(deletions[0].due_at.getTime()).toBeGreaterThan(deletions[0].created_at.getTime());
   });
 
   it("on an unlinked player records nothing; on a missing player returns false (idempotent)", async () => {
     const id = await newPlayer();
     const before = (await sql.query("SELECT COUNT(*)::int AS n FROM ugs_mirror_deletions")).rows[0].n;
-    expect(await balance.erase(id, NOW)).toBe(true);
-    expect(await balance.erase(id, NOW)).toBe(false);
-    expect(await balance.erase(freshId(), NOW)).toBe(false);
+    expect(await balance.erase(id)).toBe(true);
+    expect(await balance.erase(id)).toBe(false);
+    expect(await balance.erase(freshId())).toBe(false);
     expect((await sql.query("SELECT COUNT(*)::int AS n FROM ugs_mirror_deletions")).rows[0].n).toBe(before);
   });
 });
@@ -287,7 +290,7 @@ describe("PlayerBalance.linkUgs (D-1 version rules)", () => {
 
   it("a FIRST link enqueues at the current version without bumping it", async () => {
     const id = await newPlayer();
-    const result = await balance.linkUgs(id, ugsId(), NOW);
+    const result = await balance.linkUgs(id, ugsId());
     expect(result).toMatchObject({ kind: "linked", created: true });
     expect((await row(id)).version).toBe(1);
     expect((await outbox(id))[0].version).toBe(1);
@@ -296,7 +299,7 @@ describe("PlayerBalance.linkUgs (D-1 version rules)", () => {
   it("re-linking a DIFFERENT UGS player bumps the version, enqueues at it and queues deleting the old copy", async () => {
     const id = await newPlayer({ linked: true });
     const next = ugsId();
-    const result = await balance.linkUgs(id, next, NOW);
+    const result = await balance.linkUgs(id, next);
     expect(result).toMatchObject({ kind: "linked", created: false });
     expect((await row(id)).version).toBe(2);
     expect((await outbox(id))[0].version).toBe(2);
@@ -306,16 +309,16 @@ describe("PlayerBalance.linkUgs (D-1 version rules)", () => {
 
   it("re-linking the SAME UGS player does not bump the version", async () => {
     const id = await newPlayer({ linked: true });
-    const result = await balance.linkUgs(id, `ugs-${id}`, NOW);
+    const result = await balance.linkUgs(id, `ugs-${id}`);
     expect(result).toMatchObject({ kind: "linked", created: false });
     expect((await row(id)).version).toBe(1);
   });
 
   it("a stale-holder move bumps the caller, not the old holder, and drops the holder queue", async () => {
     const holder = await newPlayer({ linked: true });
-    await balance.update(holder, NOW, async () => ({ value: null, republish: true as const }));
+    await balance.update(holder, async () => ({ value: null, republish: true as const }));
     const caller = await newPlayer();
-    const result = await balance.linkUgs(caller, `ugs-${holder}`, NOW, holder);
+    const result = await balance.linkUgs(caller, `ugs-${holder}`, holder);
     expect(result).toMatchObject({ kind: "linked", created: true });
     expect((await row(caller)).version).toBe(2);
     expect((await row(holder)).version).toBe(1);
@@ -327,9 +330,9 @@ describe("PlayerBalance.linkUgs (D-1 version rules)", () => {
   it("answers held (writing nothing) when another player holds the UGS id, and no_player for a missing caller", async () => {
     const holder = await newPlayer({ linked: true });
     const caller = await newPlayer();
-    expect(await balance.linkUgs(caller, `ugs-${holder}`, NOW)).toEqual({ kind: "held", holder });
+    expect(await balance.linkUgs(caller, `ugs-${holder}`)).toEqual({ kind: "held", holder });
     expect((await sql.query("SELECT 1 FROM ugs_links WHERE player_id = $1", [caller])).rowCount).toBe(0);
-    expect(await balance.linkUgs(freshId(), ugsId(), NOW)).toEqual({ kind: "no_player" });
+    expect(await balance.linkUgs(freshId(), ugsId())).toEqual({ kind: "no_player" });
   });
 
   it("opposite stale-holder moves in parallel settle (locks are taken in id order, no deadlock)", async () => {
@@ -342,7 +345,7 @@ describe("PlayerBalance.linkUgs (D-1 version rules)", () => {
     try {
       await holder.query("BEGIN");
       await holder.query("SELECT 1 FROM players WHERE id = ANY($1) FOR UPDATE", [[a, b]]);
-      const moves = [balance.linkUgs(a, `ugs-${b}`, NOW, b), balance.linkUgs(b, `ugs-${a}`, NOW, a)];
+      const moves = [balance.linkUgs(a, `ugs-${b}`, b), balance.linkUgs(b, `ugs-${a}`, a)];
       const settled = Promise.allSettled(moves);
       const deadline = Date.now() + 10_000;
       for (;;) {
@@ -374,13 +377,13 @@ describe("mirror enqueue shares the writer's transaction", () => {
   it("a rolled-back update leaves no outbox row; a committed republish leaves one", async () => {
     const id = await newPlayer({ linked: true });
     await expect(
-      balance.update(id, NOW, async ({ tx }) => {
+      balance.update(id, async ({ tx }) => {
         await tx.execute(dsql`SELECT 1`);
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
     expect(await outbox(id)).toEqual([]);
-    await balance.update(id, NOW, async () => ({ value: null, republish: true as const }));
+    await balance.update(id, async () => ({ value: null, republish: true as const }));
     expect(await outbox(id)).toHaveLength(1);
   });
 });

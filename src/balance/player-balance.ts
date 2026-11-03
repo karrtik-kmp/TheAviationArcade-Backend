@@ -4,6 +4,7 @@ import { APP_CONFIG } from "../config/config.module.js";
 import type { AppConfig } from "../config/config.module.js";
 import { DatabaseService, ExpectedRollback } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
+import { databaseNow } from "../database/clock.js";
 import { hintLedger, milesLedger, players, ugsLinks } from "../db/schema.js";
 import type { PlayerRow } from "../db/schema.js";
 import type { Rank } from "../rules/ranks.js";
@@ -37,6 +38,11 @@ export interface LockedPlayer {
   readonly player: PlayerRow;
   /** The open transaction, for the caller's own rows (rounds, links, later trips). Lock them after the player. */
   readonly tx: Tx;
+  /**
+   * THE instant of this call: the database clock (clock_timestamp()), read once inside the transaction right after the
+   * player lock. Every time judgement and stored timestamp of the call uses it; no process clock is involved (A3).
+   */
+  readonly now: Date;
   /** The delta of a ledger entry already posted under (kind, ref), or null. For idempotent replays. */
   posted(account: "miles", kind: MilesKind, ref: string): Promise<number | null>;
   posted(account: "hints", kind: HintKind, ref: string): Promise<number | null>;
@@ -138,17 +144,19 @@ export class PlayerBalance {
 
   async update<T>(
     principal: string,
-    now: Date,
     fn: (locked: LockedPlayer) => Promise<Step<T>>,
   ): Promise<UpdateResult<T>> {
     try {
       return await this.database.withTransaction(async (tx): Promise<UpdateResult<T>> => {
         const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
         if (!player) return { kind: "no_player" };
+        // After the lock, before any judgement: the one instant of this call (src/database/clock.ts).
+        const now = await databaseNow(tx);
 
         const locked: LockedPlayer = {
           player,
           tx,
+          now,
           posted: async (account: "miles" | "hints", kind: string, ref: string) => {
             const table = account === "miles" ? milesLedger : hintLedger;
             const [row] = await tx
@@ -230,7 +238,7 @@ export class PlayerBalance {
    * caller sees created = true, writes the starter postings and enqueues; an existing player is returned unchanged.
    * The one write that does not lock first, because there is no row to lock yet.
    */
-  async open(principal: string, now: Date, starter: BalanceChange): Promise<OpenResult> {
+  async open(principal: string, starter: BalanceChange): Promise<OpenResult> {
     const postings = (starter.postings ?? []).filter((posting) => {
       if (!Number.isInteger(posting.delta)) throw new Error("Ledger delta must be an integer.");
       return posting.delta !== 0;
@@ -241,6 +249,7 @@ export class PlayerBalance {
     const hints = sum("hints");
     if (miles < 0 || hints < 0) throw new Error("A starting balance cannot be negative.");
     return this.database.withTransaction(async (tx) => {
+      const now = await databaseNow(tx);
       const inserted = await tx
         .insert(players)
         .values({ id: principal, miles, hints, createdAt: now, updatedAt: now })
@@ -270,10 +279,11 @@ export class PlayerBalance {
    * be deleted inside this lock (no network), so the UGS id is recorded and the mirror worker deletes the item later.
    * Idempotent. Returns whether a player existed.
    */
-  async erase(principal: string, now: Date): Promise<boolean> {
+  async erase(principal: string): Promise<boolean> {
     return this.database.withTransaction(async (tx) => {
       const [player] = await tx.select({ id: players.id }).from(players).where(eq(players.id, principal)).for("update");
       if (!player) return false;
+      const now = await databaseNow(tx);
       const [link] = await tx.select().from(ugsLinks).where(eq(ugsLinks.playerId, principal));
       if (link) await queueMirrorDeletion(tx, link.ugsPlayerId, now);
       await tx.delete(players).where(eq(players.id, principal));
@@ -287,13 +297,14 @@ export class PlayerBalance {
    * `held` is returned before anything is written when another player holds the UGS id and is not `moveFrom`.
    * A UNIQUE violation (a racing link of the same UGS id) propagates as a DB error.
    */
-  async linkUgs(principal: string, ugsPlayerId: string, now: Date, moveFrom?: string): Promise<LinkResult> {
+  async linkUgs(principal: string, ugsPlayerId: string, moveFrom?: string): Promise<LinkResult> {
     return this.database.withTransaction(async (tx): Promise<LinkResult> => {
       // Both players are locked in id order so two opposite moves cannot deadlock.
       const ids = moveFrom ? [principal, moveFrom] : [principal];
       const locked = await tx.select().from(players).where(inArray(players.id, ids)).orderBy(asc(players.id)).for("update");
       const player = locked.find((row) => row.id === principal);
       if (!player) return { kind: "no_player" };
+      const now = await databaseNow(tx);
 
       const [taken] = await tx
         .select({ playerId: ugsLinks.playerId })

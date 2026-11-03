@@ -20,7 +20,6 @@ import {
   newExpiry,
   streakReset,
   tripView,
-  databaseNow,
   withLiveStreak,
 } from "./trip-store.js";
 import type { LivePlayer, TripView } from "./trip-store.js";
@@ -90,15 +89,14 @@ export class TripsService {
    * answers the stored lists as a replay. The opening response does not carry them. A segment with fewer than ten Rounds
    * is abandoned as before.
    */
-  async openTrip(principal: string, idempotencyKey: string, input: OpenTripInput, processNow: Date): Promise<OpenTripOutcome> {
+  async openTrip(principal: string, idempotencyKey: string, input: OpenTripInput): Promise<OpenTripOutcome> {
     type Inner =
       | { kind: "opened"; trip: TripView }
       | { kind: "replayed"; trip: TripView }
       | { kind: "local_date_mismatch" }
       | { kind: "idempotency_key_reused" };
-    const result = await this.balance.update<Inner>(principal, processNow, async ({ player, tx }): Promise<Step<Inner>> => {
-      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
-      const now = await databaseNow(tx);
+    const result = await this.balance.update<Inner>(principal, async ({ player, now, tx }): Promise<Step<Inner>> => {
+      // One clock for the whole call: the database's (locked.now, read after the player lock), also for the local-date window.
       const [existing] = await tx
         .select()
         .from(trips)
@@ -173,11 +171,10 @@ export class TripsService {
    * replay when it is already abandoned or expired. All ten banked: `full` (complete it instead). Completed: `closed`.
    * A segment of another player, or one that does not exist, is `not_found`.
    */
-  async abandonTrip(principal: string, tripId: string, processNow: Date): Promise<AbandonTripOutcome> {
+  async abandonTrip(principal: string, tripId: string): Promise<AbandonTripOutcome> {
     type Inner = Exclude<AbandonTripOutcome, { kind: "abandoned" }> | { kind: "abandoned"; trip: TripView; replayed: boolean };
-    const result = await this.balance.update<Inner>(principal, processNow, async ({ player, tx }) => {
-      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
-      const now = await databaseNow(tx);
+    const result = await this.balance.update<Inner>(principal, async ({ player, now, tx }) => {
+      // One clock for the whole call: the database's (locked.now, read after the player lock).
       const trip = await lockTrip(tx, principal, tripId);
       if (!trip) return { value: { kind: "not_found" } };
       if (trip.status === "completed") return { value: { kind: "closed" } };
@@ -211,16 +208,15 @@ export class TripsService {
    * `incomplete`, except that an open segment past its expiry is `expired` (and is marked abandoned, releasing the streak,
    * as every route does). An abandoned segment is `closed`. ASSUMPTION: expiry wins over incomplete.
    */
-  async completeTrip(principal: string, tripId: string, processNow: Date): Promise<CompleteTripOutcome> {
+  async completeTrip(principal: string, tripId: string): Promise<CompleteTripOutcome> {
     type Inner =
       | Exclude<CompleteTripOutcome, { kind: "completed" } | { kind: "closed" } | { kind: "expired" }>
       | { kind: "expired" }
       | { kind: "closed" }
       | { kind: "completed"; completion: CompletionLists; replayed: boolean };
-    const result = await this.balance.update<Inner>(principal, processNow, async (locked): Promise<Step<Inner>> => {
-      const { player, tx } = locked;
-      // One clock for the whole call: the database's, read after the player lock (issued_at, expiries and evaluatedAt are database time).
-      const now = await databaseNow(tx);
+    const result = await this.balance.update<Inner>(principal, async (locked): Promise<Step<Inner>> => {
+      // One clock for the whole call: the database's (locked.now, read after the player lock).
+      const { player, tx, now } = locked;
       const trip = await lockTrip(tx, principal, tripId);
       if (!trip) return { value: { kind: "not_found" } };
       if (trip.status === "completed") {
