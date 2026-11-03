@@ -199,7 +199,7 @@ stored: receipts and the append-only audit log carry the admin's principal. Deta
 The first admin (and recovery when no active admin is left) is granted by the operator, not the API:
 
 ```
-npm run roles:grant -- <firebase-uid> --yes
+npm run roles:grant -- <firebase-uid> [--email <address>] --yes
 ```
 
 It builds, then grants `admin` to `firebase:<FIREBASE_PROJECT_ID>:<uid>` with the same role store as the API (role lock,
@@ -211,6 +211,12 @@ locked transaction as the grant), refuses a full principal of another project or
 `DATABASE_URL`, `FIREBASE_PROJECT_ID`, `APP_ENV`. Exit codes: 0 granted, 1 unexpected
 failure, 2 refused by arguments or settings, 3 refused by the database state. Every later admin is granted through
 `POST /v1/admin/accounts/{principal}/roles/admin/grant`.
+
+`--email` (or `--email=<address>`) stores a typed, unverified, display-only email on the admin row, validated by the same
+helper as the API (trimmed, lowercased, one `@`, 3-320 characters); a bad value exits 2 with nothing written. An admin can
+later correct it with `PUT /v1/admin/accounts/{principal}/roles/admin/email`. No email is ever written to the audit log.
+`POST .../roles/photographer/block` and `.../unblock` keep an account out of (or back into) the photographer request flow;
+an active admin cannot be blocked, and admin cannot be granted (API or this command) to a blocked account (409).
 
 ## Content documents and the manifest (slice T4)
 

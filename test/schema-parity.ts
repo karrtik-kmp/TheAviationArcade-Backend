@@ -61,6 +61,8 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
 const RULE_CHECKS: ReadonlySet<string> = new Set([
   "account_roles.account_roles_decided_check",
   "account_roles.account_roles_pending_role_check",
+  "account_roles.account_roles_blocked_role_check",
+  "account_roles.account_roles_grant_email_check",
   "media_items.media_items_published_state_check",
 ]);
 

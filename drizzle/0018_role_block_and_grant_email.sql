@@ -1,0 +1,8 @@
+ALTER TABLE "account_roles" DROP CONSTRAINT "account_roles_state_check";--> statement-breakpoint
+ALTER TABLE "admin_audit" DROP CONSTRAINT "admin_audit_action_check";--> statement-breakpoint
+ALTER TABLE "account_roles" ADD COLUMN "grant_email" text;--> statement-breakpoint
+CREATE INDEX "account_roles_blocked_queue" ON "account_roles" USING btree ("requested_at","principal") WHERE "account_roles"."state" = 'blocked';--> statement-breakpoint
+ALTER TABLE "account_roles" ADD CONSTRAINT "account_roles_blocked_role_check" CHECK ("account_roles"."state" <> 'blocked' OR "account_roles"."role" = 'photographer');--> statement-breakpoint
+ALTER TABLE "account_roles" ADD CONSTRAINT "account_roles_grant_email_check" CHECK ("account_roles"."grant_email" IS NULL OR ("account_roles"."role" = 'admin' AND char_length("account_roles"."grant_email") BETWEEN 3 AND 320));--> statement-breakpoint
+ALTER TABLE "account_roles" ADD CONSTRAINT "account_roles_state_check" CHECK ("account_roles"."state" IN ('pending', 'active', 'rejected', 'revoked', 'blocked'));--> statement-breakpoint
+ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_action_check" CHECK ("admin_audit"."action" IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link'));

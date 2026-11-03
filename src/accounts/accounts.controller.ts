@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Inject, Injectable, Param, Post, Query, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Injectable, Param, Post, Put, Query, Req, Res } from "@nestjs/common";
 import type { PipeTransform } from "@nestjs/common";
 import type { Request, Response } from "express";
 import { z } from "zod";
@@ -13,18 +13,24 @@ import type { AccountRole } from "../db/enums.js";
 import { SkipClientVersion } from "../platform/client-version.js";
 import { requireAccountPrincipal } from "./account-principal.js";
 import { RoleStore } from "./role-store.js";
+import { normalizeTypedEmail } from "./typed-email.js";
 import type { Decision, RoleActor, RoleRow } from "./role-store.js";
 
 // Every body and query below is strict: no role, state, principal or actor is ever read from a request body or query.
 const emptyBody = z.strictObject({}).optional();
 const emptyQuery = z.strictObject({});
 
-const note = z.string().min(1).max(500);
+// Control characters are refused (a NUL would be a Postgres error, not a 400).
+const note = z.string().min(1).max(500).refine((s) => !/\p{Cc}/u.test(s));
 const revisionField = z.int().min(1).max(2_147_483_647);
 const decisionBody = z.strictObject({ revision: revisionField, note: note.optional() });
 type DecisionBody = z.infer<typeof decisionBody>;
-const grantBody = z.strictObject({ note: note.optional() });
+// The email is validated and normalised by normalizeTypedEmail (400 invalid_request); zod only bounds the raw string first.
+const rawEmail = z.string().max(1000);
+const grantBody = z.strictObject({ note: note.optional(), email: rawEmail.optional() });
 type GrantBody = z.infer<typeof grantBody>;
+const emailEditBody = z.strictObject({ revision: revisionField, email: rawEmail.nullable() });
+type EmailEditBody = z.infer<typeof emailEditBody>;
 
 export const QUEUE_DEFAULT_LIMIT = 50;
 export const QUEUE_MAX_LIMIT = 100;
@@ -115,6 +121,10 @@ function adminView(row: RoleRow) {
     decidedBy: row.decidedBy,
     note: row.note,
     requestEmail: row.requestEmail,
+    // The typed email of an admin row (unverified, display only), and the one `email` an admin screen shows with its source.
+    grantEmail: row.grantEmail,
+    email: row.grantEmail ?? row.requestEmail,
+    emailSource: row.grantEmail !== null ? ("typed" as const) : row.requestEmail !== null ? ("verified_at_request" as const) : null,
   };
 }
 
@@ -147,6 +157,7 @@ export class MyRolesController {
       throw new ApiError(403, "forbidden", "Requesting the photographer role needs a verified email.");
     }
     const outcome = await this.roles.requestPhotographer(principal, req.email);
+    if (!outcome.ok) throw outcome.error;
     res.status(outcome.changed ? 201 : 200);
     return { role: ownView(outcome.row), changed: outcome.changed };
   }
@@ -161,7 +172,7 @@ export class AdminRolesController {
 
   /** Role rows in one state (default `pending`), oldest request first, with an opaque cursor. */
   @Get("role-requests")
-  async queue(@Query(new ZodValidationPipe(queueQuery, "Expected ?state=pending|active|rejected|revoked, ?cursor and ?limit (1-100).")) query: QueueQuery) {
+  async queue(@Query(new ZodValidationPipe(queueQuery, "Expected ?state=pending|active|rejected|revoked|blocked, ?cursor and ?limit (1-100).")) query: QueueQuery) {
     const limit = query.limit === undefined ? QUEUE_DEFAULT_LIMIT : Number(query.limit);
     if (limit < 1 || limit > QUEUE_MAX_LIMIT) throw new ApiError(400, "invalid_request", `limit must be 1 to ${QUEUE_MAX_LIMIT}.`);
     const after = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
@@ -195,6 +206,30 @@ export class AdminRolesController {
     return this.decide(actor, target, "photographer", "reject", body);
   }
 
+  /** Block a photographer row (any state but blocked) from the role. Fixed route: never the `:role` revoke route. */
+  @Post("accounts/:principal/roles/photographer/block")
+  @HttpCode(200)
+  block(
+    @Principal() actor: string,
+    @Param("principal", AccountPrincipalPipe) target: string,
+    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
+    @Body(new ZodValidationPipe(decisionBody, "Expected { revision: integer, note?: string } and nothing else.")) body: DecisionBody,
+  ) {
+    return this.setBlocked(actor, target, "block", body);
+  }
+
+  /** Lift a block: `blocked` becomes `revoked`, so the account may request again. */
+  @Post("accounts/:principal/roles/photographer/unblock")
+  @HttpCode(200)
+  unblock(
+    @Principal() actor: string,
+    @Param("principal", AccountPrincipalPipe) target: string,
+    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
+    @Body(new ZodValidationPipe(decisionBody, "Expected { revision: integer, note?: string } and nothing else.")) body: DecisionBody,
+  ) {
+    return this.setBlocked(actor, target, "unblock", body);
+  }
+
   /** Revoke `photographer` or `admin` (self-revoke allowed while another admin remains). Any other role segment is 404. */
   @Post("accounts/:principal/roles/:role/revoke")
   @HttpCode(200)
@@ -216,9 +251,30 @@ export class AdminRolesController {
     @Principal() actor: string,
     @Param("principal", AccountPrincipalPipe) target: string,
     @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
-    @Body(new ZodValidationPipe(grantBody, "Expected { note?: string } and nothing else.")) body: GrantBody,
+    @Body(new ZodValidationPipe(grantBody, "Expected { note?: string, email?: string } and nothing else.")) body: GrantBody,
   ) {
-    const outcome = await this.roles.grantAdmin(adminActor(actor), target, body.note ?? null);
+    const email = body.email === undefined ? null : normalizeTypedEmail(body.email);
+    const outcome = await this.roles.grantAdmin(adminActor(actor), target, body.note ?? null, { email });
+    if (!outcome.ok) throw outcome.error;
+    return { role: adminView(outcome.row) };
+  }
+
+  /** Correct or clear the typed email of an admin row. Display only; unverified. */
+  @Put("accounts/:principal/roles/admin/email")
+  async editEmail(
+    @Principal() actor: string,
+    @Param("principal", AccountPrincipalPipe) target: string,
+    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
+    @Body(new ZodValidationPipe(emailEditBody, "Expected { revision: integer, email: string | null } and nothing else.")) body: EmailEditBody,
+  ) {
+    const email = body.email === null ? null : normalizeTypedEmail(body.email);
+    const outcome = await this.roles.editAdminEmail(adminActor(actor), target, body.revision, email);
+    if (!outcome.ok) throw outcome.error;
+    return { role: adminView(outcome.row) };
+  }
+
+  private async setBlocked(actor: string, target: string, kind: "block" | "unblock", body: DecisionBody) {
+    const outcome = await this.roles.setBlocked(adminActor(actor), target, kind, body.revision, body.note ?? null);
     if (!outcome.ok) throw outcome.error;
     return { role: adminView(outcome.row) };
   }

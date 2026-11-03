@@ -13,13 +13,13 @@ import type { AccountRole } from "../src/db/enums.js";
 // guard (with the database read stubbed); test/roles.e2e.test.ts runs the same rules against the real database.
 
 describe("role enums", () => {
-  it("lists the three roles and four states of ADR-0002", () => {
+  it("lists the three roles and five states of ADR-0002 (plus `blocked`, plan R-d)", () => {
     expect(ACCOUNT_ROLES).toEqual(["player", "photographer", "admin"]);
-    expect(ROLE_STATES).toEqual(["pending", "active", "rejected", "revoked"]);
+    expect(ROLE_STATES).toEqual(["pending", "active", "rejected", "revoked", "blocked"]);
   });
 
   it("audits every role change", () => {
-    for (const action of ["role_request", "role_approve", "role_reject", "role_grant", "role_revoke"]) {
+    for (const action of ["role_request", "role_approve", "role_reject", "role_grant", "role_revoke", "role_block", "role_unblock", "role_email_edit"]) {
       expect(ADMIN_AUDIT_ACTIONS).toContain(action);
     }
   });

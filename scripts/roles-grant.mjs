@@ -20,16 +20,19 @@ const refuse = (message, code = 2) => {
   process.exit(code);
 };
 
-const usage = "Usage: npm run roles:grant -- <uid> [--role admin] --yes";
+const usage = "Usage: npm run roles:grant -- <uid> [--role admin] [--email <address>] --yes";
 const args = process.argv.slice(2);
 const positionals = [];
 let confirmed = false;
 let role = "admin";
+let typedEmail;
 for (let i = 0; i < args.length; i += 1) {
   const arg = args[i];
   if (arg === "--yes") confirmed = true;
   else if (arg === "--role") role = args[(i += 1)] ?? "";
   else if (arg.startsWith("--role=")) role = arg.slice("--role=".length);
+  else if (arg === "--email") typedEmail = args[(i += 1)] ?? "";
+  else if (arg.startsWith("--email=")) typedEmail = arg.slice("--email=".length);
   else if (arg.startsWith("--")) refuse(`Unknown option ${arg}. ${usage}.`);
   else positionals.push(arg);
 }
@@ -48,6 +51,17 @@ try {
 }
 const projectId = config.firebaseProjectId;
 const appEnv = config.appEnv;
+
+// The typed email goes through the API's own validator (trim, lowercase, one @, 3-320 characters). Display only, unverified.
+let email = null;
+if (typedEmail !== undefined) {
+  const { normalizeTypedEmail } = await import("../dist/accounts/typed-email.js");
+  try {
+    email = normalizeTypedEmail(typedEmail);
+  } catch (error) {
+    refuse(error instanceof Error ? error.message : "That email is not acceptable.");
+  }
+}
 
 const { accountPrincipalFor, uidOfAccountPrincipal } = await import("../dist/accounts/account-principal.js");
 const target = positionals[0];
@@ -94,7 +108,7 @@ try {
 try {
   const store = new RoleStore(new DatabaseService(pool));
   // actorName in the store cuts `operator:<id>` to 256 characters.
-  const outcome = await store.grantAdmin({ kind: "operator", id: osUser }, principal, null, { onlyIfNoActiveAdmin: true });
+  const outcome = await store.grantAdmin({ kind: "operator", id: osUser }, principal, null, { onlyIfNoActiveAdmin: true, email });
   if (!outcome.ok) {
     console.error(`${outcome.error.message}`);
     process.exitCode = 3;

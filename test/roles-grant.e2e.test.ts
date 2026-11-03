@@ -198,4 +198,49 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
     expect(audit).toHaveLength(1);
     expect(audit[0].detail).toMatchObject({ from: { state: "revoked", revision: 1 }, to: { state: "active", revision: 2 } });
   });
+  it("--email (and --email=) stores the normalised typed email on the admin row; the audit row carries no email", async () => {
+    const t = fresh();
+    const u = fresh();
+    await withNoActiveAdmin(async () => {
+      const first = run([t.uid, "--email", "  Ops@Example.TEST ", "--yes"]);
+      expect(first.status, first.err).toBe(0);
+      expect(first.out + first.err).not.toContain("ops@example.test");
+    });
+    expect((await sql.query("SELECT grant_email FROM account_roles WHERE principal = $1 AND role = 'admin'", [t.principal])).rows[0].grant_email).toBe("ops@example.test");
+    await withNoActiveAdmin(async () => {
+      expect(run([u.uid, "--email=Other@Example.test", "--yes"]).status).toBe(0);
+    });
+    expect((await sql.query("SELECT grant_email FROM account_roles WHERE principal = $1 AND role = 'admin'", [u.principal])).rows[0].grant_email).toBe("other@example.test");
+    for (const principal of [t.principal, u.principal]) {
+      const audit = await auditRows(principal);
+      expect(audit).toHaveLength(1);
+      expect(JSON.stringify(audit[0]).toLowerCase()).not.toContain("example.test");
+    }
+  });
+
+  it("a bad --email exits 2 before the database is contacted and writes nothing", async () => {
+    const t = fresh();
+    for (const bad of ["not-an-email", "a@@b.test", "has space@example.test", "", "x".repeat(400)]) {
+      const r = run([t.uid, "--email", bad, "--yes"]);
+      expect(r.status, JSON.stringify(bad)).toBe(2);
+      expect(r.out).not.toContain("Target database");
+    }
+    expect(run([t.uid, "--email"]).status).toBe(2); // a missing value is the empty string
+    expect(await adminRow(t.principal)).toBeUndefined();
+  });
+
+  it("refuses an account whose photographer row is blocked (exit 3, nothing written); the store refuses it too", async () => {
+    const t = fresh();
+    await seedRole(sql, t.principal, "photographer", "blocked");
+    await withNoActiveAdmin(async () => {
+      const r = run([t.uid, "--yes"]);
+      expect(r.status, r.err).toBe(3);
+      expect(r.err).toContain("blocked");
+      const outcome = await store.grantAdmin({ kind: "operator", id: "test" }, t.principal, null);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error.status).toBe(409);
+    });
+    expect(await adminRow(t.principal)).toBeUndefined();
+    expect(await auditRows(t.principal)).toEqual([]);
+  });
 });

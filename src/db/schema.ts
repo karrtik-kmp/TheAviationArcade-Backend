@@ -493,7 +493,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link')`,
     ),
   ],
 );
@@ -522,11 +522,14 @@ export const accountRoles = pgTable(
     // A photographer request's verified token email, shown to admins only and never used for authorisation (user ruling
     // 2026-11-03). NULL on every other row. DELETE /v1/me clears it; the role and audit rows stay (ADR-0002).
     requestEmail: text("request_email"),
+    // An admin row's email, TYPED by the granting admin (or the operator command): unverified, display only, never used for
+    // authorisation, editable by an admin (plan R-d). NULL on every other row. DELETE /v1/me clears it (clearEmails).
+    grantEmail: text("grant_email"),
   },
   (t) => [
     primaryKey({ name: "account_roles_pk", columns: [t.principal, t.role] }),
     check("account_roles_role_check", sql`${t.role} IN ('player', 'photographer', 'admin')`),
-    check("account_roles_state_check", sql`${t.state} IN ('pending', 'active', 'rejected', 'revoked')`),
+    check("account_roles_state_check", sql`${t.state} IN ('pending', 'active', 'rejected', 'revoked', 'blocked')`),
     // Pending exactly while undecided: every non-pending row carries both decided_at and decided_by.
     check("account_roles_decided_check", sql`(${t.state} = 'pending' AND ${t.decidedAt} IS NULL AND ${t.decidedBy} IS NULL) OR (${t.state} <> 'pending' AND ${t.decidedAt} IS NOT NULL AND ${t.decidedBy} IS NOT NULL)`),
     // Only a photographer request is ever pending; admin and player rows are issued directly.
@@ -538,6 +541,10 @@ export const accountRoles = pgTable(
     check("account_roles_decided_by_check", sql`${t.decidedBy} IS NULL OR length(${t.decidedBy}) BETWEEN 1 AND 256`),
     check("account_roles_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
     check("account_roles_request_email_check", sql`${t.requestEmail} IS NULL OR length(${t.requestEmail}) BETWEEN 3 AND 320`),
+    // `blocked` is a photographer-only state (R-d); a typed email lives on admin rows only (same length limit as request_email).
+    check("account_roles_blocked_role_check", sql`${t.state} <> 'blocked' OR ${t.role} = 'photographer'`),
+    check("account_roles_grant_email_check", sql`${t.grantEmail} IS NULL OR (${t.role} = 'admin' AND char_length(${t.grantEmail}) BETWEEN 3 AND 320)`),
+    index("account_roles_blocked_queue").on(t.requestedAt, t.principal).where(sql`${t.state} = 'blocked'`),
   ],
 );
 

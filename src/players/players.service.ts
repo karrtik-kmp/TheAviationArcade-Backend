@@ -71,8 +71,8 @@ export class PlayersService {
 
   /** Erase this backend data for the principal (PlayerBalance.erase). Idempotent. Returns whether a player existed. */
   async deletePlayer(principal: string): Promise<boolean> {
-    // The requester email kept on a photographer request goes with the account; role rows and audit rows stay.
-    await this.roles.clearRequestEmail(principal);
+    // The emails kept on role rows (a photographer request email, an admin typed email) go with the account; role rows and audit rows stay.
+    await this.roles.clearEmails(principal);
     return this.balance.erase(principal);
   }
 }

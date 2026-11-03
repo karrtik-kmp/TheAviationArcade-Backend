@@ -19,6 +19,9 @@ export const ADMIN_AUDIT_ACTIONS = [
   "role_reject",
   "role_grant",
   "role_revoke",
+  "role_block",
+  "role_unblock",
+  "role_email_edit",
   "media_upload",
   "media_version",
   "media_edit",
@@ -29,9 +32,9 @@ export const ADMIN_AUDIT_ACTIONS = [
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
 export const CONTENT_DOCUMENT_NAMES = ["field-awards", "clipper-cards", "aircraft-tags"] as const;
-/** Account roles (Backend ADR-0002). Only an `active` row grants anything; `admin` includes every `photographer` permission. */
+/** Account roles (Backend ADR-0002). Only an `active` row grants anything (`blocked` is a photographer-only state, plan R-d); `admin` includes every `photographer` permission. */
 export const ACCOUNT_ROLES = ["player", "photographer", "admin"] as const;
-export const ROLE_STATES = ["pending", "active", "rejected", "revoked"] as const;
+export const ROLE_STATES = ["pending", "active", "rejected", "revoked", "blocked"] as const;
 /** Media pipeline (docs/plans/media-pipeline.md, T2). `published` exactly while `media_items.published_version` is set. */
 export const MEDIA_STATES = ["unverified", "published", "withdrawn"] as const;
 export const MEDIA_CONTENT_TYPES = ["image/jpeg", "image/png"] as const;

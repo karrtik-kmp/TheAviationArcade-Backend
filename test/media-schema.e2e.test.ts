@@ -306,6 +306,54 @@ describe("account_roles.request_email", () => {
   });
 });
 
+describe("account_roles R-d checks (migration 0018)", () => {
+  const insert = (role: string, state: string, grantEmail: string | null = null, decided = true) =>
+    pool.query(
+      `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, grant_email)
+       VALUES ($1, $2, $3, clock_timestamp(), CASE WHEN $4::boolean THEN clock_timestamp() END, CASE WHEN $4::boolean THEN 'test:seed' END, $5)
+       ON CONFLICT (principal, role) DO UPDATE SET state = EXCLUDED.state, decided_at = EXCLUDED.decided_at, decided_by = EXCLUDED.decided_by, grant_email = EXCLUDED.grant_email`,
+      [OTHER, role, state, decided, grantEmail],
+    );
+
+  it("`blocked` is a photographer-only state, and a blocked row still needs decided_at and decided_by", async () => {
+    expect(await violated(insert("photographer", "blocked"))).toBeNull();
+    expect(await violated(insert("admin", "blocked"))).toBe("account_roles_blocked_role_check");
+    expect(await violated(insert("player", "blocked"))).toBe("account_roles_blocked_role_check");
+    expect(await violated(insert("photographer", "blocked", null, false))).toBe("account_roles_decided_check");
+    expect(await violated(insert("photographer", "approved"))).toBe("account_roles_state_check");
+  });
+
+  it("grant_email lives on admin rows only and is bounded to 3-320 characters", async () => {
+    expect(await violated(insert("admin", "active", "a@b"))).toBeNull();
+    expect(await violated(insert("admin", "active", null))).toBeNull();
+    expect(await violated(insert("admin", "active", "x".repeat(320)))).toBeNull();
+    expect(await violated(insert("admin", "active", "ab"))).toBe("account_roles_grant_email_check");
+    expect(await violated(insert("admin", "active", ""))).toBe("account_roles_grant_email_check");
+    expect(await violated(insert("admin", "active", "x".repeat(321)))).toBe("account_roles_grant_email_check");
+    expect(await violated(insert("photographer", "active", "a@b.test"))).toBe("account_roles_grant_email_check");
+    expect(await violated(insert("player", "active", "a@b.test"))).toBe("account_roles_grant_email_check");
+  });
+
+  it("the audit log accepts role_block, role_unblock and role_email_edit", async () => {
+    const run = (action: string) =>
+      pool.query("INSERT INTO admin_audit (actor, action, target, detail, created_at) VALUES ($1, $2, 'media-schema-test', '{}'::jsonb, clock_timestamp())", [
+        OWNER,
+        action,
+      ]);
+    try {
+      for (const a of ["role_block", "role_unblock", "role_email_edit"]) expect(await violated(run(a)), a).toBeNull();
+    } finally {
+      await pool.query("DELETE FROM admin_audit WHERE target = 'media-schema-test'");
+    }
+  });
+
+  it("has the partial blocked-queue index", async () => {
+    const { rows } = await pool.query("SELECT indexdef FROM pg_indexes WHERE indexname = 'account_roles_blocked_queue'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].indexdef).toContain("state = 'blocked'");
+  });
+});
+
 describe("admin_audit actions", () => {
   it("accepts the six media actions and still refuses an unknown one", async () => {
     const run = (action: string) =>

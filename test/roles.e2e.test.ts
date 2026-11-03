@@ -194,7 +194,7 @@ describe("account_roles constraints", () => {
   });
 
   it("the audit log accepts every role action", async () => {
-    const actions = ["role_request", "role_approve", "role_reject", "role_grant", "role_revoke"];
+    const actions = ["role_request", "role_approve", "role_reject", "role_grant", "role_revoke", "role_block", "role_unblock", "role_email_edit"];
     const client = await sql.connect();
     try {
       await client.query("BEGIN");
