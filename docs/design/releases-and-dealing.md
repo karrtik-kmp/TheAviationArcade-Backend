@@ -83,9 +83,9 @@ gone but releases still deal; staff `republish` packages and re-upload photos.
 
 1. The user signs off by name on the zone (`aviation-arcade-website`, `de`, prefix `backend/`).
 2. `npm run bunny:check` passes against it (put, get with byte compare, delete under `setup-checks/`).
-3. Only then `BLOB_STORE=bunny` and `CONTENT_URL_SECRET` (§2.3).
+3. Only then `BLOB_STORE=bunny`, the pull zone with token auth and its Edge Rules, `BUNNY_CDN_TOKEN_KEY` and `BUNNY_CDN_HOST` (§2.3, ADR-0001).
 
-No pull zone, CDN token key or other Bunny account change without separate sign-off. Tests use `MemoryBlobStore` or
+The pull zone, token key and Edge Rules (ADR-0001) are created only with that sign-off. Tests use `MemoryBlobStore` or
 `BunnyBlobStore` with a stubbed fetcher.
 
 ## 2. Photos (in scope now)
@@ -112,17 +112,13 @@ edits, retire, restore never touch it). `admin_audit_action_check` gains `photo_
 
 ### 2.3 Serving to players
 
-| Option | Unity change | Bunny account change |
-|---|---|---|
-| Signed-in route (Bearer) | `RemoteImageLoader` sends no headers; needs an auth-aware loader | none |
-| **Backend-signed URL to the backend's own route (recommended, Q-U7)** | none (plain `UnityWebRequestTexture`) | none |
-| Bunny pull zone + token auth | none | yes; later, needs sign-off |
-
-Recommended: `GET /v1/content/photos/{sha256}?exp=<unix>&sig=<b64url>`, `@Public`, `@SkipClientVersion` (the texture
-loader sends no `X-Client-Version`), per-IP rate limit 120/min; `sig` = HMAC-SHA256(`CONTENT_URL_SECRET`, `sha256 + "." +
-exp`), constant-time check; `exp` = issue + 2 h (longer than the 30-minute Trip expiry); bad or expired → 403
-`forbidden`; unknown → 404; verified bytes with §1.3 caching. URLs relative, as manifest document URLs are.
-`CONTENT_URL_SECRET` (>= 32 bytes) required whenever `BLOB_STORE` is not `none`.
+Decided in [Backend ADR-0001](../adr/ADR-0001-image-storage-and-delivery.md) (user, 2026-11-03), replacing the
+earlier backend-streamed recommendation: a Bunny pull zone on the shared zone with zone-wide token authentication;
+the backend signs one HS256 link per file (24 h, no IP binding, key `BUNNY_CDN_TOKEN_KEY`, host `BUNNY_CDN_HOST`) only
+for callers allowed to see the image (unverified: staff; published: any signed-in player and the website); an Edge
+Rule blocks everything outside `/backend/content/photos/`; edge cache 1 year, device cache 24 h. The media row stores
+the path, hash, size, type, dimensions, version and licence fields, never a URL. Trip open sends all ten links for
+preloading; each Round issue re-sends its own.
 
 ## 3. Content releases
 
@@ -306,7 +302,7 @@ generated; second `db:generate` reports no changes; S5 parity lists in the same 
 its migration on top. New TS lists `FLIGHT_KINDS`, `DECK_FORMATS`, `DEAL_MODES`. PlayerBalance: no new Step flags.
 Errors: new `content_version_mismatch` (409), `photo_invalid` (422); reused `storage_unavailable`, `content_invalid`,
 `nothing_to_publish`, `version_conflict`, `unknown_item_ids`, `not_found`, `invalid_request`, `forbidden`. Config:
-`CONTENT_URL_SECRET`. API: additive minor steps. UGS copy unchanged (`schemaVersion` 3).
+`BUNNY_CDN_TOKEN_KEY`, `BUNNY_CDN_HOST` (ADR-0001). API: additive minor steps. UGS copy unchanged (`schemaVersion` 3).
 
 ## 9. Slices
 
@@ -316,7 +312,7 @@ Errors: new `content_version_mismatch` (409), `photo_invalid` (422); reused `sto
 | R1 | Card gate (§6) | — |
 | P1 | photo upload, link, staff GET (0016) | R0 |
 | R2 | release store, create/list/get, Military adapter (0017) | R0, P1 |
-| P2 | player photo route (signed URL, LRU, 503 mapping), `CONTENT_URL_SECRET` | R0, P1, Q-U7 |
+| P2 | CDN link signer (ADR-0001), image links + licence fields on Trip open and Round issue, website image-record route | R0, P1 |
 | R3 | activate, rollback, deactivate, republish, manifest `v: 2`, package route | R2 |
 | R4 | dealt Trips (0018), `flight` on issue, choice result, `content_version_mismatch` | R0, R1, R2 |
 | M-AS | Airport adapter + `own-then-any-cap2` + fixtures | I1, R4, Q-U10 |
@@ -342,9 +338,7 @@ derived ones; picks/matches/selections rules as ASSUMPTION tests; a `republish` 
 
 For the user:
 
-- **Q-U7 photo route.** Recommended: backend-streamed behind backend-signed short-lived URLs on a second `@Public` route.
-  Alternatives: signed-in route (Unity loader needs an auth header), or later a Bunny pull zone with token auth (account
-  change; sign-off).
+- **Q-U7 photo route: decided** (user, 2026-11-03): Bunny CDN with token-signed links, see Backend ADR-0001.
 - **Q-U9 non-client content.** ATC, Call Sign and Code Search packs are public reference data (OurAirports, FAA JO 7340.2);
   Tail's labels and crops were authored by us. Moving them into the backend as content **contradicts "use only
   client-supplied content"**. Recommended: wait for the client's content, or explicitly allow reference data for these four.
