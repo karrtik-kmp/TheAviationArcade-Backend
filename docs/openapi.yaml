@@ -1,10 +1,19 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.14.0
+  version: 0.15.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.15.0 (media plan T4 and role plan R-d; staff-only, no change for the game).** Media: built (were
+    `x-planned`) `POST /v1/admin/media/{mediaId}/versions`, `PATCH /v1/admin/media/{mediaId}` (licence edit; never touches
+    the live version: an edit of a version that was ever published makes a new version with the same file),
+    `POST .../publish` and `.../withdraw` (admin). Roles (additive): new state `blocked` (photographer only);
+    `POST /v1/admin/accounts/{principal}/roles/photographer/block` and `.../unblock`; `PUT .../roles/admin/email`; the
+    admin grant takes an optional typed `email`; admin views gain `grantEmail`, `email` and `emailSource`
+    (`verified_at_request` or `typed`; a typed email is unverified and display-only). A blocked account's photographer
+    request is 403. An active admin cannot be blocked, and admin cannot be granted to a blocked account (409).
 
     **Changelog 0.14.0 (media plan T3, Backend ADR-0001; staff-only, no change for the game).** `POST /v1/admin/media` is built
     (it was `x-planned`): a photographer or admin uploads one JPEG or PNG (raw body, at most 5 MB) with a required
@@ -97,7 +106,8 @@ info:
     **Planned contract.** The media contract is planned (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002): the staff
     routes under `/v1/admin/media`, `PUT /v1/admin/content/{module}/items/{id}/media` and `GET /v1/media?ids=`, with the schemas
     `MediaItem`, `MediaVersion`, `MediaLicence`, `ImageRef` and the error code `media_invalid`. Each route moves to built, with a changelog entry,
-    when its slice lands; `POST /v1/admin/media` and `media_invalid` are built (0.14.0), the rest is not served yet. Before it, the Logbook was the last
+    when its slice lands; `POST /v1/admin/media` and `media_invalid` are built (0.14.0); versions, licence edit, publish and withdraw
+    (0.15.0); the list, get, content link and `GET /v1/media` routes are not served yet. Before it, the Logbook was the last
     planned operation (0.10.0), and 0.11.0 to 0.13.0 added only built routes. An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
     against it. It is NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
@@ -228,8 +238,8 @@ paths:
         Account deletion. Erases backend data only; the app deletes the Firebase account itself.
         Idempotent: 204 whether or not a player existed. A later `PUT /v1/me` with a still-valid token starts
         a fresh player at zero. No request body. Exempt from the client version gate (never 426). Role rows (`player`,
-        `photographer`, `admin`) and their audit rows are not game data and stay; only the requester email on a photographer
-        request is cleared.
+        `photographer`, `admin`) and their audit rows are not game data and stay; only the emails kept on role rows are cleared (the requester
+        email on a photographer request, and the typed email of an admin row).
       responses:
         "204":
           description: Deleted (or nothing to delete).
@@ -249,7 +259,7 @@ paths:
       summary: My role rows
       description: |
         Any signed-in caller. Every role row of the caller in any state (`player`, `photographer`, `admin`, in that order). A
-        `pending`, `rejected` or `revoked` row grants nothing. No query parameters (any is 400).
+        `pending`, `rejected`, `revoked` or `blocked` row grants nothing. No query parameters (any is 400).
       responses:
         "200":
           description: The caller's rows (empty before the first `PUT /v1/me`).
@@ -274,7 +284,9 @@ paths:
         Any signed-in caller whose token has a verified email (otherwise 403). The role is fixed by the path: a body or query naming
         a role, state or anything else is 400. No body. Creates no player row. A missing, `rejected` or `revoked` row becomes
         `pending` (a rejected or revoked one at `revision` + 1); a `pending` or `active` row is never touched (200,
-        `changed: false`). An admin approves or rejects it. Audit action `role_request`, only when a row changed.
+        `changed: false`). An admin approves or rejects it. Audit action `role_request`, only when a row changed. An account
+        whose `photographer` row is `blocked` gets 403 `forbidden` and nothing is written (a block is per principal, never
+        matched by email).
       responses:
         "200":
           description: Already `pending` or `active`; nothing changed.
@@ -1138,7 +1150,9 @@ paths:
       description: |
         Admin only. `photographer` and `admin` rows in one `state` (default `pending`), oldest request first (then principal,
         role). `limit` is 1 to 100 (default 50). `nextCursor` is opaque; pass it back as `cursor` for the next page, `null` on the
-        last. Shows `requestEmail` for photographer rows. Exempt from the client version gate.
+        last. `?state=blocked` lists blocked photographer rows (by their original request time). Shows `requestEmail` for
+        photographer rows and `grantEmail` for admin rows (`email` and `emailSource` say which one an admin screen shows).
+        Exempt from the client version gate.
       parameters:
         - name: state
           in: query
@@ -1242,6 +1256,86 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/admin/accounts/{principal}/roles/photographer/block:
+    post:
+      tags: [roles, admin]
+      operationId: blockPhotographer
+      summary: Block an account from the photographer role
+      description: |
+        A `pending`, `active`, `rejected` or `revoked` photographer row becomes `blocked`: a real, lasting state. A blocked
+        account cannot request the role again (403) and, if it was active, loses photographer access on the next request. Audit
+        action `role_block`. An account with an `active` admin row cannot be blocked (409; revoke admin first). Blocking a
+        `blocked` row is 409. Revoke, approve and reject of a `blocked` row are 409 too.
+        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
+        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
+        is 409 `version_conflict` naming the current state and revision; no photographer row is 404. Every change bumps `revision`
+        and writes one audit row (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the
+        client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/accounts/{principal}/roles/photographer/unblock:
+    post:
+      tags: [roles, admin]
+      operationId: unblockPhotographer
+      summary: Lift a photographer block
+      description: |
+        `blocked` becomes `revoked`: the account may request the role again. A `revoked` row after an unblock does not mean the
+        account was ever approved. Audit action `role_unblock`. Unblocking a row that is not `blocked` is 409.
+        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
+        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
+        is 409 `version_conflict` naming the current state and revision; no photographer row is 404. Every change bumps `revision`
+        and writes one audit row (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the
+        client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/admin/accounts/{principal}/roles/{role}/revoke:
     post:
       tags: [roles, admin]
@@ -1289,10 +1383,13 @@ paths:
       summary: Grant the admin role
       description: |
         A missing row becomes `active`; a `revoked` row becomes `active` again (the same row, `revision` + 1). An `active`,
-        `pending` or `rejected` admin row is 409 `version_conflict`. Admin is never self-registered; `photographer` is never
+        `pending` or `rejected` admin row is 409 `version_conflict`, and so is an account whose `photographer` row is `blocked`
+        (unblock it first). An optional `email` is TYPED by the granting admin: trimmed, lowercased, one `@`, 3-320 characters
+        (otherwise 400); it is unverified, display only and never used for authorisation. A re-grant replaces the stored email
+        when one is given and keeps it otherwise. No email is written to the audit row. Admin is never self-registered; `photographer` is never
         granted this way. Audit action `role_grant`. The body has no `revision` (there is nothing to fence on a missing row).
         Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
-        written. The only 409 `version_conflict` is a row that exists and is not revoked, naming its current state and revision.
+        written. A 409 `version_conflict` is either an admin row that exists and is not revoked (naming its current state and revision), or an account whose photographer row is blocked.
         Every change bumps `revision` and writes one audit row (`detail`: role, from and to state and revision, note).
         Answers 200, not 201. Exempt from the client version gate.
       parameters:
@@ -1302,6 +1399,44 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/AdminGrantRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/accounts/{principal}/roles/admin/email:
+    put:
+      tags: [roles, admin]
+      operationId: editAdminEmail
+      summary: Correct or clear an admin's typed email
+      description: |
+        Sets (or with `email: null` clears) the typed email of an `active` or `revoked` admin row. The email is typed by an
+        admin: unverified, display only, never used for authorisation; it is trimmed and lowercased and must have one `@` and
+        3 to 320 characters (otherwise 400). Fenced by `revision`; a change bumps `revision` and writes one `role_email_edit`
+        audit row (`detail`: role, from and to state and revision, `emailChanged: true`; never the email). An unchanged value is
+        a 200 no-op (nothing written). No admin row is 404; a different `revision` is 409 `version_conflict`.
+        Admin only, re-checked under the role lock. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminEmailEditRequest" }
       responses:
         "200":
           description: The row as it is now.
@@ -2160,7 +2295,8 @@ paths:
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   # ---------------------------------------------------------------------------------------------------------
-  # Media pipeline (plan docs/plans/media-pipeline.md). Built from 0.14.0: POST /v1/admin/media. Every other operation below is
+  # Media pipeline (plan docs/plans/media-pipeline.md). Built: POST /v1/admin/media (0.14.0) and, with plan T4, PATCH
+  # /v1/admin/media/{mediaId}, POST .../versions, POST .../publish and POST .../withdraw. Every other operation below is
   # x-planned and answers 404 `not_found` until its slice is built.
   # ---------------------------------------------------------------------------------------------------------
 
@@ -2286,12 +2422,10 @@ paths:
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
     patch:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: editMedia
       summary: Edit the draft version's licence
       description: |
-        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer edits only their own items (others
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer edits only their own items (others
         are 404 `not_found`). Allowed in every state, including `withdrawn`. Strict body `{ revision, licence, note? }`: `licence` is
         required (a body with only `revision`, or `revision` and `note`, is 400); inside `licence`, an absent key keeps the stored
         value and `null` clears it. `note` goes to the audit row only.
@@ -2299,7 +2433,9 @@ paths:
         The edit always targets the DRAFT version. When `draftVersion` equals `publishedVersion` (no newer upload), the edit creates a
         NEW draft version: the same file (sha256, type, size, dimensions), `version` + 1 and the edited licence; `draftVersion`
         advances while `publishedVersion` and its frozen licence and credit stay live until an admin publishes. When `draftVersion`
-        is greater than `publishedVersion` (or nothing is published), that draft version is edited in place. Fenced by `revision`
+        is greater than `publishedVersion` (or nothing is published), that draft version is edited in place, except that a draft
+        which was live once before (an item that was withdrawn) is never rewritten: its licence is frozen history, so the edit
+        creates a new version instead. Text is trimmed; control characters are 400. Fenced by `revision`
         (stale is 409 `version_conflict`, nothing written). A change bumps `revision` and writes one audit row with the field diff.
         Sending the stored values is a 200 with no change, no new version and no new `revision`. Exempt from the client version gate.
       parameters:
@@ -2331,12 +2467,10 @@ paths:
   /v1/admin/media/{mediaId}/versions:
     post:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: uploadMediaVersion
       summary: Upload a new file version of an item
       description: |
-        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer adds versions only to their own items
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer adds versions only to their own items
         (others are 404 `not_found`). Allowed in every state, including `withdrawn` (the owner and admins may add a version to a
         withdrawn item; it can be published again). The body is the raw image exactly as for `POST /v1/admin/media` (same limits,
         413, 415, sniffing and 422 `media_invalid`), plus the item `revision` as a query parameter (fence: stale is 409
@@ -2394,12 +2528,10 @@ paths:
   /v1/admin/media/{mediaId}/publish:
     post:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: publishMedia
       summary: Publish the draft version
       description: |
-        PLANNED. Admin only. Makes the draft version the published one (`state` `published`, `publishedVersion` = `draftVersion`); its
+        Admin only. Makes the draft version the published one (`state` `published`, `publishedVersion` = `draftVersion`); its
         licence is frozen with it. The draft's licence must name a licence and, when `creditRequired`, a credit: otherwise 422
         `content_invalid`. Publishing a draft that is already the published version is 409 `nothing_to_publish`. Fenced by `revision`
         (stale is 409 `version_conflict`). Bumps `revision`; one audit row. Answers 200, not 201. Exempt from the client version gate.
@@ -2450,12 +2582,10 @@ paths:
   /v1/admin/media/{mediaId}/withdraw:
     post:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: withdrawMedia
       summary: Withdraw a published image
       description: |
-        PLANNED. Admin only. `published` to `withdrawn`: players and the website stop seeing it (`publishedVersion` becomes null). An
+        Admin only. `published` to `withdrawn`: players and the website stop seeing it (`publishedVersion` becomes null). An
         item that is not published is 409 `version_conflict`. Fenced by `revision`. Bumps `revision`; one audit row. Answers 200, not
         201. Exempt from the client version gate.
       parameters:
@@ -2643,7 +2773,6 @@ components:
       schema: { type: string, enum: [photographer, admin] }
 
     MediaIdPath:
-      x-planned: true
       name: mediaId
       in: path
       required: true
@@ -2813,7 +2942,6 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     MediaNotFound:
-      x-planned: true
       description: |
         No such media item, or the id is malformed. A photographer who is not the owner gets the same answer (the item's existence is
         not revealed).
@@ -2825,7 +2953,6 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     MediaWriteConflict:
-      x-planned: true
       description: |
         `version_conflict`: `revision` is not the item's current revision, or the item is not in a state the move starts from. The
         message names the current state and revision. Nothing was written; reload and decide again.
@@ -3031,7 +3158,8 @@ components:
           items: { type: string, enum: [player, photographer, admin] }
     RoleState:
       type: string
-      enum: [pending, active, rejected, revoked]
+      description: "`blocked` applies to `photographer` rows only; only `active` grants anything."
+      enum: [pending, active, rejected, revoked, blocked]
     OwnRole:
       type: object
       additionalProperties: false
@@ -3067,10 +3195,18 @@ components:
       additionalProperties: false
       properties:
         note: { type: string, minLength: 1, maxLength: 500 }
+        email: { type: string, maxLength: 1000, description: "A typed, unverified, display-only email (trimmed and lowercased; one `@`, 3-320 characters after trimming)." }
+    AdminEmailEditRequest:
+      type: object
+      additionalProperties: false
+      required: [revision, email]
+      properties:
+        revision: { type: integer, minimum: 1, maximum: 2147483647, description: The row's `revision` as the admin read it. }
+        email: { type: [string, "null"], maxLength: 1000, description: "The corrected typed email, or null to clear it." }
     AdminRoleRow:
       type: object
       additionalProperties: false
-      required: [principal, role, state, revision, requestedAt, decidedAt, decidedBy, note, requestEmail]
+      required: [principal, role, state, revision, requestedAt, decidedAt, decidedBy, note, requestEmail, grantEmail, email, emailSource]
       properties:
         principal: { type: string }
         role: { type: string, enum: [player, photographer, admin] }
@@ -3081,6 +3217,9 @@ components:
         decidedBy: { type: [string, "null"], description: "The deciding admin's principal, `operator:<os user>` or `system:signup`. Null while pending." }
         note: { type: [string, "null"], description: "The note of the latest decision (the audit rows keep the history)." }
         requestEmail: { type: [string, "null"], description: "The verified email the account had when it asked for `photographer`; admins only, never used for authorisation. Null for other roles, and cleared by `DELETE /v1/me`." }
+        grantEmail: { type: [string, "null"], description: "The email TYPED by the admin who granted `admin` (or by the operator command), or later corrected: unverified, display only, never used for authorisation. Null for other roles and when none was given; cleared by `DELETE /v1/me`." }
+        email: { type: [string, "null"], description: "The one email to show: `grantEmail` when set, else `requestEmail`." }
+        emailSource: { type: [string, "null"], enum: [verified_at_request, typed, null], description: "Where `email` comes from. A typed email is unverified." }
     AdminRoleEnvelope:
       type: object
       additionalProperties: false
@@ -4372,8 +4511,8 @@ components:
           items: { $ref: "#/components/schemas/AircraftTagEntry" }
 
     # ---------------------------------------------------------------------------------------------------------
-    # Media pipeline schemas (plan T0, docs/plans/media-pipeline.md, ADR-0001, ADR-0002). Served from 0.14.0: MediaItem,
-    # MediaVersion and MediaLicence (returned by POST /v1/admin/media). The rest are used only by x-planned operations. Shapes follow the committed media tables (migration 0017).
+    # Media pipeline schemas (plan T0, docs/plans/media-pipeline.md, ADR-0001, ADR-0002). Served: MediaItem, MediaVersion and
+    # MediaLicence (0.14.0), and with plan T4 MediaEditRequest, MediaLicenceUpdate and MediaRevisionRequest. The rest are used only by x-planned operations. Shapes follow the committed media tables (migration 0017).
     # ---------------------------------------------------------------------------------------------------------
 
     MediaId:
@@ -4437,7 +4576,7 @@ components:
         width: { type: integer, minimum: 1, maximum: 4096 }
         height: { type: integer, minimum: 1, maximum: 4096 }
         licence: { $ref: "#/components/schemas/MediaLicence" }
-        publishedAt: { type: [string, "null"], format: date-time, description: When this version went live; null if it never did. }
+        publishedAt: { type: [string, "null"], format: date-time, description: When this version first went live (kept when it is withdrawn and published again); null if it never did. }
         createdAt: { type: string, format: date-time }
     MediaItem:
       type: object
@@ -4539,7 +4678,8 @@ components:
       description: |
         Edits the DRAFT version's licence; the published version and its credit stay live until an admin publishes. `licence` is
         required: `{ revision }` alone and `{ revision, note }` are 400. When the draft equals the published version the edit
-        creates a new draft version (same file, version + 1); otherwise it edits the draft in place. `note` goes to the audit row only.
+        creates a new draft version (same file, version + 1); otherwise it edits the draft in place, except that a draft which was live once (an item now withdrawn) gets
+        version + 1 as well. `note` goes to the audit row only.
       properties:
         revision: { type: integer, minimum: 1, maximum: 2147483647 }
         licence: { $ref: "#/components/schemas/MediaLicenceUpdate" }

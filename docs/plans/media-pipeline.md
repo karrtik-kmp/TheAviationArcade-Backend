@@ -290,7 +290,8 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
     `.../withdraw` `{ revision }` (`@Roles("admin")`). **Licence edits never touch the live version** (lead, from
     the 2026-11-03 ruling): when `draftVersion == publishedVersion`, a PATCH creates a new draft version with the same
     file (sha256, type, size, dimensions), `version + 1` and the edited licence; otherwise it edits the unpublished draft
-    in place. `licence` is required in a PATCH (`note` optional). **Idempotency first:** on both upload routes the
+    in place — except a draft that was ever published (now withdrawn), which also gets `version + 1` (T4 build, lead
+    accepted: a once-live version's licence is history, and clearing it would break the publishable CHECK). `licence` is required in a PATCH (`note` optional). **Idempotency first:** on both upload routes the
     `Idempotency-Key` lookup runs before the `revision` fence; a replay needs the same operation, `mediaId` and sha256
     (else 422 `idempotency_key_reused`) and answers 200 with the item as stored. Withdrawn items may get new versions
     and be published again. Every write is fenced by `media_items.revision` (stale → 409

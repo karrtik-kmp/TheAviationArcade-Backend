@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ApiError } from "../../common/errors.js";
 import { DatabaseService, ExpectedRollback } from "../../database/database.module.js";
+import type { Database, Tx } from "../../database/database.module.js";
 import { databaseNow } from "../../database/clock.js";
 import { adminAudit, mediaItems, mediaUploadKeys, mediaVersions } from "../../db/schema.js";
 import { BLOB_STORE, StorageUnavailableError } from "../../storage/blob-store.js";
@@ -10,7 +11,7 @@ import { storageApiError } from "../import-blob.js";
 import type { BlobStore } from "../../storage/blob-store.js";
 import { sniffImage } from "./image-sniff.js";
 import { mediaIdOf, toItemView } from "./media-view.js";
-import type { MediaItemView } from "./media-view.js";
+import type { MediaItemRow, MediaItemView, MediaVersionRow } from "./media-view.js";
 
 export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 export const MEDIA_CONTENT_TYPES_ACCEPTED = ["image/jpeg", "image/png"] as const;
@@ -18,12 +19,46 @@ const EXTENSION = { "image/jpeg": "jpg", "image/png": "png" } as const;
 
 export type MediaUploadResult = { item: MediaItemView; replayed: boolean };
 
+/** The licence fields a PATCH may change; an absent key keeps the stored value and `null` clears it. */
+export type MediaLicenceEdit = {
+  credit?: string | null | undefined;
+  licenceName?: string | null | undefined;
+  licenceUrl?: string | null | undefined;
+  sourceUrl?: string | null | undefined;
+  attributionText?: string | null | undefined;
+  creditRequired?: boolean | undefined;
+};
+
+/** The result of a write that can be refused. Refusals are returned (not thrown) from inside a transaction. */
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: ApiError };
+
+/** Licence field name -> column of `media_versions`. */
+const LICENCE_COLUMNS = {
+  credit: "creditName",
+  licenceName: "licenceName",
+  licenceUrl: "licenceUrl",
+  sourceUrl: "sourceUrl",
+  attributionText: "attributionText",
+  creditRequired: "creditRequired",
+} as const;
+type LicenceField = keyof typeof LICENCE_COLUMNS;
+const LICENCE_FIELDS = Object.keys(LICENCE_COLUMNS) as LicenceField[];
+
 /** A concurrent request with the same (principal, Idempotency-Key) won the unique insert: roll this one back and replay. */
 class KeyAlreadyClaimed extends ExpectedRollback {}
 
 const sha256Of = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
-/** Staff media (plan docs/plans/media-pipeline.md, ADR-0001). T3: upload a new item. */
+const notFound = () => new ApiError(404, "not_found", "No such media item.");
+
+const staleRevision = (item: MediaItemRow, expected: number) =>
+  new ApiError(
+    409,
+    "version_conflict",
+    `The item is ${item.state} at revision ${item.revision}, not ${expected}. Reload it and decide again. Nothing was changed.`,
+  );
+
+/** Staff media (plan docs/plans/media-pipeline.md, ADR-0001). T3: upload a new item. T4: new version, licence edit, publish, withdraw. */
 @Injectable()
 export class MediaService {
   private readonly logger = new Logger("Media");
@@ -42,16 +77,12 @@ export class MediaService {
    */
   async create(principal: string, key: string, bytes: Uint8Array, declaredType: string, includeOwner: boolean): Promise<MediaUploadResult> {
     const sha256 = sha256Of(bytes);
-    const claimed = await this.findClaim(principal, key);
-    if (claimed) return this.replay(claimed, sha256, includeOwner);
+    const claimed = await this.findClaim(this.database.db, principal, key);
+    if (claimed) return this.replay(claimed, "create", null, sha256, includeOwner);
 
-    const sniffed = sniffImage(bytes);
-    if (!sniffed.ok) throw new ApiError(422, "media_invalid", `Not an accepted image: ${sniffed.reason}.`);
-    if (sniffed.contentType !== declaredType) {
-      throw new ApiError(422, "media_invalid", `The bytes are a ${sniffed.contentType} image, not ${declaredType}.`);
-    }
-    const { contentType, width, height } = sniffed;
-    await this.store(`content/photos/${sha256}.${EXTENSION[contentType]}`, bytes, contentType, sha256);
+    const image = this.inspect(bytes, declaredType);
+    await this.store(`content/photos/${sha256}.${EXTENSION[image.contentType]}`, bytes, image.contentType, sha256);
+    const { contentType, width, height } = image;
 
     try {
       const created = await this.database.withTransaction(async (tx) => {
@@ -70,30 +101,21 @@ export class MediaService {
           })
           .returning();
         if (!item) throw new Error("Media item was not stored.");
-        const [version] = await tx
-          .insert(mediaVersions)
-          .values({
-            mediaId: item.id,
-            version: 1,
-            sha256,
-            contentType,
-            byteSize: bytes.length,
-            width,
-            height,
-            // A licence starts empty. Credit is required until staff decide otherwise, so an unfilled item cannot be published
-            // without a credit by accident.
-            creditRequired: true,
-            createdBy: principal,
-            createdAt: now,
-          })
-          .returning();
-        if (!version) throw new Error("Media version was not stored.");
-        const won = await tx
-          .insert(mediaUploadKeys)
-          .values({ principal, idempotencyKey: key, operation: "create", mediaId: item.id, version: 1, sha256, createdAt: now })
-          .onConflictDoNothing()
-          .returning({ key: mediaUploadKeys.idempotencyKey });
-        if (won.length !== 1) throw new KeyAlreadyClaimed();
+        const version = await this.insertVersion(tx, {
+          mediaId: item.id,
+          version: 1,
+          sha256,
+          contentType,
+          byteSize: bytes.length,
+          width,
+          height,
+          // A licence starts empty. Credit is required until staff decide otherwise, so an unfilled item cannot be published
+          // without a credit by accident.
+          creditRequired: true,
+          createdBy: principal,
+          createdAt: now,
+        });
+        await this.claimKey(tx, { principal, idempotencyKey: key, operation: "create", mediaId: item.id, version: 1, sha256, createdAt: now });
         await tx.insert(adminAudit).values({
           actor: principal,
           action: "media_upload",
@@ -107,14 +129,324 @@ export class MediaService {
     } catch (error) {
       if (!(error instanceof KeyAlreadyClaimed)) throw error;
       // Lost the race: the winner's transaction has committed, so its key is visible now.
-      const winner = await this.findClaim(principal, key);
-      if (!winner) throw new ApiError(503, "service_unavailable", "Service temporarily unavailable. Retry shortly.", { "Retry-After": "1" });
-      return this.replay(winner, sha256, includeOwner);
+      const winner = await this.findClaim(this.database.db, principal, key);
+      if (!winner) throw this.retryShortly();
+      return this.replay(winner, "create", null, sha256, includeOwner);
     }
   }
 
-  private async findClaim(principal: string, key: string) {
-    const [row] = await this.database.db
+  /**
+   * Add a new file version to an item (`isAdmin` false: the caller's own items only, others are 404). Order: the
+   * Idempotency-Key first (a replay needs the same operation, item and bytes, else 422 `idempotency_key_reused`; it answers
+   * even after the item's revision has moved on), then visibility (404), then the `revision` fence (409), then the image
+   * check and storage (503 before any database write). One transaction then re-reads the item under its row lock, re-checks the
+   * fence, inserts the version (empty licence, `creditRequired` true), claims the key, moves the draft pointer and audits.
+   * The published version, the state and the live credit do not change.
+   */
+  async addVersion(
+    principal: string,
+    key: string,
+    mediaId: number,
+    expectedRevision: number,
+    bytes: Uint8Array,
+    declaredType: string,
+    isAdmin: boolean,
+  ): Promise<MediaUploadResult> {
+    const sha256 = sha256Of(bytes);
+    const claimed = await this.findClaim(this.database.db, principal, key);
+    if (claimed) return this.replay(claimed, "version", mediaId, sha256, isAdmin);
+
+    const [seen] = await this.database.db.select().from(mediaItems).where(eq(mediaItems.id, mediaId)).limit(1);
+    if (!seen || (!isAdmin && seen.owner !== principal)) throw notFound();
+    if (seen.revision !== expectedRevision) {
+      // A twin of this request may have committed between the key lookup above and this read: that is a replay, not a conflict.
+      const twin = await this.findClaim(this.database.db, principal, key);
+      if (twin) return this.replay(twin, "version", mediaId, sha256, isAdmin);
+      throw staleRevision(seen, expectedRevision);
+    }
+
+    const image = this.inspect(bytes, declaredType);
+    await this.store(`content/photos/${sha256}.${EXTENSION[image.contentType]}`, bytes, image.contentType, sha256);
+    const { contentType, width, height } = image;
+
+    try {
+      const outcome = await this.database.withTransaction(async (tx): Promise<Outcome<MediaItemView>> => {
+        const item = await this.lockItem(tx, mediaId, principal, isAdmin);
+        if (!item) return { ok: false, error: notFound() };
+        // A duplicate that waited on the row lock sees the winner's committed key here and replays instead of conflicting: the key
+        // is decided before the fence, as on the unlocked path above.
+        if (await this.findClaim(tx, principal, key)) throw new KeyAlreadyClaimed();
+        if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+        const now = await databaseNow(tx);
+        const version = item.draftVersion + 1;
+        const row = await this.insertVersion(tx, {
+          mediaId,
+          version,
+          sha256,
+          contentType,
+          byteSize: bytes.length,
+          width,
+          height,
+          creditRequired: true,
+          createdBy: principal,
+          createdAt: now,
+        });
+        await this.claimKey(tx, { principal, idempotencyKey: key, operation: "version", mediaId, version, sha256, createdAt: now });
+        const updated = await this.bump(tx, item, principal, now, { draftVersion: version });
+        await tx.insert(adminAudit).values({
+          actor: principal,
+          action: "media_version",
+          target: mediaIdOf(mediaId),
+          detail: {
+            mediaId: mediaIdOf(mediaId),
+            version,
+            previousDraftVersion: item.draftVersion,
+            revision: updated.revision,
+            sha256,
+            contentType,
+            byteSize: bytes.length,
+            width,
+            height,
+          },
+          createdAt: now,
+        });
+        return { ok: true, value: toItemView(updated, row, isAdmin) };
+      });
+      if (!outcome.ok) throw outcome.error;
+      return { item: outcome.value, replayed: false };
+    } catch (error) {
+      if (!(error instanceof KeyAlreadyClaimed)) throw error;
+      const winner = await this.findClaim(this.database.db, principal, key);
+      if (!winner) throw this.retryShortly();
+      return this.replay(winner, "version", mediaId, sha256, isAdmin);
+    }
+  }
+
+  /**
+   * Edit the draft version's licence. The live (published) version is never touched: when the draft IS the published version,
+   * or the draft was live once before (a withdrawn item), the edit makes a NEW draft version with the same file (version + 1);
+   * otherwise the unpublished draft is edited in place. Stored values sent back are a no-op: 200, no change, no new revision.
+   */
+  async editLicence(
+    principal: string,
+    mediaId: number,
+    isAdmin: boolean,
+    expectedRevision: number,
+    edit: MediaLicenceEdit,
+    note: string | null,
+  ): Promise<MediaItemView> {
+    const outcome = await this.database.withTransaction(async (tx): Promise<Outcome<MediaItemView>> => {
+      const item = await this.lockItem(tx, mediaId, principal, isAdmin);
+      if (!item) return { ok: false, error: notFound() };
+      if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+      const draft = await this.readVersion(tx, mediaId, item.draftVersion);
+
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
+      const merged: Record<string, unknown> = {};
+      for (const field of LICENCE_FIELDS) {
+        const column = LICENCE_COLUMNS[field];
+        const from = draft[column];
+        const wanted = edit[field];
+        const to = wanted === undefined ? from : wanted;
+        merged[column] = to;
+        if (to !== from) changes[field] = { from, to };
+      }
+      if (Object.keys(changes).length === 0) return { ok: true, value: toItemView(item, draft, isAdmin) };
+
+      const now = await databaseNow(tx);
+      let updatedDraft: MediaVersionRow;
+      let updatedItem: MediaItemRow;
+      const newVersion = item.draftVersion === item.publishedVersion || draft.publishedAt !== null;
+      if (newVersion) {
+        updatedDraft = await this.insertVersion(tx, {
+          mediaId,
+          version: item.draftVersion + 1,
+          sha256: draft.sha256,
+          contentType: draft.contentType,
+          byteSize: draft.byteSize,
+          width: draft.width,
+          height: draft.height,
+          creditName: merged.creditName as string | null,
+          creditRequired: merged.creditRequired as boolean,
+          licenceName: merged.licenceName as string | null,
+          licenceUrl: merged.licenceUrl as string | null,
+          sourceUrl: merged.sourceUrl as string | null,
+          attributionText: merged.attributionText as string | null,
+          createdBy: principal,
+          createdAt: now,
+        });
+        updatedItem = await this.bump(tx, item, principal, now, { draftVersion: item.draftVersion + 1 });
+      } else {
+        const [row] = await tx
+          .update(mediaVersions)
+          .set(merged)
+          .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
+          .returning();
+        if (!row) throw new Error("Media version was not updated.");
+        updatedDraft = row;
+        updatedItem = await this.bump(tx, item, principal, now, {});
+      }
+      await tx.insert(adminAudit).values({
+        actor: principal,
+        action: "media_edit",
+        target: mediaIdOf(mediaId),
+        detail: {
+          mediaId: mediaIdOf(mediaId),
+          fromVersion: item.draftVersion,
+          version: updatedDraft.version,
+          newVersion,
+          revision: updatedItem.revision,
+          changes,
+          note,
+        },
+        createdAt: now,
+      });
+      return { ok: true, value: toItemView(updatedItem, updatedDraft, isAdmin) };
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /**
+   * Admin: make the draft version the published one (its licence is frozen with it). 409 `version_conflict` for a stale
+   * revision, 409 `nothing_to_publish` when the draft already is the published version, 422 `content_invalid` when the
+   * draft's licence is not publishable. Nothing is written on a refusal.
+   */
+  async publish(principal: string, mediaId: number, expectedRevision: number): Promise<MediaItemView> {
+    const outcome = await this.database.withTransaction(async (tx): Promise<Outcome<MediaItemView>> => {
+      const item = await this.lockItem(tx, mediaId, principal, true);
+      if (!item) return { ok: false, error: notFound() };
+      if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+      if (item.publishedVersion === item.draftVersion) {
+        return { ok: false, error: new ApiError(409, "nothing_to_publish", "The draft is already the published version; nothing to publish.") };
+      }
+      const draft = await this.readVersion(tx, mediaId, item.draftVersion);
+      if (!draft.licenceName) {
+        return { ok: false, error: new ApiError(422, "content_invalid", "The draft's licence needs a licence name before it can be published.") };
+      }
+      if (draft.creditRequired && !draft.creditName) {
+        return { ok: false, error: new ApiError(422, "content_invalid", "The draft's licence needs a credit (credit is required) before it can be published.") };
+      }
+      const now = await databaseNow(tx);
+      const [published] = await tx
+        .update(mediaVersions)
+        // The FIRST go-live time is kept when a withdrawn draft is published again.
+        .set({ publishedAt: sql`COALESCE(${mediaVersions.publishedAt}, ${now.toISOString()}::timestamptz)` })
+        .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, draft.version)))
+        .returning();
+      if (!published) throw new Error("Media version was not published.");
+      const updated = await this.bump(tx, item, principal, now, { state: "published", publishedVersion: draft.version });
+      await tx.insert(adminAudit).values({
+        actor: principal,
+        action: "media_publish",
+        target: mediaIdOf(mediaId),
+        detail: {
+          mediaId: mediaIdOf(mediaId),
+          fromState: item.state,
+          previousPublishedVersion: item.publishedVersion,
+          publishedVersion: draft.version,
+          revision: updated.revision,
+          sha256: draft.sha256,
+        },
+        createdAt: now,
+      });
+      return { ok: true, value: toItemView(updated, published, true) };
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /** Admin: `published` to `withdrawn` (`publishedVersion` becomes null). Any other state, or a stale revision, is 409 `version_conflict`. */
+  async withdraw(principal: string, mediaId: number, expectedRevision: number): Promise<MediaItemView> {
+    const outcome = await this.database.withTransaction(async (tx): Promise<Outcome<MediaItemView>> => {
+      const item = await this.lockItem(tx, mediaId, principal, true);
+      if (!item) return { ok: false, error: notFound() };
+      if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+      if (item.state !== "published") {
+        return {
+          ok: false,
+          error: new ApiError(409, "version_conflict", `The item is ${item.state} at revision ${item.revision}; only a published item can be withdrawn. Nothing was changed.`),
+        };
+      }
+      const draft = await this.readVersion(tx, mediaId, item.draftVersion);
+      const now = await databaseNow(tx);
+      const updated = await this.bump(tx, item, principal, now, { state: "withdrawn", publishedVersion: null });
+      await tx.insert(adminAudit).values({
+        actor: principal,
+        action: "media_withdraw",
+        target: mediaIdOf(mediaId),
+        detail: { mediaId: mediaIdOf(mediaId), fromState: item.state, withdrawnVersion: item.publishedVersion, revision: updated.revision },
+        createdAt: now,
+      });
+      return { ok: true, value: toItemView(updated, draft, true) };
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  // ---- helpers ----
+
+  private inspect(bytes: Uint8Array, declaredType: string) {
+    const sniffed = sniffImage(bytes);
+    if (!sniffed.ok) throw new ApiError(422, "media_invalid", `Not an accepted image: ${sniffed.reason}.`);
+    if (sniffed.contentType !== declaredType) {
+      throw new ApiError(422, "media_invalid", `The bytes are a ${sniffed.contentType} image, not ${declaredType}.`);
+    }
+    return sniffed;
+  }
+
+  private retryShortly() {
+    return new ApiError(503, "service_unavailable", "Service temporarily unavailable. Retry shortly.", { "Retry-After": "1" });
+  }
+
+  /** The item row, locked FOR UPDATE; null when it does not exist or the caller (not an admin) does not own it. */
+  private async lockItem(tx: Tx, id: number, principal: string, isAdmin: boolean): Promise<MediaItemRow | null> {
+    const [item] = await tx.select().from(mediaItems).where(eq(mediaItems.id, id)).for("update").limit(1);
+    if (!item || (!isAdmin && item.owner !== principal)) return null;
+    return item;
+  }
+
+  private async readVersion(db: Pick<Database, "select">, mediaId: number, version: number): Promise<MediaVersionRow> {
+    const [row] = await db
+      .select()
+      .from(mediaVersions)
+      .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, version)))
+      .limit(1);
+    if (!row) throw new Error("Media item names a missing version.");
+    return row;
+  }
+
+  private async insertVersion(tx: Tx, values: typeof mediaVersions.$inferInsert): Promise<MediaVersionRow> {
+    const [row] = await tx.insert(mediaVersions).values(values).returning();
+    if (!row) throw new Error("Media version was not stored.");
+    return row;
+  }
+
+  /** Claim the key with ON CONFLICT DO NOTHING; a loss rolls the transaction back (KeyAlreadyClaimed). */
+  private async claimKey(tx: Tx, values: typeof mediaUploadKeys.$inferInsert): Promise<void> {
+    const won = await tx.insert(mediaUploadKeys).values(values).onConflictDoNothing().returning({ key: mediaUploadKeys.idempotencyKey });
+    if (won.length !== 1) throw new KeyAlreadyClaimed();
+  }
+
+  /** Apply `patch` to the locked item with revision + 1; the WHERE repeats the fence. */
+  private async bump(
+    tx: Tx,
+    item: MediaItemRow,
+    principal: string,
+    now: Date,
+    patch: Partial<Pick<typeof mediaItems.$inferInsert, "state" | "draftVersion" | "publishedVersion">>,
+  ): Promise<MediaItemRow> {
+    const [row] = await tx
+      .update(mediaItems)
+      .set({ ...patch, revision: sql`${mediaItems.revision} + 1`, updatedAt: now, updatedBy: principal })
+      .where(and(eq(mediaItems.id, item.id), eq(mediaItems.revision, item.revision)))
+      .returning();
+    if (!row) throw new Error("Media item was not updated."); // the row lock makes this unreachable
+    return row;
+  }
+
+  private async findClaim(db: Pick<Database, "select">, principal: string, key: string) {
+    const [row] = await db
       .select()
       .from(mediaUploadKeys)
       .where(and(eq(mediaUploadKeys.principal, principal), eq(mediaUploadKeys.idempotencyKey, key)))
@@ -122,19 +454,20 @@ export class MediaService {
     return row;
   }
 
-  /** Same operation and bytes: the item as stored now. Anything else with this key is a different intent. */
-  private async replay(claim: typeof mediaUploadKeys.$inferSelect, sha256: string, includeOwner: boolean): Promise<MediaUploadResult> {
-    if (claim.operation !== "create" || claim.sha256 !== sha256) {
+  /** Same operation, item (version uploads) and bytes: the item as stored now. Anything else with this key is a different intent. */
+  private async replay(
+    claim: typeof mediaUploadKeys.$inferSelect,
+    operation: "create" | "version",
+    mediaId: number | null,
+    sha256: string,
+    includeOwner: boolean,
+  ): Promise<MediaUploadResult> {
+    if (claim.operation !== operation || claim.sha256 !== sha256 || (mediaId !== null && claim.mediaId !== mediaId)) {
       throw new ApiError(422, "idempotency_key_reused", "This Idempotency-Key already stored a different upload; use a new key.");
     }
     const [item] = await this.database.db.select().from(mediaItems).where(eq(mediaItems.id, claim.mediaId)).limit(1);
     if (!item) throw new Error("Idempotency key names a missing media item.");
-    const [draft] = await this.database.db
-      .select()
-      .from(mediaVersions)
-      .where(and(eq(mediaVersions.mediaId, item.id), eq(mediaVersions.version, item.draftVersion)))
-      .limit(1);
-    if (!draft) throw new Error("Media item names a missing draft version.");
+    const draft = await this.readVersion(this.database.db, item.id, item.draftVersion);
     return { item: toItemView(item, draft, includeOwner), replayed: true };
   }
 

@@ -511,17 +511,19 @@ describe("POST /v1/admin/media: reader scope, rate limit and clock", () => {
     expect(res.body.draft.byteSize).toBe(big.length);
   });
 
-  it("the 5 MB reader is mounted on the exact path only: a sub-route with a 50 MB image Content-Length is not read (404, not 413)", async () => {
+  it("the 5 MB reader is mounted on the collection and on /med-<n>/versions only: any other sub-route is not read (404, not 413)", async () => {
     const admin = await actor("admin");
     const headers = { ...admin.auth, "Idempotency-Key": newKey() };
-    expect(await unfinishedUpload(server, headers, `${PATH}/med-1/versions`, "image/png")).toBe(404);
-    const small = await request(server).post(`${PATH}/med-1/versions`).set(admin.auth).set("Content-Type", "image/png").send(png(10, 10, 20_000));
+    expect(await unfinishedUpload(server, headers, `${PATH}/med-1/other`, "image/png")).toBe(404);
+    expect(await unfinishedUpload(server, headers, `${PATH}/not-an-id/versions`, "image/png")).toBe(404);
+    expect(await unfinishedUpload(server, headers, `${PATH}/med-1/versions/extra`, "image/png")).toBe(404);
+    const small = await request(server).post(`${PATH}/med-1/other`).set(admin.auth).set("Content-Type", "image/png").send(png(10, 10, 20_000));
     expect(small.status).toBe(404);
-    // Contrast: the same oversize image on the exact path is refused by the 5 MB reader (413, covered above); on the sub-route the
-    // reader is not mounted, so the body is never buffered and the unbuilt route answers 404.
+    // Contrast: the same oversize image on the exact path is refused by the 5 MB reader (413, covered above); on a sub-route the
+    // reader is not mounted, so the body is never buffered and the route answers 404.
     // The server may answer before the client has finished sending and drop the connection (ECONNRESET): that also means unread.
     const oversize = await request(server)
-      .post(`${PATH}/med-1/versions`)
+      .post(`${PATH}/med-1/other`)
       .set(admin.auth)
       .set("Content-Type", "image/png")
       .send(Buffer.alloc(5 * 1024 * 1024 + 1, 1))
