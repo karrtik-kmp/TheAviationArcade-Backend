@@ -32,11 +32,20 @@ DECLARE
 	ttbe integer;
 	ttl interval := p_ttl_ms * interval '1 millisecond';
 	limited boolean;
+	attempt integer;
 BEGIN
-	INSERT INTO rate_limit_hits (throttler_name, key_hash, window_expires_at)
-	VALUES (p_name, p_key_hash, clock_timestamp() + ttl)
-	ON CONFLICT (throttler_name, key_hash) DO NOTHING;
-	SELECT * INTO r FROM rate_limit_hits WHERE throttler_name = p_name AND key_hash = p_key_hash FOR UPDATE;
+	-- Insert-if-missing, then lock. If cleanup deletes the row between the two statements the SELECT finds nothing, so
+	-- insert again rather than count a hit against a missing row.
+	FOR attempt IN 1..10 LOOP
+		INSERT INTO rate_limit_hits (throttler_name, key_hash, window_expires_at)
+		VALUES (p_name, p_key_hash, clock_timestamp() + ttl)
+		ON CONFLICT (throttler_name, key_hash) DO NOTHING;
+		SELECT * INTO r FROM rate_limit_hits WHERE throttler_name = p_name AND key_hash = p_key_hash FOR UPDATE;
+		EXIT WHEN FOUND;
+	END LOOP;
+	IF NOT FOUND THEN
+		RAISE EXCEPTION 'rate_limit_increment: row for the key kept disappearing';
+	END IF;
 	t := clock_timestamp();
 	hits := coalesce(ARRAY(SELECT e FROM unnest(r.hit_expiries) AS e WHERE e > t ORDER BY e), '{}'::timestamptz[]);
 	win := r.window_expires_at;

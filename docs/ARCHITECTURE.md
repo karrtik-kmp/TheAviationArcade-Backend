@@ -25,7 +25,7 @@ unverified social login and subscription grants, committed and publicly served k
 | Route modules | Express sub-routers | NestJS feature modules (controller + service per aggregate) | Node re-platform |
 | Request logging | winston to public files, full bodies | One JSON line per request (id, route, status, ms) to stdout; `X-Request-Id`; never bodies/tokens | Node re-platform |
 | Client version gate | string compare against DB | `X-Client-Version` integer vs `MIN_CLIENT_BUILD` config → 426 `client_update_required` | Unity integration slice |
-| Rate limiting | express-rate-limit (disabled) | `@nestjs/throttler`, keyed by principal (IP for public routes); shared store (Redis or Postgres) once there is more than one instance; 429 `rate_limited` | Rate-limit slice |
+| Rate limiting | express-rate-limit (disabled) | `@nestjs/throttler`, keyed by principal (IP for public routes); counters in Postgres (`rate_limit_hits`, shared by every instance, own small pool, fail-open to per-instance counting; `RATE_LIMIT_STORE=memory` for one process); 429 `rate_limited` | Rate-limit slice |
 | API contract | Postman → generated Swagger served in prod | `docs/openapi.yaml` (or generated from zod via `z.toJSONSchema`) + parity test; not served publicly | Unity integration slice |
 | Reference data | seeder on every boot (incl. an admin password) | Drizzle migrations; never credentials | As needed |
 | Soft delete | `deletedAt`, keeps PII | Real deletion/anonymisation (store requirement) + Apple token revocation | Account-deletion slice |

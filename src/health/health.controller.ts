@@ -1,11 +1,12 @@
-import { Controller, Get } from "@nestjs/common";
-import { SkipThrottle } from "@nestjs/throttler";
+import { Controller, Get, Inject, Optional } from "@nestjs/common";
+import { SkipThrottle, ThrottlerStorage } from "@nestjs/throttler";
 import { sql } from "drizzle-orm";
 import { Public } from "../auth/public.decorator.js";
 import { ApiError } from "../common/errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import { SkipClientVersion } from "../platform/client-version.js";
 import { DrainState } from "../platform/drain-state.js";
+import { PostgresThrottlerStorage } from "../platform/pg-throttler-storage.js";
 
 /** The readiness probe must answer quickly: a slow database is "not ready", not a hung probe. */
 export const READY_TIMEOUT_MS = 2000;
@@ -22,6 +23,7 @@ export class HealthController {
   constructor(
     private readonly database: DatabaseService,
     private readonly drainState: DrainState,
+    @Optional() @Inject(ThrottlerStorage) private readonly rateLimitStorage?: ThrottlerStorage,
   ) {}
 
   /** Liveness: the process is up and serving. Deliberately does not touch the database, and is not rate limited. */
@@ -36,7 +38,8 @@ export class HealthController {
    * Readiness: the database answers SELECT 1 within READY_TIMEOUT_MS. 503 with Retry-After otherwise, and
    * once shutdown has begun. Not rate limited: behind a load balancer with TRUST_PROXY unset every probe
    * (and every attacker) shares one IP, so a limit here could take the instance out of rotation. The
-   * database is protected instead by sharing one in-flight query and caching the answer for 1 s.
+   * database is protected instead by sharing one in-flight query and caching the answer for 1 s. While the shared
+   * rate-limit counter is failing open the body adds `rateLimit: "degraded"` (still 200; see PostgresThrottlerStorage).
    */
   @Public()
   @SkipThrottle()
@@ -44,6 +47,10 @@ export class HealthController {
   async ready() {
     if (this.drainState.draining || !(await this.databaseOk())) {
       throw new ApiError(503, "service_unavailable", "Not ready.", { "Retry-After": "5" });
+    }
+    // Informational only: a failing shared counter degrades limits to per instance, it does not make this instance unready.
+    if (this.rateLimitStorage instanceof PostgresThrottlerStorage && this.rateLimitStorage.degradedSince !== undefined) {
+      return { status: "ready", rateLimit: "degraded" };
     }
     return { status: "ready" };
   }

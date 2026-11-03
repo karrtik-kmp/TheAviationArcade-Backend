@@ -18,6 +18,8 @@ export type AppConfig = {
   host: string;
   /** Maximum pg pool connections. */
   dbPoolMax: number;
+  /** Size of the rate limiter's own pool (used when rateLimitStore is postgres). */
+  rateLimitPoolMax: number;
   /** TLS to Postgres. verify-full checks the certificate chain and hostname; require encrypts only. */
   databaseSsl: DatabaseSsl;
   /** PEM bundle trusted for the Postgres server certificate (verify-full only). Undefined = system roots. */
@@ -145,6 +147,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).default("127.0.0.1"),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  RATE_LIMIT_POOL_MAX: z.coerce.number().int().min(1).max(10).default(3),
   /** Default depends on APP_ENV (verify-full in production), so it is applied after parsing. */
   DATABASE_SSL: z.enum(["disable", "require", "verify-full"]).optional(),
   /** PEM text. Literal backslash-n sequences are accepted for platforms that cannot hold multi-line values. */
@@ -193,6 +196,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     PORT,
     HOST,
     DB_POOL_MAX,
+    RATE_LIMIT_POOL_MAX,
     DATABASE_CA_CERT,
     TRUST_PROXY,
     SHUTDOWN_DRAIN_MS,
@@ -308,6 +312,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     port: PORT,
     host: HOST,
     dbPoolMax: DB_POOL_MAX,
+    rateLimitPoolMax: RATE_LIMIT_POOL_MAX,
     databaseSsl,
     databaseCaCert: caCert,
     trustProxy: TRUST_PROXY,

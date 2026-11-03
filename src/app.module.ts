@@ -8,11 +8,11 @@ import { ApiExceptionFilter } from "./common/api-exception.filter.js";
 import { APP_CONFIG, ConfigModule } from "./config/config.module.js";
 import type { AppConfig } from "./config/config.module.js";
 import { ContentModule } from "./content/content.module.js";
-import { DatabaseModule, DatabaseService } from "./database/database.module.js";
+import { DatabaseModule } from "./database/database.module.js";
 import { HealthModule } from "./health/health.module.js";
 import { PlatformModule } from "./platform/drain-state.js";
 import { ClientVersionGuard } from "./platform/client-version.js";
-import { PostgresThrottlerStorage } from "./platform/pg-throttler-storage.js";
+import { createPostgresThrottlerStorage } from "./platform/pg-throttler-storage.js";
 import { RateLimitGuard, throttlerOptions } from "./platform/rate-limit.js";
 import { LogbookModule } from "./logbook/logbook.module.js";
 import { PlayersModule } from "./players/players.module.js";
@@ -29,9 +29,9 @@ import { UgsModule } from "./ugs/ugs.module.js";
     StorageModule,
     PlatformModule,
     ThrottlerModule.forRootAsync({
-      inject: [APP_CONFIG, DatabaseService],
-      useFactory: (config: AppConfig, database: DatabaseService) =>
-        throttlerOptions(config, config.rateLimitStore === "postgres" ? new PostgresThrottlerStorage(database) : undefined),
+      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig) =>
+        throttlerOptions(config, config.rateLimitStore === "postgres" ? createPostgresThrottlerStorage(config) : undefined),
     }),
     PlayersModule,
     LogbookModule,

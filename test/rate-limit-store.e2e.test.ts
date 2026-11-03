@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { Controller, Get } from "@nestjs/common";
+import { Controller, Get, Logger } from "@nestjs/common";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
-import { ThrottlerStorageService } from "@nestjs/throttler";
+import { ThrottlerStorage, ThrottlerStorageService } from "@nestjs/throttler";
+import { sql } from "drizzle-orm";
 import pg from "pg";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +11,12 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { Public } from "../src/auth/public.decorator.js";
 import { DatabaseService } from "../src/database/database.module.js";
-import { hashKey, PostgresThrottlerStorage } from "../src/platform/pg-throttler-storage.js";
+import {
+  CLEANUP_BATCH,
+  createPostgresThrottlerStorage,
+  hashKey,
+  PostgresThrottlerStorage,
+} from "../src/platform/pg-throttler-storage.js";
 import { emulatorToken } from "./tokens.js";
 
 // A4: the Postgres rate-limit store. Parity with the library's in-memory store, then the shared-store behaviour through
@@ -216,6 +222,9 @@ describe("rate limits across app instances", () => {
     expect((await request(server).get("/v1/test/public")).status).toBe(200);
     expect((await request(server).get("/v1/test/public")).status).toBe(200);
     expect((await request(server).get("/v1/test/public")).status).toBe(429);
+    // Time passes for the process too (a refusal remembered locally lasts until just before the release).
+    const base = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => base + 61_000);
     await pool.query(
       `UPDATE rate_limit_hits SET
          hit_expiries = ARRAY(SELECT e - interval '61 seconds' FROM unnest(hit_expiries) AS e),
@@ -240,5 +249,147 @@ describe("rate limits across app instances", () => {
     const server = await buildApp({ RATE_LIMIT_PUBLIC_PER_MIN: "5" });
     await request(server).get("/v1/test/public");
     expect((await pool.query("SELECT count(*)::int AS n FROM rate_limit_hits")).rows[0].n).toBe(1);
+  });
+});
+
+const limiterConfig = () => ({
+  databaseUrl: process.env.DATABASE_URL!,
+  databaseSsl: "disable" as const,
+  databaseCaCert: undefined,
+  rateLimitPoolMax: 3,
+});
+
+describe("cleanup throughput and the increment/cleanup race", () => {
+  it("one pass removes far more than one batch of expired rows, and a zero budget removes exactly one batch", async () => {
+    const store = new PostgresThrottlerStorage(database);
+    await pool.query(
+      `INSERT INTO rate_limit_hits (throttler_name, key_hash, window_expires_at, hit_expiries)
+       SELECT 'default', lpad(to_hex(g), 64, '0'), now() - interval '1 minute', ARRAY[now() - interval '1 minute']
+       FROM generate_series(1, $1::int) AS g`,
+      [CLEANUP_BATCH * 4 + 300],
+    );
+    expect(await store.cleanup(0)).toBe(CLEANUP_BATCH);
+    expect(await store.cleanup(10_000)).toBe(CLEANUP_BATCH * 3 + 300);
+    expect((await pool.query("SELECT count(*)::int AS n FROM rate_limit_hits")).rows[0].n).toBe(0);
+    await store.onApplicationShutdown();
+  });
+
+  it("an increment racing cleanup on expired rows never loses its hit", async () => {
+    const store = new PostgresThrottlerStorage(database);
+    for (let round = 0; round < 15; round += 1) {
+      const keys = Array.from({ length: 12 }, () => `race:${randomUUID()}`);
+      await Promise.all(keys.map((k) => store.increment(k, 60_000, 5, 0, "default")));
+      for (const k of keys) await shiftRow(k, 61_000);
+      const results = await Promise.all([
+        store.cleanup(),
+        store.cleanup(),
+        ...keys.map((k) => store.increment(k, 60_000, 5, 0, "default")),
+      ]);
+      for (const r of results.slice(2) as Array<{ totalHits: number; timeToExpire: number }>) {
+        expect(r.totalHits).toBe(1);
+        expect(r.timeToExpire).toBeGreaterThan(0);
+      }
+      const { rows } = await pool.query(
+        "SELECT cardinality(hit_expiries) AS n FROM rate_limit_hits WHERE key_hash = ANY($1)",
+        [keys.map(hashKey)],
+      );
+      expect(rows).toHaveLength(keys.length);
+      expect(rows.every((r) => r.n === 1)).toBe(true);
+    }
+    await store.onApplicationShutdown();
+  });
+});
+
+describe("limiter isolation from gameplay", () => {
+  it("a flood on a key whose row is locked fails open within the short timeout, on its own small pool, without delaying gameplay", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const store = createPostgresThrottlerStorage(limiterConfig());
+    const key = `flood:${randomUUID()}`;
+    await store.increment(key, 60_000, 5, 0, "default");
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM rate_limit_hits WHERE key_hash = $1 FOR UPDATE", [hashKey(key)]);
+      const startedAt = performance.now();
+      const flood = Array.from({ length: 200 }, () => store.increment(key, 60_000, 5, 0, "default"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Gameplay: a transaction on the main pool while the limiter calls are stuck on the row lock.
+      const gameplayStart = performance.now();
+      await database.withTransaction(async (tx) => {
+        await tx.execute(sql`select 1`);
+      });
+      const gameplayMs = performance.now() - gameplayStart;
+      const { rows } = await pool.query(
+        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'airplane-games-backend-ratelimit'",
+      );
+      expect(rows[0].n).toBeLessThanOrEqual(3);
+      const results = await Promise.all(flood);
+      const floodMs = performance.now() - startedAt;
+      expect(gameplayMs).toBeLessThan(150);
+      // Fail-open fired at the 500 ms lock timeout, not after 5 s, and every call was answered.
+      expect(floodMs).toBeLessThan(2000);
+      expect(results).toHaveLength(200);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(store.degradedSince).toBeDefined();
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await store.onApplicationShutdown();
+    }
+  });
+
+  it("the limiter pool is closed on shutdown", async () => {
+    const store = createPostgresThrottlerStorage(limiterConfig());
+    await store.increment(`close:${randomUUID()}`, 60_000, 5, 0, "default");
+    await store.onApplicationShutdown();
+    const { rows } = await pool.query(
+      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'airplane-games-backend-ratelimit'",
+    );
+    expect(rows[0].n).toBe(0);
+  });
+});
+
+describe("local refusal against the real store", () => {
+  it("a refused key is refused locally with a Retry-After that does not undershoot, and is admitted again when released", async () => {
+    const store = new PostgresThrottlerStorage(database);
+    const key = `local:${randomUUID()}`;
+    let skew = 0;
+    const base = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => base + skew);
+    for (let i = 0; i < 2; i += 1) expect((await store.increment(key, 60_000, 2, 0, "default")).isBlocked).toBe(false);
+    const refused = await store.increment(key, 60_000, 2, 0, "default");
+    expect(refused.isBlocked).toBe(true);
+    // The row is gone, yet this process still refuses until just before the release: no database call was made.
+    await pool.query("TRUNCATE rate_limit_hits");
+    skew += 10_000;
+    const local = await store.increment(key, 60_000, 2, 0, "default");
+    expect(local.isBlocked).toBe(true);
+    expect(local.timeToBlockExpire).toBeGreaterThanOrEqual(refused.timeToBlockExpire - 10);
+    expect(local.timeToBlockExpire).toBeLessThanOrEqual(refused.timeToBlockExpire - 9);
+    // Past the earliest possible release the database decides again.
+    skew += 60_000;
+    expect((await store.increment(key, 60_000, 2, 0, "default")).isBlocked).toBe(false);
+    await store.onApplicationShutdown();
+  });
+
+  it("readiness stays 200 and says so when the shared counter has failed open", async () => {
+    vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const server = await buildApp({ RATE_LIMIT_STORE: "postgres" });
+    const storage = apps.at(-1)!.get(ThrottlerStorage) as PostgresThrottlerStorage;
+    expect((await request(server).get("/v1/health/ready")).body).toEqual({ status: "ready" });
+    const key = `ready:${randomUUID()}`;
+    await storage.increment(key, 60_000, 5, 0, "default");
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM rate_limit_hits WHERE key_hash = $1 FOR UPDATE", [hashKey(key)]);
+      await storage.increment(key, 60_000, 5, 0, "default");
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+    const ready = await request(server).get("/v1/health/ready");
+    expect(ready.status).toBe(200);
+    expect(ready.body).toEqual({ status: "ready", rateLimit: "degraded" });
   });
 });

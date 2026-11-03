@@ -49,6 +49,29 @@ export function poolOptions(
 }
 
 /**
+ * The rate limiter's own small pool, so a flood of limiter calls cannot take connections or wait on locks
+ * from gameplay. Waits are short on purpose: a limiter call that cannot run quickly fails open (see
+ * PostgresThrottlerStorage) instead of holding a request. Same database URL and TLS settings as the main pool.
+ */
+export function limiterPoolOptions(
+  config: Pick<AppConfig, "databaseUrl" | "databaseSsl" | "databaseCaCert" | "rateLimitPoolMax">,
+): pg.PoolConfig {
+  return {
+    connectionString: config.databaseUrl,
+    ssl: sslOptions(config),
+    max: config.rateLimitPoolMax,
+    connectionTimeoutMillis: 250,
+    idleTimeoutMillis: 30_000,
+    keepAlive: true,
+    application_name: "airplane-games-backend-ratelimit",
+    statement_timeout: 500,
+    lock_timeout: 500,
+    idle_in_transaction_session_timeout: 5000,
+    query_timeout: 1000,
+  };
+}
+
+/**
  * A deliberate rollback of a healthy transaction (for example a refused spend). Drizzle has already run ROLLBACK
  * successfully when this reaches withTransaction (a failed ROLLBACK surfaces its own error instead), so the
  * connection goes back to the pool rather than being destroyed.

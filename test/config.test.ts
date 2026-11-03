@@ -33,6 +33,7 @@ describe("loadConfig", () => {
       port: 3000,
       host: "127.0.0.1",
       dbPoolMax: 10,
+      rateLimitPoolMax: 3,
       databaseSsl: "disable",
       databaseCaCert: undefined,
       trustProxy: false,
