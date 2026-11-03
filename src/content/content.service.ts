@@ -18,6 +18,7 @@ import { BLOB_STORE } from "../storage/blob-store.js";
 import { storeImportBlob } from "./import-blob.js";
 import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
+import { lockContentModule } from "./content-lock.js";
 import { compareIds } from "./content-modules.js";
 import { ContentDocumentsService } from "./documents/content-documents.service.js";
 import { planHash, planImport } from "./import-plan.js";
@@ -164,12 +165,7 @@ export class ContentService {
     const applied = await this.database.withTransaction(async (tx): Promise<ApplyResult> => {
       // Serialises imports per module, so two uploads can never plan against the same stale rows. Try, never
       // wait: a waiting import would hold a pooled connection, so a busy module is a retryable 409 instead.
-      const lock = await tx.execute<{ locked: boolean }>(
-        sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`content-import:${module}`}, 0)) AS locked`,
-      );
-      if (lock.rows[0]?.locked !== true) {
-        throw new ApiError(409, "import_in_progress", "Another import for this module is running. Retry shortly.", { "Retry-After": "2" });
-      }
+      await lockContentModule(tx, module);
       const raced = await this.latestImport(module, tx);
       if (raced?.sha256 === sha256) return { replayed: true, import: summary(raced) };
 

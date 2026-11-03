@@ -354,7 +354,7 @@ export const adminAudit = pgTable(
     detail: jsonb("detail").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
-  (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import', 'content_publish')`)],
+  (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore')`)],
 );
 
 /**

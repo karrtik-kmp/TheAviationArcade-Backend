@@ -1287,6 +1287,187 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/admin/content/{module}/items/{id}:
+    patch:
+      tags: [admin]
+      operationId: editContentItem
+      summary: Edit a content item in place
+      description: |
+        Staff only. Changes an item's `rank` and/or its whole `data` payload (a replacement, not a merge: send every
+        field). Optimistic: `version` must equal the item's stored version, else 409 `version_conflict` and nothing
+        changes. The payload is checked by the module's own rules, the same function the sheet import uses (Military:
+        `{ answer, wrong[3], sourceFile, photographer }`, text trimmed, answer and the three wrong answers present,
+        all four different after ignoring case and spacing, no other keys), and the file name (`sourceFile`) must stay
+        non-blank and unique in the module, retired items included: otherwise 422 `import_invalid` with the reasons in
+        `message`. On a change the version goes up by one, `source` becomes `admin`, and one append-only audit row
+        (`content_edit`) records the actor and the field-level `diff`. Sending the stored values (or only `version`) is
+        200 `changed: false`: no bump, no audit row. A retired item stays retired when edited. The Clipper Card key
+        (`card_key`) is set once when the item is created and never changes with an edit.
+
+        Runs in one transaction under the same per-module lock the import apply takes.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - $ref: "#/components/parameters/ContentItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentItemEditRequest" }
+      responses:
+        "200":
+          description: "The item as it is now. `changed: false` means nothing was written (no version bump, no audit row)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentItemChange" }
+        "400":
+          description: Unknown field, a missing or non-integer `version`, an unknown `rank`, or `data` that is not an object.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `version` is not the item's stored version (someone else changed it); nothing was
+            written, reload and decide again. `import_in_progress`: an import or another edit holds the module's write
+            lock right now; nothing was written, retry after `Retry-After` seconds (that response only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: |
+            The payload breaks a module rule, or the file name would be blank or already used in the module. Nothing was changed.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [import_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/items/{id}/retire:
+    post:
+      tags: [admin]
+      operationId: retireContentItem
+      summary: Retire a content item
+      description: |
+        Staff only. Sets the item to `retired` (kept, not dealt: it no longer counts in Trip coverage). Optimistic on
+        `version`; on a change the version goes up by one, `source` becomes `admin`, and a `content_retire` audit row is
+        written. Already retired is 200 `changed: false` (the version is still checked). Answers 200, not 201.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - $ref: "#/components/parameters/ContentItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentItemVersionRequest" }
+      responses:
+        "200":
+          description: "The item as it is now. `changed: false` means nothing was written (no version bump, no audit row)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentItemChange" }
+        "400":
+          description: Unknown field, a missing or non-integer `version`, an unknown `rank`, or `data` that is not an object.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `version` is not the item's stored version (someone else changed it); nothing was
+            written, reload and decide again. `import_in_progress`: an import or another edit holds the module's write
+            lock right now; nothing was written, retry after `Retry-After` seconds (that response only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/items/{id}/restore:
+    post:
+      tags: [admin]
+      operationId: restoreContentItem
+      summary: Restore a retired content item
+      description: |
+        Staff only. Sets the item back to `approved`. Optimistic on `version`; on a change the version goes up by one,
+        `source` becomes `admin`, and a `content_restore` audit row is written. Already approved is 200 `changed: false`
+        (the version is still checked). Answers 200, not 201.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - $ref: "#/components/parameters/ContentItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentItemVersionRequest" }
+      responses:
+        "200":
+          description: "The item as it is now. `changed: false` means nothing was written (no version bump, no audit row)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentItemChange" }
+        "400":
+          description: Unknown field, a missing or non-integer `version`, an unknown `rank`, or `data` that is not an object.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `version` is not the item's stored version (someone else changed it); nothing was
+            written, reload and decide again. `import_in_progress`: an import or another edit holds the module's write
+            lock right now; nothing was written, retry after `Retry-After` seconds (that response only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/admin/content/{module}/export:
     get:
       tags: [admin]
@@ -1699,6 +1880,13 @@ components:
       description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
 
+    ContentItemId:
+      name: id
+      in: path
+      required: true
+      description: A content item id, e.g. `mil-a5`. An id the module does not store is 404 `not_found`.
+      schema: { type: string, minLength: 1, maxLength: 64 }
+
     ContentDocumentNamePath:
       name: name
       in: path
@@ -2001,6 +2189,41 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/ContentItem" }
+    FieldDiff:
+      type: object
+      additionalProperties: false
+      required: [field, from, to]
+      properties:
+        field: { type: string, description: "e.g. answer, wrong[1], rank, status" }
+        from: {}
+        to: {}
+    ContentItemEditRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1, description: The item version the caller read. }
+        rank: { $ref: "#/components/schemas/Rank" }
+        data:
+          type: object
+          description: The whole module payload (replaces the stored one). Military is `{ answer, wrong[3], sourceFile, photographer }`.
+    ContentItemVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1, description: The item version the caller read. }
+    ContentItemChange:
+      type: object
+      additionalProperties: false
+      required: [changed, item, diff]
+      properties:
+        changed: { type: boolean, description: False when nothing was written. }
+        item: { $ref: "#/components/schemas/ContentItem" }
+        diff:
+          type: array
+          description: Each changed field, sorted by field name; empty when `changed` is false. A retire or restore is one `status` entry.
+          items: { $ref: "#/components/schemas/FieldDiff" }
     TripCoverageRequest:
       type: object
       additionalProperties: false

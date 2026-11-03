@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query, Res, StreamableFile } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Res, StreamableFile } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
 import { Principal } from "../auth/firebase-auth.guard.js";
@@ -6,11 +6,13 @@ import { StaffOnly } from "../auth/staff.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { DEAL_POLICY } from "../rules/dealer.js";
+import { RANKS } from "../rules/ranks.js";
 import { MODULE_IDS } from "../rules/modules.js";
 import type { ModuleId } from "../rules/modules.js";
 import { SkipClientVersion } from "../platform/client-version.js";
 import type { ContentModuleMapping } from "./content-module.js";
 import { contentMappingFor } from "./content-modules.js";
+import { ContentItemEditService } from "./content-item-edit.service.js";
 import { ContentService } from "./content.service.js";
 import { XLSX_MIME } from "./xlsx.js";
 
@@ -31,6 +33,19 @@ const coverageBody = z
   .optional();
 type CoverageBody = z.infer<typeof coverageBody>;
 
+// Item edits. Strict; `version` is the item version the caller read. `data` must be an object here; its contents are
+// checked by the module mapping (422), so a bad answer set is never a looser schema than the sheet import's.
+const itemVersion = z.number().int().min(1).max(2_147_483_647);
+const editBody = z.strictObject({
+  version: itemVersion,
+  rank: z.enum(RANKS).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
+});
+type EditBody = z.infer<typeof editBody>;
+const versionBody = z.strictObject({ version: itemVersion });
+type VersionBody = z.infer<typeof versionBody>;
+const ITEM_ID_MAX = 64;
+
 function isModuleId(value: string): value is ModuleId {
   return (MODULE_IDS as readonly string[]).includes(value);
 }
@@ -40,6 +55,12 @@ function mappingFor(module: string): ContentModuleMapping {
   const mapping = contentMappingFor(module);
   if (!mapping) throw new ApiError(404, "not_found", "No such endpoint.");
   return mapping;
+}
+
+/** An id longer than any real one cannot exist: 404 like any unknown id. */
+function itemId(id: string): string {
+  if (id.length > ITEM_ID_MAX) throw new ApiError(404, "not_found", "No such item.");
+  return id;
 }
 
 /** The uploaded file's name for the receipt: base name only, safe characters, at most 200. Never a path. */
@@ -62,7 +83,10 @@ export function sanitiseFileName(raw: string | undefined): string {
 @SkipClientVersion()
 @Controller("v1/admin/content")
 export class ContentController {
-  constructor(private readonly content: ContentService) {}
+  constructor(
+    private readonly content: ContentService,
+    private readonly edits: ContentItemEditService,
+  ) {}
 
   /**
    * Import a staff-edited xlsx (raw bytes; the route-scoped parser in app.setup.ts reads at most 5 MB).
@@ -121,6 +145,42 @@ export class ContentController {
   async items(@Param("module") module: string) {
     mappingFor(module);
     return { items: await this.content.listItems(module) };
+  }
+
+  /** Edit one item in place (rank and/or the whole module payload). Optimistic on `version`; see ContentItemEditService. */
+  @Patch(":module/items/:id")
+  async editItem(
+    @Principal() principal: string,
+    @Param("module") module: string,
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(editBody, "Expected { version: integer, rank?: Rank, data?: object } and nothing else.")) body: EditBody,
+  ) {
+    const mapping = mappingFor(module);
+    return this.edits.edit(mapping, itemId(id), body.version, { rank: body.rank, data: body.data }, principal, new Date());
+  }
+
+  @Post(":module/items/:id/retire")
+  @HttpCode(200)
+  async retireItem(
+    @Principal() principal: string,
+    @Param("module") module: string,
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(versionBody, "Expected { version: integer } and nothing else.")) body: VersionBody,
+  ) {
+    const mapping = mappingFor(module);
+    return this.edits.setStatus(mapping.module, itemId(id), body.version, "retired", principal, new Date());
+  }
+
+  @Post(":module/items/:id/restore")
+  @HttpCode(200)
+  async restoreItem(
+    @Principal() principal: string,
+    @Param("module") module: string,
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(versionBody, "Expected { version: integer } and nothing else.")) body: VersionBody,
+  ) {
+    const mapping = mappingFor(module);
+    return this.edits.setStatus(mapping.module, itemId(id), body.version, "approved", principal, new Date());
   }
 
   @Get(":module/export")

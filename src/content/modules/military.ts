@@ -1,4 +1,4 @@
-import type { ContentModuleMapping, ImportIssue, ParsedRow, ParsedSheet, StoredItem } from "../content-module.js";
+import type { ContentModuleMapping, ImportIssue, PayloadCheck, ParsedRow, ParsedSheet, StoredItem } from "../content-module.js";
 import { SpreadsheetError } from "../xlsx.js";
 import type { Cell, SheetRow } from "../xlsx.js";
 import { isRank } from "../../rules/ranks.js";
@@ -63,6 +63,48 @@ function parseVersion(raw: Cell | undefined): number | undefined | "invalid" {
   return Number(value);
 }
 
+const PAYLOAD_KEYS = ["answer", "wrong", "sourceFile", "photographer"] as const;
+
+/**
+ * The Military payload rules, shared by the sheet parser and the staff edit endpoint: `{ answer, wrong[3],
+ * sourceFile, photographer }`, all strings, no other keys; answer and the three wrong answers present after
+ * trimming and all four distinct after normalising. `sourceFile` (the natural key) and `photographer` may be
+ * blank here: an import only warns, and the planner enforces a unique non-blank `sourceFile`.
+ */
+function validatePayload(input: unknown): PayloadCheck {
+  const problems: string[] = [];
+  const empty = { answer: "", wrong: ["", "", ""], sourceFile: "", photographer: "" };
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return { data: empty, problems: ["The payload must be an object { answer, wrong, sourceFile, photographer }."] };
+  }
+  const record = input as Record<string, unknown>;
+  const extra = Object.keys(record).filter((key) => !(PAYLOAD_KEYS as readonly string[]).includes(key));
+  if (extra.length > 0) problems.push(`Unknown field(s): ${extra.slice(0, 5).join(", ")}.`);
+  const str = (value: unknown, label: string): string => {
+    if (typeof value === "string") return value.trim();
+    problems.push(`${label} must be text.`);
+    return "";
+  };
+  const answer = str(record["answer"], "Correct Answer");
+  const sourceFile = str(record["sourceFile"], "file");
+  const photographer = str(record["photographer"], "Photographer");
+  let wrong: string[] = ["", "", ""];
+  if (Array.isArray(record["wrong"]) && record["wrong"].length === 3) {
+    wrong = record["wrong"].map((value, i) => str(value, `Wrong Answer ${i + 1}`));
+  } else {
+    problems.push("wrong must be exactly three answers.");
+  }
+  if (answer === "") problems.push("Correct Answer is missing.");
+  wrong.forEach((value, i) => {
+    if (value === "") problems.push(`Wrong Answer ${i + 1} is missing.`);
+  });
+  if (answer !== "" && wrong.every((value) => value !== "")) {
+    const options = [answer, ...wrong].map(normalise);
+    if (new Set(options).size !== options.length) problems.push("The correct and wrong answers must all be different.");
+  }
+  return { data: { answer, wrong, sourceFile, photographer }, problems };
+}
+
 function parse(rows: SheetRow[]): ParsedSheet {
   const { rowIndex: headerIndex, columns } = findHeader(rows);
   const cell = (row: SheetRow, name: string): string => text(row[columns.get(name) ?? -1]);
@@ -101,14 +143,8 @@ function parse(rows: SheetRow[]): ParsedSheet {
     const problems: string[] = [];
     const rank = rankFromDisplayName(level);
     if (!rank) problems.push(level === "" ? "Level is missing." : "Level is not one of Trainee, First Officer, Captain, Check Airman, Chief Pilot.");
-    if (answer === "") problems.push("Correct Answer is missing.");
-    wrong.forEach((value, i) => {
-      if (value === "") problems.push(`Wrong Answer ${i + 1} is missing.`);
-    });
-    if (answer !== "" && wrong.every((value) => value !== "")) {
-      const options = [answer, ...wrong].map(normalise);
-      if (new Set(options).size !== options.length) problems.push("The correct and wrong answers must all be different.");
-    }
+    const check = validatePayload({ answer, wrong, sourceFile, photographer });
+    problems.push(...check.problems);
 
     let id: string | undefined;
     if (hasIdColumn) {
@@ -139,7 +175,7 @@ function parse(rows: SheetRow[]): ParsedSheet {
     }
     if (photographer === "") issues.push({ row: sheetRow, ...(id ? { id } : {}), level: "warning", message: "Photographer is missing." });
 
-    parsed.push({ row: sheetRow, id, naturalKey: sourceFile.normalize("NFC"), version, rank, data: { answer, wrong, sourceFile, photographer } });
+    parsed.push({ row: sheetRow, id, naturalKey: sourceFile.normalize("NFC"), version, rank, data: check.data });
   }
   return { kind: hasIdColumn ? "admin_export" : "client_sheet", rows: parsed, issues };
 }
@@ -167,6 +203,7 @@ function exportRows(items: readonly StoredItem[]): (string | number)[][] {
 export const militaryMapping: ContentModuleMapping = {
   module: "aircraft-identifier-military",
   parse,
+  validatePayload,
   naturalKey: (data) => String((data as { sourceFile?: unknown } | null)?.sourceFile ?? "").trim().normalize("NFC"),
   formatId: (n) => {
     const id = `mil-a${n}`;

@@ -37,6 +37,9 @@ export type ItemStatus = "approved" | "retired";
 /** A stored item as the exporter sees it. */
 export type StoredItem = { id: string; rank: Rank; status: ItemStatus; version: number; data: unknown };
 
+/** Result of checking one module payload: the normalised payload (trimmed text) and every problem found. */
+export type PayloadCheck = { data: Record<string, unknown>; problems: string[] };
+
 /**
  * How one module's spreadsheet maps to content_items. A module with no mapping cannot be imported (404).
  * Parsing may throw SpreadsheetError for file-level problems (header row not found).
@@ -45,6 +48,12 @@ export interface ContentModuleMapping {
   readonly module: ModuleId;
   /** Parse the first worksheet. Row-level problems become issues; accepted rows are returned in sheet order. */
   parse(rows: SheetRow[]): ParsedSheet;
+  /**
+   * The ONE payload validator: the sheet parser and the staff edit endpoint both call it, so neither can be
+   * looser. Returns the normalised payload (surrounding whitespace trimmed) and the problems; no problems = valid.
+   * It does not judge the natural key's uniqueness (the planner does) and tolerates a blank one (import warns).
+   */
+  validatePayload(data: unknown): PayloadCheck;
   /** Natural key of a stored payload; equals ParsedRow.naturalKey for the same question. */
   naturalKey(data: unknown): string;
   /** The id for the Nth item of the module (Military: mil-a<N>), or undefined when N is beyond what an id can express. */
