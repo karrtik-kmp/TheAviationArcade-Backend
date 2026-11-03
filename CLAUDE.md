@@ -14,7 +14,11 @@ sign-off.
 ## Rules that must not be broken
 
 - Principal = `firebase:<projectId>:<uid>` from a verified token only. Providers: email/password and
-  Google. Never trust a client-supplied ID, role, name or email.
+  Google; the game signs in through Unity Auth's `oidc-firebase` provider, so the backend still verifies Firebase tokens.
+  Never trust a client-supplied ID, role, name or email.
+- Privileges come only from the backend `account_roles` table (docs/adr/ADR-0002): `player` at signup, `photographer`
+  by request + admin approval, `admin` only by grant (or the audited `roles:grant` command). Guards read roles per
+  request; photographer/admin also need a verified email. No env allowlist grants anything (`STAFF_EMAILS` retired).
 - Cloud project `airplane-games-auth-20261022`; local/tests use only `demo-airplane-games`. Unsigned
   emulator tokens are accepted for exactly that demo project. Never commit `.env*` (except
   `.env.example`), keys or Bunny passwords.
@@ -40,3 +44,4 @@ sign-off.
 - Delegate scoped implementation to subagents with explicit file ownership; get an independent review
   for non-trivial changes; integrate and verify yourself.
 - Focused commits, inspect staged files, record actual verification in `docs/TASKS.md`.
+- Work on `main` (no worktrees or side branches); push to `origin` after each verified piece.
