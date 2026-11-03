@@ -168,8 +168,7 @@ The backend Postgres is the source of truth for admin-curated question content (
 consume it in later slices). Admin routes need the `admin` role: an ACTIVE row for the verified principal in the
 `account_roles` table and a Firebase-verified token email ([ADR-0002](docs/adr/ADR-0002-role-based-access.md)). Roles are
 read on every request, so a revoke takes effect on the next call; no environment list (the retired `STAFF_EMAILS`), email,
-header or body field can grant one. Until the role routes (R-b) and `roles:grant` (R-c) exist, a role row is inserted
-directly in the database. Admin routes sit behind the normal auth and rate-limit guards and
+header or body field can grant one. The first admin comes from `npm run roles:grant` (see "First admin"). Admin routes sit behind the normal auth and rate-limit guards and
 are exempt from the app's client version gate. Today only `aircraft-identifier-military` has a mapping (the
 client's `Military Airplane Identifier v1.xlsx`: 31 rows → `mil-a1`…`mil-a31`, imported as `approved`); any other
 module is 404. Importing is all-or-nothing (any row error → 422, nothing written) and a retry is safe: identical
@@ -194,6 +193,24 @@ of file (ruled 2026-10-28):
 
 The original upload is kept forever in Bunny Storage under `backend/imports/<module>/<sha256>.xlsx`. No email is
 stored: receipts and the append-only audit log carry the admin's principal. Details: ARCHITECTURE.md "Admin content store".
+
+### First admin
+
+The first admin (and recovery when no active admin is left) is granted by the operator, not the API:
+
+```
+npm run roles:grant -- <firebase-uid> --yes
+```
+
+It builds, then grants `admin` to `firebase:<FIREBASE_PROJECT_ID>:<uid>` with the same role store as the API (role lock,
+revision bump, `role_grant` audit row, actor `operator:<os user>`). It prints the target database host and name (never the
+password) and refuses without `--yes`. It accepts only `admin`, refuses when ANY active admin exists (checked in the same
+locked transaction as the grant), refuses a full principal of another project or a bad uid, and refuses a `demo-` project when
+`APP_ENV=production`. A `revoked` admin row becomes `active` again. Settings come from the shell or `.env` and are checked by the server's own config loader, so the TLS rules
+(`DATABASE_SSL`, `DATABASE_CA_CERT`, no ssl options in `DATABASE_URL`) and every other server setting are enforced as for the API:
+`DATABASE_URL`, `FIREBASE_PROJECT_ID`, `APP_ENV`. Exit codes: 0 granted, 1 unexpected
+failure, 2 refused by arguments or settings, 3 refused by the database state. Every later admin is granted through
+`POST /v1/admin/accounts/{principal}/roles/admin/grant`.
 
 ## Content documents and the manifest (slice T4)
 

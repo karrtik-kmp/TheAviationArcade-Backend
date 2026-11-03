@@ -259,11 +259,18 @@ export class RoleStore {
    * Grant `admin` (an admin, or the operator command). A missing row is inserted `active`; a `revoked` row becomes `active`
    * (updated, never a second insert, revision + 1). An active, pending or rejected row is 409 `version_conflict`.
    */
-  async grantAdmin(actor: RoleActor, principal: string, note: string | null): Promise<DecisionOutcome> {
+  async grantAdmin(actor: RoleActor, principal: string, note: string | null, options?: { onlyIfNoActiveAdmin?: boolean }): Promise<DecisionOutcome> {
     return this.database.withTransaction(async (tx): Promise<DecisionOutcome> => {
       await lockAccountRoles(tx);
       if (!(await actorStillAdmin(tx, actor))) {
         return { ok: false, error: new ApiError(403, "forbidden", "Requires the admin role.") };
+      }
+      // The operator command (first admin / recovery) passes this: checked under the same lock as the write.
+      if (options?.onlyIfNoActiveAdmin && (await activeAdminCount(tx)) > 0) {
+        return {
+          ok: false,
+          error: new ApiError(409, "version_conflict", "An active admin already exists; grant admin through the admin API. Nothing was changed."),
+        };
       }
       const at = await databaseNow(tx);
       const before = await readRow(tx, principal, "admin");
