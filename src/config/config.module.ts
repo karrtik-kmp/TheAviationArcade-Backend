@@ -41,6 +41,8 @@ export type AppConfig = {
   blobStore: BlobStoreKind;
   /** Present only when blobStore is "bunny". The password is a secret: never log or echo it. */
   bunny: BunnyConfig | undefined;
+  /** Present only when both BUNNY_CDN_* settings are given; without it image previews carry `url: null` (reason `cdn_not_configured`). */
+  cdn: CdnConfig | undefined;
   /** Present only when every UGS_* setting is given: the one-way progress mirror to Unity Gaming Services. */
   ugs: UgsConfig | undefined;
 };
@@ -71,6 +73,13 @@ export type BunnyConfig = {
   region: BunnyRegion;
   /** Key prefix inside the (shared) zone, always ending in "/". */
   prefix: string;
+};
+
+export type CdnConfig = {
+  /** Plain hostname of the token-protected pull zone, for example `name.b-cdn.net`. */
+  host: string;
+  /** Bunny advanced token authentication security key. A secret: never log or echo it. */
+  tokenKey: string;
 };
 
 export const BUNNY_REGIONS = ["de", "ny", "la", "sg", "syd", "uk", "se", "jh"] as const;
@@ -125,6 +134,11 @@ const BUNNY_ZONE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** Relative key prefix: lowercase segments joined and ended by "/", so no leading "/", no "//", no "..". */
 const BUNNY_PREFIX = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*\/$/;
 
+/** Plain lower-case hostname (no scheme, port, path or userinfo), the shape the CDN link signer accepts. */
+const CDN_HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+/** The security key is a printable token without whitespace; Bunny's are 36-character GUIDs, so 16 is a floor, not a format. */
+const CDN_TOKEN_KEY = /^[!-~]{16,256}$/;
+
 const envSchema = z.object({
   /** Where this process runs. Required, so a deployment can never fall back to local behaviour. */
   APP_ENV: z.enum(["local", "test", "production"]),
@@ -157,6 +171,9 @@ const envSchema = z.object({
   /** Defaults (de, backend/) are applied only for BLOB_STORE=bunny, so "was it set at all" stays visible. */
   BUNNY_STORAGE_REGION: z.enum(BUNNY_REGIONS).optional(),
   BUNNY_STORAGE_PREFIX: z.string().trim().optional(),
+  /** Pull zone hostname and token key for signed image links: both or neither (docs/adr/ADR-0001). Blank counts as unset. */
+  BUNNY_CDN_HOST: optionalText,
+  BUNNY_CDN_TOKEN_KEY: optionalText,
   /** UGS progress mirror: all-or-none (UGS_MIRROR_MAX_PER_MIN and UGS_MIRROR_MIN_INTERVAL_SEC are optional with defaults). */
   UGS_PROJECT_ID: optionalText,
   UGS_ENVIRONMENT_ID: optionalText,
@@ -195,6 +212,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     BUNNY_STORAGE_PASSWORD,
     BUNNY_STORAGE_REGION,
     BUNNY_STORAGE_PREFIX,
+    BUNNY_CDN_HOST,
+    BUNNY_CDN_TOKEN_KEY,
     UGS_PROJECT_ID,
     UGS_ENVIRONMENT_ID,
     UGS_SERVICE_ACCOUNT_KEY_ID,
@@ -275,6 +294,26 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       prefix,
     };
   }
+  // Both or neither, in every environment: signing needs the pair, and without it previews say so (no 500). Production
+  // requires both, so published images never silently ship with url null. Names only.
+  let cdn: CdnConfig | undefined;
+  if (APP_ENV === "production" && BUNNY_CDN_HOST === undefined && BUNNY_CDN_TOKEN_KEY === undefined) {
+    throw new Error("Invalid environment configuration: BUNNY_CDN_HOST, BUNNY_CDN_TOKEN_KEY required when APP_ENV=production");
+  }
+  if ((BUNNY_CDN_HOST === undefined) !== (BUNNY_CDN_TOKEN_KEY === undefined)) {
+    const missing = BUNNY_CDN_HOST === undefined ? "BUNNY_CDN_HOST" : "BUNNY_CDN_TOKEN_KEY";
+    throw new Error(`Invalid environment configuration: ${missing} required when the other BUNNY_CDN_* setting is given`);
+  }
+  if (BUNNY_CDN_HOST !== undefined && BUNNY_CDN_TOKEN_KEY !== undefined) {
+    const bad = [...(CDN_HOST.test(BUNNY_CDN_HOST) ? [] : ["BUNNY_CDN_HOST"]), ...(CDN_TOKEN_KEY.test(BUNNY_CDN_TOKEN_KEY) ? [] : ["BUNNY_CDN_TOKEN_KEY"])];
+    if (bad.length > 0) throw new Error(`Invalid environment configuration: ${bad.join(", ")}`);
+    cdn = { host: BUNNY_CDN_HOST, tokenKey: BUNNY_CDN_TOKEN_KEY };
+  }
+  // The signer's path allow-list (src/platform/cdn-signer.ts) is /backend/content/photos/..., i.e. tied to the default storage
+  // prefix: with another prefix the files would be stored where signed links do not point.
+  if (cdn !== undefined && bunny !== undefined && bunny.prefix !== "backend/") {
+    throw new Error("Invalid environment configuration: BUNNY_STORAGE_PREFIX must be backend/ when BUNNY_CDN_* is configured");
+  }
   const ugs = parseUgsConfig({
     UGS_PROJECT_ID,
     UGS_ENVIRONMENT_ID,
@@ -309,6 +348,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     minClientBuild: MIN_CLIENT_BUILD,
     blobStore,
     bunny,
+    cdn,
     ugs,
   };
 }

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { APP_CONFIG } from "../../config/config.module.js";
+import type { AppConfig } from "../../config/config.module.js";
 import { ApiError } from "../../common/errors.js";
 import { DatabaseService, ExpectedRollback } from "../../database/database.module.js";
 import type { Database, Tx } from "../../database/database.module.js";
@@ -10,8 +12,10 @@ import { BLOB_STORE, StorageUnavailableError } from "../../storage/blob-store.js
 import { storageApiError } from "../import-blob.js";
 import type { BlobStore } from "../../storage/blob-store.js";
 import { sniffImage } from "./image-sniff.js";
-import { mediaIdOf, toItemView } from "./media-view.js";
-import type { MediaItemRow, MediaItemView, MediaVersionRow } from "./media-view.js";
+import { toImageRef } from "./image-ref.js";
+import type { ImageRefView } from "./image-ref.js";
+import { mediaIdOf, toItemView, toVersionView } from "./media-view.js";
+import type { MediaItemRow, MediaItemView, MediaVersionRow, MediaVersionView } from "./media-view.js";
 
 export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 export const MEDIA_CONTENT_TYPES_ACCEPTED = ["image/jpeg", "image/png"] as const;
@@ -47,6 +51,25 @@ const LICENCE_FIELDS = Object.keys(LICENCE_COLUMNS) as LicenceField[];
 /** A concurrent request with the same (principal, Idempotency-Key) won the unique insert: roll this one back and replay. */
 class KeyAlreadyClaimed extends ExpectedRollback {}
 
+export type MediaListView = { items: MediaItemView[]; nextCursor: string | null };
+export type MediaDetailView = { item: MediaItemView; versions: MediaVersionView[]; preview: ImageRefView };
+
+const CURSOR = /^m1\.([a-z]+|-)\.([1-9][0-9]{0,14})$/;
+
+/** Opaque to clients: base64url of `m1.<state or ->.<last id>`. */
+function encodeCursor(lastId: number, state: string | undefined): string {
+  return Buffer.from(`m1.${state ?? "-"}.${lastId}`).toString("base64url");
+}
+
+/** The last id, or undefined when the text is not a cursor made under this state filter. */
+function decodeCursor(cursor: string, state: string | undefined): number | undefined {
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(cursor)) return undefined;
+  const match = CURSOR.exec(Buffer.from(cursor, "base64url").toString("utf8"));
+  if (!match || match[1] !== (state ?? "-")) return undefined;
+  const id = Number(match[2]);
+  return encodeCursor(id, state) === cursor ? id : undefined; // refuses non-canonical base64url spellings
+}
+
 const sha256Of = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
 const notFound = () => new ApiError(404, "not_found", "No such media item.");
@@ -66,7 +89,76 @@ export class MediaService {
   constructor(
     private readonly database: DatabaseService,
     @Inject(BLOB_STORE) private readonly blobs: BlobStore,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
+
+  /**
+   * One page of items, newest first (by id, which never changes, so new uploads cannot shift a page). A non-admin sees only their
+   * own. The cursor names the last id returned and the state filter it was made under; anything else is 400.
+   */
+  async list(principal: string, isAdmin: boolean, state: MediaItemRow["state"] | undefined, cursor: string | undefined, limit: number): Promise<MediaListView> {
+    let before: number | undefined;
+    if (cursor !== undefined) {
+      before = decodeCursor(cursor, state);
+      if (before === undefined) throw new ApiError(400, "invalid_request", "Not a cursor this route returned (or the state filter changed). Start again without cursor.");
+    }
+    const rows = await this.database.db
+      .select({ item: mediaItems, draft: mediaVersions })
+      .from(mediaItems)
+      .innerJoin(mediaVersions, and(eq(mediaVersions.mediaId, mediaItems.id), eq(mediaVersions.version, mediaItems.draftVersion)))
+      .where(
+        and(
+          isAdmin ? undefined : eq(mediaItems.owner, principal),
+          state === undefined ? undefined : eq(mediaItems.state, state),
+          before === undefined ? undefined : lt(mediaItems.id, before),
+        ),
+      )
+      .orderBy(desc(mediaItems.id))
+      .limit(limit + 1);
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    return {
+      items: page.map((r) => toItemView(r.item, r.draft, isAdmin)),
+      nextCursor: rows.length > limit && last ? encodeCursor(last.item.id, state) : null,
+    };
+  }
+
+  /** One item, every version (oldest first) and a preview link for the draft, signed in any state. 404 for another's item (non-admin). */
+  async get(principal: string, mediaId: number, isAdmin: boolean): Promise<MediaDetailView> {
+    const [item] = await this.database.db.select().from(mediaItems).where(eq(mediaItems.id, mediaId)).limit(1);
+    if (!item || (!isAdmin && item.owner !== principal)) throw notFound();
+    // Versions are only ever added, so reading them after the item always includes the item's draft.
+    const versions = await this.database.db.select().from(mediaVersions).where(eq(mediaVersions.mediaId, mediaId)).orderBy(asc(mediaVersions.version));
+    const draft = versions.find((v) => v.version === item.draftVersion);
+    if (!draft) throw new Error("Media item names a missing version.");
+    const now = await databaseNow(this.database.db);
+    return {
+      item: toItemView(item, draft, isAdmin),
+      versions: versions.map(toVersionView),
+      preview: toImageRef(mediaId, draft, this.config.cdn, now),
+    };
+  }
+
+  /**
+   * The PUBLISHED version of each requested item that is published, in the order of `ids` (already de-duplicated). Others are
+   * absent. One read joins the item to its published version; links are signed per file against one database instant.
+   */
+  async published(ids: readonly number[]): Promise<ImageRefView[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.database.db
+      .select({ id: mediaItems.id, version: mediaVersions })
+      .from(mediaItems)
+      .innerJoin(mediaVersions, and(eq(mediaVersions.mediaId, mediaItems.id), eq(mediaVersions.version, mediaItems.publishedVersion)))
+      .where(and(inArray(mediaItems.id, [...ids]), eq(mediaItems.state, "published")));
+    const byId = new Map(rows.map((r) => [r.id, r.version]));
+    const now = await databaseNow(this.database.db);
+    const refs: ImageRefView[] = [];
+    for (const id of ids) {
+      const version = byId.get(id);
+      if (version) refs.push(toImageRef(id, version, this.config.cdn, now));
+    }
+    return refs;
+  }
 
   /**
    * Create a media item from raw image bytes. The Idempotency-Key is looked up FIRST (this route has no revision fence): a

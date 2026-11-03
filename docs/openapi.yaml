@@ -1,10 +1,19 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.15.0
+  version: 0.16.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.16.0 (media plan T5-T7, Backend ADR-0001).** All media routes are now built. For the game and the website:
+    `GET /v1/media?ids=` (any signed-in caller, at most 50 ids, `X-Client: web` accepted) returns an `ImageRef` per
+    **published** image in request order; unpublished, withdrawn and unknown ids are absent, not 404. Each link is a
+    Bunny CDN URL signed for 24 h (`expiresAt` from the database clock); without CDN settings (local runs) `url` is null
+    with reason `cdn_not_configured`. Staff: `GET /v1/admin/media` (newest first, opaque cursor, photographers see only
+    their own) and `GET /v1/admin/media/{mediaId}` (versions and a signed preview in any state);
+    `PUT /v1/admin/content/{module}/items/{id}/media` (admin) links or unlinks an image on a content item (a staff edit:
+    version bump, audit); `ContentItem.mediaId` and a trailing export column "Media Id" are added (import ignores it).
 
     **Changelog 0.15.0 (media plan T4 and role plan R-d; staff-only, no change for the game).** Media: built (were
     `x-planned`) `POST /v1/admin/media/{mediaId}/versions`, `PATCH /v1/admin/media/{mediaId}` (licence edit; never touches
@@ -103,12 +112,9 @@ info:
     `invalid_request` from both Round routes until it adopts this. Unity changes: open a segment per Trip with a fresh
     `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts, call `complete` after the 10th Round.
 
-    **Planned contract.** The media contract is planned (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002): the staff
-    routes under `/v1/admin/media`, `PUT /v1/admin/content/{module}/items/{id}/media` and `GET /v1/media?ids=`, with the schemas
-    `MediaItem`, `MediaVersion`, `MediaLicence`, `ImageRef` and the error code `media_invalid`. Each route moves to built, with a changelog entry,
-    when its slice lands; `POST /v1/admin/media` and `media_invalid` are built (0.14.0); versions, licence edit, publish and withdraw
-    (0.15.0); the list, get, content link and `GET /v1/media` routes are not served yet. Before it, the Logbook was the last
-    planned operation (0.10.0), and 0.11.0 to 0.13.0 added only built routes. An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
+    **Planned contract.** The media contract (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002) was recorded as
+    planned and is now fully built: upload (0.14.0); versions, licence edit, publish and withdraw (0.15.0); list, get, the
+    content link and `GET /v1/media` (0.16.0). Before it, the Logbook was the last planned operation (0.10.0). An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
     against it. It is NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
     `x-planned-properties`; the built shapes beside them are what the server does now. Error codes only planned
@@ -1914,10 +1920,10 @@ paths:
       summary: Export content as a spreadsheet
       description: |
         Admin only. An `.xlsx` with columns `Id, Version, Level, Correct Answer, Wrong Answer 1, Wrong Answer 2,
-        Wrong Answer 3, file, Photographer, Status` (Level in the client wording), natural id order, retired
+        Wrong Answer 3, file, Photographer, Status, Media Id` (Airport Spotter has its own answer columns; Level in the client wording), natural id order, retired
         items included (`Status` is `approved` or `retired`). Edit it and import it again: the `Version`
-        column makes the import an edit of exactly that version. The `Status` column is informational and is
-        ignored on import; an export never retires anything.
+        column makes the import an edit of exactly that version. The `Status` and `Media Id` columns (the last is the
+        linked image, `med-<n>`, or blank) are informational and are ignored on import; an export never retires anything.
       parameters:
         - $ref: "#/components/parameters/ContentModule"
       responses:
@@ -2295,9 +2301,9 @@ paths:
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   # ---------------------------------------------------------------------------------------------------------
-  # Media pipeline (plan docs/plans/media-pipeline.md). Built: POST /v1/admin/media (0.14.0) and, with plan T4, PATCH
-  # /v1/admin/media/{mediaId}, POST .../versions, POST .../publish and POST .../withdraw. Every other operation below is
-  # x-planned and answers 404 `not_found` until its slice is built.
+  # Media pipeline (plan docs/plans/media-pipeline.md). All built: POST /v1/admin/media (0.14.0); PATCH
+  # /v1/admin/media/{mediaId}, POST .../versions, .../publish and .../withdraw (0.15.0); GET /v1/admin/media,
+  # GET /v1/admin/media/{mediaId}, PUT /v1/admin/content/{module}/items/{id}/media and GET /v1/media (0.16.0).
   # ---------------------------------------------------------------------------------------------------------
 
   /v1/admin/media:
@@ -2355,15 +2361,14 @@ paths:
         "503": { $ref: "#/components/responses/MediaStorageUnavailable" }
     get:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T5 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: listMedia
       summary: List media items
       description: |
-        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer sees only their own items; an admin
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer sees only their own items; an admin
         sees all (and the `owner` field). Newest first. `state` filters. `limit` is 1 to 100 (default 50). `nextCursor` is opaque; pass
-        it back as `cursor` for the next page, `null` on the last. A cursor this route did not return, or one that is too long, is 400
-        `invalid_request`. Exempt from the client version gate.
+        it back as `cursor` for the next page, `null` on the last. A malformed cursor, one made under another `state`, or one that is too long, is 400
+        `invalid_request`, as is any other query parameter, a repeated one or a malformed value. Pages are ordered by item id, so
+        uploads made while paging never move or repeat an item. Exempt from the client version gate.
       parameters:
         - name: state
           in: query
@@ -2372,7 +2377,7 @@ paths:
         - name: cursor
           in: query
           required: false
-          description: Opaque; only a `nextCursor` this route returned is accepted (otherwise 400).
+          description: Opaque; pass back a `nextCursor` with the same `state` filter. A malformed cursor or another filter's is 400. It is not a secret and grants nothing (visibility is checked on every page).
           schema: { type: string, minLength: 1, maxLength: 100 }
         - name: limit
           in: query
@@ -2396,14 +2401,14 @@ paths:
   /v1/admin/media/{mediaId}:
     get:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T5 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: getMedia
       summary: One media item with its version history
       description: |
-        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer reads only their own items; for another's
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer reads only their own items; for another's
         item (or an unknown id) the answer is 404 `not_found`. Returns the item, every version with its licence, and a `preview`
-        `ImageRef` for the draft version, signed in any state. Exempt from the client version gate.
+        `ImageRef` for the draft version, signed in any state. The link expires 24 hours after the database time of the request; with
+        no CDN host and key configured (a local run) `preview.url` and `expiresAt` are null and `reason` is `cdn_not_configured`.
+        No query parameters. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
       responses:
@@ -2415,6 +2420,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MediaDetail" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/MediaNotFound" }
@@ -2617,16 +2623,15 @@ paths:
   /v1/admin/content/{module}/items/{id}/media:
     put:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T6 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: linkContentItemMedia
       summary: Link or unlink a content item's image
       description: |
-        PLANNED. Admin only. Sets (or with `mediaId: null` clears) the image of a content item. Optimistic on the item `version`
+        Admin only. Sets (or with `mediaId: null` clears) the image of a content item. Optimistic on the item `version`
         (`expectedVersion`, as on the edit route); a change bumps the item version, sets `source` to `admin` and writes one
-        `content_media_link` audit row. Runs in one transaction under the module's write lock. Linking the stored value is 200 with
-        `changed: false`. An unknown `mediaId` is 422 `media_invalid`; an unknown module or item is 404 `not_found`. A spreadsheet import
-        never changes the link. The link counts as a staff write for the client-sheet replay rule.
+        `content_media_link` audit row (the `diff` is one `media` entry). Runs in one transaction under the module's write lock. Linking the stored value is 200 with
+        `changed: false`. An unknown `mediaId` is 422 `media_invalid`; an unknown module or item is 404 `not_found`. Any existing media
+        item may be linked, whatever its state (draft, published or withdrawn); readers only ever see the published version. A spreadsheet import
+        never changes the link (the export carries a trailing `Media Id` column that the import ignores). The link counts as a staff write for the client-sheet replay rule.
       parameters:
         - $ref: "#/components/parameters/ContentModule"
         - $ref: "#/components/parameters/ContentItemId"
@@ -2677,12 +2682,10 @@ paths:
   /v1/media:
     get:
       tags: [media]
-      x-planned: true
-      x-planned-note: Media plan T7 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: getPublishedMedia
       summary: Read published images by id
       description: |
-        PLANNED. Any signed-in caller (no player row or role needed); the website calls it with `X-Client: web`. `ids` is a
+        Any signed-in caller (no player row or role needed); the website calls it with `X-Client: web`. `ids` is a
         comma-separated list of 1 to 50 media ids, each strictly `med-<n>`; a malformed id, an empty list, an empty element, more
         than 50 entries as sent, or a repeated `ids` parameter is 400 `invalid_request`. Duplicates are collapsed. The answer holds
         one `ImageRef` (the PUBLISHED version, with its frozen licence and a signed link) per requested id that is published, in
@@ -3236,12 +3239,11 @@ components:
     ContentItem:
       type: object
       additionalProperties: false
-      required: [id, rank, status, source, version, data, updatedAt]
-      x-planned-properties:
+      required: [id, rank, status, source, version, data, mediaId, updatedAt]
+      properties:
         mediaId:
           type: [string, "null"]
-          description: The linked image (`med-<n>`), null when none. Planned with `PUT .../items/{id}/media` (media plan T6); not returned yet. A link or unlink is one `media` entry in the change `diff`.
-      properties:
+          description: The linked image (`med-<n>`), null when none. Set by `PUT .../items/{id}/media`; a link or unlink is one `media` entry in the change `diff`.
         id: { type: string, description: "Stable item id, e.g. mil-a5." }
         rank: { $ref: "#/components/schemas/Rank" }
         status: { type: string, enum: [approved, retired] }
@@ -4512,7 +4514,7 @@ components:
 
     # ---------------------------------------------------------------------------------------------------------
     # Media pipeline schemas (plan T0, docs/plans/media-pipeline.md, ADR-0001, ADR-0002). Served: MediaItem, MediaVersion and
-    # MediaLicence (0.14.0), and with plan T4 MediaEditRequest, MediaLicenceUpdate and MediaRevisionRequest. The rest are used only by x-planned operations. Shapes follow the committed media tables (migration 0017).
+    # MediaLicence (0.14.0), with plan T4 MediaEditRequest, MediaLicenceUpdate and MediaRevisionRequest, and with plan T5 ImageRef, MediaDetail and MediaList, and with plan T7 MediaImages. Shapes follow the committed media tables (migration 0017).
     # ---------------------------------------------------------------------------------------------------------
 
     MediaId:

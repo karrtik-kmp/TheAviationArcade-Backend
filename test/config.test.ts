@@ -8,11 +8,14 @@ const local = {
   ALLOW_EMULATOR_TOKENS: "true",
 };
 
-const production = {
+/** Production without the CDN pair, which production requires. */
+const productionNoCdn = {
   APP_ENV: "production",
   DATABASE_URL: "postgres://user:s3cret-pass@db.internal:5432/db",
   FIREBASE_PROJECT_ID: "airplane-games-auth-20261022",
 };
+
+const production = { ...productionNoCdn, BUNNY_CDN_HOST: "my-zone.b-cdn.net", BUNNY_CDN_TOKEN_KEY: "0123456789abcdef-secret-key" };
 
 function message(env: NodeJS.ProcessEnv): string {
   try {
@@ -194,6 +197,68 @@ describe("loadConfig", () => {
       expect(withList).toEqual(loadConfig(local));
       expect(JSON.stringify(withList)).not.toContain("staff@sites.test");
       expect(Object.keys(withList).some((key) => /staff|email/i.test(key))).toBe(false);
+    });
+  });
+
+  describe("BUNNY_CDN_HOST / BUNNY_CDN_TOKEN_KEY (signed image links)", () => {
+    const cdn = { BUNNY_CDN_HOST: "my-zone.b-cdn.net", BUNNY_CDN_TOKEN_KEY: "0123456789abcdef-secret-key" };
+
+    it("are off when neither is given (blank counts as unset) outside production", () => {
+      expect(loadConfig(local).cdn).toBeUndefined();
+      expect(loadConfig({ ...local, APP_ENV: "test" }).cdn).toBeUndefined();
+      expect(loadConfig({ ...local, BUNNY_CDN_HOST: " ", BUNNY_CDN_TOKEN_KEY: "" }).cdn).toBeUndefined();
+    });
+
+    it("are both required when APP_ENV=production, naming the variables without values", () => {
+      const none = message(productionNoCdn);
+      expect(none).toContain("BUNNY_CDN_HOST");
+      expect(none).toContain("BUNNY_CDN_TOKEN_KEY");
+      expect(message({ ...productionNoCdn, BUNNY_CDN_HOST: " ", BUNNY_CDN_TOKEN_KEY: "" })).toContain("BUNNY_CDN_HOST");
+      expect(message({ ...productionNoCdn, BUNNY_CDN_HOST: cdn.BUNNY_CDN_HOST })).toContain("BUNNY_CDN_TOKEN_KEY");
+      const noHost = message({ ...productionNoCdn, BUNNY_CDN_TOKEN_KEY: cdn.BUNNY_CDN_TOKEN_KEY });
+      expect(noHost).toContain("BUNNY_CDN_HOST");
+      expect(noHost).not.toContain(cdn.BUNNY_CDN_TOKEN_KEY);
+      expect(loadConfig({ ...productionNoCdn, ...cdn }).cdn?.host).toBe(cdn.BUNNY_CDN_HOST);
+    });
+
+    it("refuse a BUNNY_STORAGE_PREFIX other than backend/ while configured (the signer path is tied to it)", () => {
+      const bunny = { BLOB_STORE: "bunny", BUNNY_STORAGE_ZONE: "aviation-arcade-website", BUNNY_STORAGE_PASSWORD: "pw-secret-value-1" };
+      const text = message({ ...local, ...bunny, ...cdn, BUNNY_STORAGE_PREFIX: "other/" });
+      expect(text).toContain("BUNNY_STORAGE_PREFIX");
+      expect(text).not.toContain("pw-secret-value-1");
+      expect(text).not.toContain(cdn.BUNNY_CDN_TOKEN_KEY);
+      expect(loadConfig({ ...local, ...bunny, ...cdn, BUNNY_STORAGE_PREFIX: " backend/ " }).bunny?.prefix).toBe("backend/");
+      expect(loadConfig({ ...local, ...bunny, ...cdn }).bunny?.prefix).toBe("backend/");
+      expect(loadConfig({ ...local, ...bunny, BUNNY_STORAGE_PREFIX: "other/" }).bunny?.prefix).toBe("other/");
+    });
+
+    it("are read together, trimmed, and allowed in production", () => {
+      expect(loadConfig({ ...local, ...cdn }).cdn).toEqual({ host: "my-zone.b-cdn.net", tokenKey: "0123456789abcdef-secret-key" });
+      expect(loadConfig({ ...production, BUNNY_CDN_HOST: " my-zone.b-cdn.net ", BUNNY_CDN_TOKEN_KEY: " 0123456789abcdef-secret-key " }).cdn).toEqual({
+        host: "my-zone.b-cdn.net",
+        tokenKey: "0123456789abcdef-secret-key",
+      });
+    });
+
+    it("one without the other fails, naming the missing variable and never a value", () => {
+      const noKey = message({ ...local, BUNNY_CDN_HOST: cdn.BUNNY_CDN_HOST });
+      expect(noKey).toContain("BUNNY_CDN_TOKEN_KEY");
+      const noHost = message({ ...local, BUNNY_CDN_TOKEN_KEY: cdn.BUNNY_CDN_TOKEN_KEY });
+      expect(noHost).toContain("BUNNY_CDN_HOST");
+      expect(noHost).not.toContain(cdn.BUNNY_CDN_TOKEN_KEY);
+    });
+
+    it("rejects a host that is not a plain hostname and a short or spaced key, without echoing values", () => {
+      for (const host of ["https://my-zone.b-cdn.net", "my-zone.b-cdn.net/x", "my-zone.b-cdn.net:8443", "user@my-zone.b-cdn.net", "localhost", "My-Zone.b-cdn.net", "-bad.b-cdn.net", "a b.b-cdn.net"]) {
+        const text = message({ ...local, ...cdn, BUNNY_CDN_HOST: host });
+        expect(text, host).toContain("BUNNY_CDN_HOST");
+        expect(text, host).not.toContain(host);
+      }
+      for (const key of ["short", "has a space-0123456789", "tab	separated-0123456789"]) {
+        const text = message({ ...local, ...cdn, BUNNY_CDN_TOKEN_KEY: key });
+        expect(text, key).toContain("BUNNY_CDN_TOKEN_KEY");
+        expect(text, key).not.toContain(key);
+      }
     });
   });
 

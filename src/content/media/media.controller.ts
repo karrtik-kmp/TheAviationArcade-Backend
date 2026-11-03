@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, HttpCode, Param, Patch, Post, Query, Res } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Res } from "@nestjs/common";
 import type { PipeTransform } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
@@ -42,6 +42,17 @@ const revisionField = z.int().min(1).max(2_147_483_647);
 const revisionBody = z.strictObject({ revision: revisionField });
 type RevisionBody = z.infer<typeof revisionBody>;
 const emptyQuery = z.strictObject({});
+const listQuery = z.strictObject({
+  state: z.enum(["unverified", "published", "withdrawn"]).optional(),
+  cursor: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
+  limit: z
+    .string()
+    .regex(/^[1-9][0-9]{0,2}$/)
+    .transform(Number)
+    .pipe(z.number().max(100))
+    .optional(),
+});
+type ListQuery = z.infer<typeof listQuery>;
 const versionQuery = z.strictObject({ revision: z.string().regex(/^[1-9][0-9]{0,9}$/) });
 
 // Text is trimmed and otherwise kept verbatim; control characters are refused. Lengths count code points, as Postgres length() does.
@@ -80,6 +91,27 @@ type EditBody = z.infer<typeof editBody>;
 @Controller("v1/admin/media")
 export class MediaController {
   constructor(private readonly media: MediaService) {}
+
+  /** Newest first; a photographer sees their own items, an admin all. */
+  @Get()
+  list(
+    @Principal() principal: string,
+    @CallerRoles() roles: readonly AccountRole[],
+    @Query(new ZodValidationPipe(listQuery, "Expected only ?state=unverified|published|withdrawn, ?cursor=<a nextCursor> and ?limit=1-100.")) query: ListQuery,
+  ) {
+    return this.media.list(principal, roles.includes("admin"), query.state, query.cursor, query.limit ?? 50);
+  }
+
+  /** The item, its version history and a signed preview link (404 for another photographer's item). */
+  @Get(":mediaId")
+  get(
+    @Principal() principal: string,
+    @CallerRoles() roles: readonly AccountRole[],
+    @Param("mediaId", new MediaIdPipe()) mediaId: number,
+    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
+  ) {
+    return this.media.get(principal, mediaId, roles.includes("admin"));
+  }
 
   /**
    * Upload a new image (raw bytes; the route-scoped reader in app.setup.ts reads at most 5 MB, and only for a caller whose
