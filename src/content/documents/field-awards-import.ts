@@ -18,7 +18,9 @@ import { STORED_AWARD } from "./drafts.js";
  *  - title and criteria are the cells, trimmed and otherwise verbatim.
  *  - the target is read from the Threshold cell ONLY when that cell differs from the one the preview carries (`thresholdCell`); the import writes the new cell into the draft with it, so the next import compares against it;
  *    an unchanged cell keeps the target as it is (rulings such as Go Around = 1 live there). A changed cell must start with a whole
- *    number ("1,000 Miles" = 1000); anything else is a row error, never a guess.
+ *    number ("1,000 Miles" = 1000). A changed cell that cannot be read as one whole-number target ("15 Boeing + 15 Airbus", "Many Trips") is a
+ *    WARNING, never a guess and never a block: the new cell is written, the target stays, and the award is flagged `targetNeedsRuling`
+ *    (a staff PATCH of the target then sticks, and the same sheet plans nothing more for it).
  *  - the sheet has no `hidden` column, so `hidden` is never touched.
  */
 
@@ -40,7 +42,15 @@ export type BaseAward = {
 };
 
 export type AwardChange = { field: AwardImportField; from: string | number; to: string | number };
-export type PlannedAward = { id: string; changes: AwardChange[] };
+export type PlannedAward = {
+  id: string;
+  changes: AwardChange[];
+  /**
+   * Present (true) when the Threshold cell changed but no single whole-number target can be read from it: the new cell is written, the
+   * target stays as it is, and staff must rule the target (PATCH). Part of the plan, so the planHash covers it.
+   */
+  targetNeedsRuling?: true;
+};
 
 export type FieldAwardsPlan = {
   /** Awards with at least one change, in catalog order. */
@@ -118,6 +128,7 @@ export function planFieldAwardsImport(sheet: readonly SheetAward[], parseIssues:
   const baseById = new Map(base.map((a) => [a.id, a]));
   const seen = new Map<string, number>(); // award id -> first row
   const changesById = new Map<string, AwardChange[]>();
+  const needsRuling = new Set<string>();
 
   for (const entry of sheet) {
     const ids = [...(byName.get(normaliseName(entry.name)) ?? [])];
@@ -144,8 +155,12 @@ export function planFieldAwardsImport(sheet: readonly SheetAward[], parseIssues:
     let target = award.target;
     if (entry.threshold !== award.thresholdCell.trim()) {
       const read = targetFromThreshold(entry.threshold);
-      if ("error" in read) issues.push({ row: entry.row, id, level: "error", message: `${award.title}: ${read.error}` });
-      else target = read.target;
+      // A readable number the stored limits would refuse is as unusable as an unreadable one.
+      const usable = "error" in read ? read : STORED_AWARD.shape.target.safeParse(read.target).success ? read : { error: `the target ${read.target} is outside the allowed range.` };
+      if ("error" in usable) {
+        needsRuling.add(id);
+        issues.push({ row: entry.row, id, level: "warning", message: `${award.title}: ${usable.error} The new threshold wording is saved and the target stays ${award.target}; staff must rule the target.` });
+      } else target = usable.target;
     }
     if (target !== award.target) changes.push({ field: "target", from: award.target, to: target });
     // The cell moves with the target (and alone when only the wording changed), so "an unchanged cell keeps the target" holds after a publish.
@@ -164,7 +179,7 @@ export function planFieldAwardsImport(sheet: readonly SheetAward[], parseIssues:
     if (!seen.has(award.id)) issues.push({ row: 0, id: award.id, level: "error", message: `${award.title} is missing from the sheet; an import never removes an award.` });
   }
 
-  const awards: PlannedAward[] = base.filter((a) => changesById.has(a.id)).map((a) => ({ id: a.id, changes: changesById.get(a.id) as AwardChange[] }));
+  const awards: PlannedAward[] = base.filter((a) => changesById.has(a.id)).map((a) => ({ id: a.id, changes: changesById.get(a.id) as AwardChange[], ...(needsRuling.has(a.id) ? { targetNeedsRuling: true as const } : {}) }));
   const fieldChanges = awards.reduce((n, a) => n + a.changes.length, 0);
   issues.sort((a, b) => a.row - b.row);
   return {

@@ -294,6 +294,42 @@ describe("a modified copy: plan, confirm, apply, publish", () => {
     expect((await draft()).body.edits.awards.century).toEqual({ target: 120 });
   });
 
+  it("a changed Threshold cell that is not one whole number is a warning: the other rows apply, the cell is written, the target stays, and a staff ruling sticks", async () => {
+    const bytes = await modifiedSheet((all) => {
+      EDITED(all);
+      rowOf(all, "The Great Rivalry")[2] = "15 Boeing + 15 Airbus";
+      rowOf(all, "Frequent Flyer")[2] = "Many Trips";
+    });
+    const planned = await dry(bytes);
+    expect(planned.status, JSON.stringify(planned.body)).toBe(200);
+    const flagged = planned.body.awards.filter((a: { targetNeedsRuling?: boolean }) => a.targetNeedsRuling).map((a: { id: string }) => a.id);
+    expect(flagged).toEqual(["frequent-flyer", "the-great-rivalry"]);
+    expect(planned.body.awards.find((a: { id: string }) => a.id === "the-great-rivalry").changes).toEqual([
+      { field: "thresholdCell", from: "10 Boeing + 10 Airbus", to: "15 Boeing + 15 Airbus" },
+    ]);
+    expect(planned.body.awards.find((a: { id: string }) => a.id === "century").targetNeedsRuling).toBeUndefined();
+    expect(planned.body.warnings).toEqual([
+      expect.objectContaining({ id: "frequent-flyer", level: "warning" }),
+      expect.objectContaining({ id: "the-great-rivalry", level: "warning", message: expect.stringContaining("more than one number") }),
+    ]);
+    await noWrites();
+
+    const applied = await upload(bytes, `?confirm=${planned.body.planHash}`);
+    expect(applied.status, JSON.stringify(applied.body)).toBe(201);
+    expect(applied.body.applied).toBe(true);
+    const edits = (await draft()).body.edits.awards;
+    expect(edits["the-great-rivalry"]).toEqual({ thresholdCell: "15 Boeing + 15 Airbus" });
+    expect(edits["frequent-flyer"]).toEqual({ thresholdCell: "Many Trips" });
+    expect(edits.century).toMatchObject({ target: 150 });
+
+    // A staff ruling on the target sticks, and re-importing the same sheet plans nothing.
+    const ruled = await editAward(applied.body.draftVersion, { id: "the-great-rivalry", target: 30 });
+    expect(ruled.status, JSON.stringify(ruled.body)).toBe(200);
+    expect((await dry(bytes)).body).toMatchObject({ awards: [], warnings: [], counts: { fieldChanges: 0 } });
+    expect((await upload(bytes)).body).toMatchObject({ applied: false });
+    expect((await draft()).body.edits.awards["the-great-rivalry"]).toEqual({ target: 30, thresholdCell: "15 Boeing + 15 Airbus" });
+  });
+
   it("the staff PATCH does not accept thresholdCell: 400", async () => {
     const res = await editAward(0, { id: "century", target: 120, thresholdCell: "120 Flights" });
     expect(res.status).toBe(400);
@@ -382,9 +418,6 @@ describe("errors write nothing", () => {
     ["an award the catalog does not have", (all) => void all.push(["Space Cadet", "Fly to orbit.", "1 Trip"]), /Space Cadet/],
     ["an award missing from the sheet", (all) => all.filter((r) => r[0] !== "Rotorhead"), /Rotorhead is missing/],
     ["a duplicate row", (all) => void all.push([...rowOf(all, "First Solo")]), /listed twice/],
-    ["a fractional target", (all) => void (rowOf(all, "Frequent Flyer")[2] = "2.5 Trips"), /whole number/],
-    ["a zero target", (all) => void (rowOf(all, "Frequent Flyer")[2] = "0 Trips"), /at least 1/],
-    ["a threshold with no number", (all) => void (rowOf(all, "Frequent Flyer")[2] = "Many Trips"), /whole number/],
     ["a blank criteria cell", (all) => void (rowOf(all, "Frequent Flyer")[1] = null), /criteria are missing/],
     ["criteria over the limit", (all) => void (rowOf(all, "Frequent Flyer")[1] = "x".repeat(2001)), /criteria/],
   ];
@@ -406,7 +439,7 @@ describe("errors write nothing", () => {
   });
 
   it("the report names the sheet row and the award id", async () => {
-    const bytes = await modifiedSheet((all) => void (rowOf(all, "High Flyer")[2] = "lots"));
+    const bytes = await modifiedSheet((all) => void (rowOf(all, "High Flyer")[1] = "x".repeat(2001)));
     const res = await dry(bytes);
     expect(res.status).toBe(422);
     const at = (await readFirstSheet(REAL_SHEET)).findIndex((r) => r[0] === "High Flyer") + 1;

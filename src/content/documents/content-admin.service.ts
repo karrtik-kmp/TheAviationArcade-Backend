@@ -86,6 +86,8 @@ type AwardsImportView = {
   requiresConfirm: boolean;
   /** Only the awards that change, in catalog order. */
   awards: PlannedAward[];
+  /** Non-blocking notes (an unreadable changed Threshold cell: the award is also flagged `targetNeedsRuling`). */
+  warnings: ImportIssue[];
 };
 export type FieldAwardsImportDryRun = { dryRun: true } & AwardsImportView;
 export type FieldAwardsImportApplied =
@@ -112,8 +114,8 @@ const SAVE_CONFLICT = "The draft changed since you read it (another editor, or a
  * Everything for one name runs under `lockDraft(name)`, so concurrent edits and publishes serialise: a stale draft version is 409
  * and never overwrites another editor, and two publishes can never write one version twice or lose an edit.
  */
-/** An expected refusal of a Field Awards import raised inside its transaction (see awardsTransaction). */
-class AwardsRefusal extends ExpectedRollback {
+/** An expected refusal (an ApiError) raised inside a transaction: it rolls back as an ExpectedRollback and leaves as the ApiError (see transaction). */
+class ExpectedRefusal extends ExpectedRollback {
   constructor(readonly error: ApiError) {
     super(error.message);
   }
@@ -131,7 +133,7 @@ export class ContentAdminService {
 
   async list(): Promise<DraftView[]> {
     // One snapshot, so the three entries describe one moment.
-    return this.database.withTransaction(
+    return this.transaction(
       async (tx) => {
         const views: DraftView[] = [];
         for (const name of CONTENT_DOCUMENT_NAMES) views.push(await this.view(tx, name));
@@ -142,7 +144,7 @@ export class ContentAdminService {
   }
 
   async get(name: ContentDocumentName): Promise<DraftDetail> {
-    return this.database.withTransaction(async (tx) => {
+    return this.transaction(async (tx) => {
       const { edits, draftVersion } = await this.loadEdits(tx, name);
       const preview = await this.preview(tx, name, edits);
       return { ...this.toView(name, draftVersion, edits, preview), body: preview.body };
@@ -151,7 +153,7 @@ export class ContentAdminService {
 
   /** Merges validated edits into the overlay as the next draft revision. `request` has passed EDIT_REQUESTS[name]. */
   async edit(name: ContentDocumentName, principal: string, expected: number, request: unknown): Promise<DraftView> {
-    return this.database.withTransaction(async (tx) => {
+    return this.transaction(async (tx) => {
       await lockDraft(tx, name);
       const { edits, draftVersion } = await this.loadEdits(tx, name);
       if (draftVersion !== expected) throw new ApiError(409, "version_conflict", `${SAVE_CONFLICT} Current draft version: ${draftVersion}.`);
@@ -167,7 +169,7 @@ export class ContentAdminService {
 
   /** Throws away the pending edits (also the way out of a draft that no longer validates). Version-checked; no draft row = nothing to do. */
   async discard(name: ContentDocumentName, principal: string, expected: number): Promise<DraftView> {
-    return this.database.withTransaction(async (tx) => {
+    return this.transaction(async (tx) => {
       await lockDraft(tx, name);
       const row = await findDraft(tx, name);
       const current = row?.version ?? 0;
@@ -187,7 +189,7 @@ export class ContentAdminService {
    * as it is NOW, so publishing it is how a v1 sealed from a small or trial set catches up.
    */
   async publish(name: ContentDocumentName, principal: string, expected: number, note: string | undefined, acknowledgeCardRemoval = false): Promise<PublishResult> {
-    const result = await this.database.withTransaction(async (tx): Promise<Omit<PublishResult, "manifestVersion">> => {
+    const result = await this.transaction(async (tx): Promise<Omit<PublishResult, "manifestVersion">> => {
       await lockDraft(tx, name);
       await lockSeed(tx); // a seed writing version 1 finishes first; the reads below then agree with each other
       const { edits, draftVersion } = await this.loadEdits(tx, name);
@@ -264,7 +266,7 @@ export class ContentAdminService {
   /** Plans without writing or storing anything. A plan with any error is 422 import_invalid and carries the report. */
   async dryRunFieldAwardsImport(bytes: Uint8Array): Promise<FieldAwardsImportDryRun> {
     const sheet = await this.readAwardsSheet(bytes);
-    return this.awardsTransaction(async (tx) => {
+    return this.transaction(async (tx) => {
       const planned = await this.planAwardsImport(tx, sheet);
       return { dryRun: true, ...this.awardsImportView(planned) };
     }, READ_SNAPSHOT);
@@ -280,7 +282,7 @@ export class ContentAdminService {
   async applyFieldAwardsImport(bytes: Uint8Array, fileName: string, principal: string, confirm?: string): Promise<FieldAwardsImportApplied> {
     const sheet = await this.readAwardsSheet(bytes);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const early = await this.awardsTransaction(async (tx) => this.planAwardsImport(tx, sheet), READ_SNAPSHOT);
+    const early = await this.transaction(async (tx) => this.planAwardsImport(tx, sheet), READ_SNAPSHOT);
     const premature = this.awardsRefusal(early, confirm); // fail before storing anything
     if (premature) throw premature;
     if (early.plan.awards.length === 0) return { applied: false, ...this.awardsImportView(early) };
@@ -288,13 +290,13 @@ export class ContentAdminService {
     const blobKey = `imports/field-awards/${sha256}.xlsx`;
     await storeImportBlob(this.blobs, this.logger, blobKey, bytes);
 
-    const result = await this.awardsTransaction(async (tx) => {
+    const result = await this.transaction(async (tx) => {
       await lockDraft(tx, "field-awards");
       await lockSeed(tx);
       const { edits, draftVersion } = await this.loadEdits(tx, "field-awards");
       const locked = await this.planAwardsImport(tx, sheet, { edits, draftVersion });
       const refusal = this.awardsRefusal(locked, confirm);
-      if (refusal) throw new AwardsRefusal(refusal);
+      if (refusal) throw new ExpectedRefusal(refusal);
       if (locked.plan.awards.length === 0) return { applied: false as const, ...this.awardsImportView(locked) };
       const merged = withHistory(locked.merged as DraftEdits, principal, "import", draftVersion + 1, new Date(), sha256);
       const saved = await saveDraft(tx, "field-awards", draftVersion, merged, principal);
@@ -304,12 +306,23 @@ export class ContentAdminService {
     return result;
   }
 
-  /** A refusal inside the transaction rolls it back as an ExpectedRollback (the connection stays pooled) and leaves as its ApiError. */
-  private async awardsTransaction<T>(fn: (tx: Tx) => Promise<T>, config?: Parameters<DatabaseService["withTransaction"]>[1]): Promise<T> {
+  /**
+   * Every transaction of this service. An ApiError thrown inside (version_conflict, nothing_to_publish, content_invalid, import_invalid,
+   * plan_changed...) is an expected refusal: it rolls the transaction back as an ExpectedRollback, so the connection stays pooled
+   * instead of being destroyed, and leaves as the very same ApiError. Anything else still destroys the connection.
+   */
+  private async transaction<T>(fn: (tx: Tx) => Promise<T>, config?: Parameters<DatabaseService["withTransaction"]>[1]): Promise<T> {
     try {
-      return await this.database.withTransaction(fn, config);
+      return await this.database.withTransaction(async (tx) => {
+        try {
+          return await fn(tx);
+        } catch (error) {
+          if (error instanceof ApiError) throw new ExpectedRefusal(error);
+          throw error;
+        }
+      }, config);
     } catch (error) {
-      if (error instanceof AwardsRefusal) throw error.error;
+      if (error instanceof ExpectedRefusal) throw error.error;
       throw error;
     }
   }
@@ -346,7 +359,8 @@ export class ContentAdminService {
     }));
     const plan = planFieldAwardsImport(sheet.rows, sheet.issues, base);
     let merged: DraftEdits = edits;
-    if (plan.issues.length === 0 && plan.awards.length > 0) {
+    const errors = () => plan.issues.filter((i) => i.level !== "warning");
+    if (errors().length === 0 && plan.awards.length > 0) {
       merged = mergeEdits("field-awards", edits, { awards: plan.awards.map(({ id, changes }) => ({ id, ...Object.fromEntries(changes.map((c) => [c.field, c.to])) })) });
       const after = await this.preview(db, "field-awards", merged);
       try {
@@ -356,8 +370,8 @@ export class ContentAdminService {
         plan.issues.push({ row: 0, level: "error", message: `The Field Awards document would not be valid: ${error.message}` });
       }
     }
-    if (plan.issues.length > 0) {
-      throw new AwardsRefusal(new ApiError(422, "import_invalid", `The import has ${plan.issues.length} error(s); nothing was imported.`, {}, { report: plan.issues }));
+    if (errors().length > 0) {
+      throw new ExpectedRefusal(new ApiError(422, "import_invalid", `The import has ${errors().length} error(s); nothing was imported.`, {}, { report: plan.issues }));
     }
     return { plan, merged, publishedVersion: preview.publishedVersion, draftVersion };
   }
@@ -370,6 +384,7 @@ export class ContentAdminService {
       planHash: fieldAwardsPlanHash(planned, planned.plan),
       requiresConfirm: planned.plan.awards.length > 0,
       awards: planned.plan.awards,
+      warnings: planned.plan.issues.filter((i) => i.level === "warning"),
     };
   }
 

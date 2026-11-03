@@ -117,13 +117,30 @@ describe("planFieldAwardsImport", () => {
       { id: "frequent-flyer", changes: [{ field: "thresholdCell", from: "25 Trips", to: "25 Trips in all" }] },
     ]);
     const broken = plan(withRow(sheetOf(), goAround.title, { threshold: "A full green trip, twice" }));
-    expect(broken.issues).toHaveLength(1);
-    expect(broken.issues[0]).toMatchObject({ id: "go-around", level: "error" });
+    expect(broken.issues).toEqual([expect.objectContaining({ id: "go-around", level: "warning" })]);
+    expect(broken.awards).toEqual([
+      { id: "go-around", changes: [{ field: "thresholdCell", from: goAround.thresholdCell, to: "A full green trip, twice" }], targetNeedsRuling: true },
+    ]);
   });
 
-  it("a changed cell with more than one number is a row error, never a guess; a boolean or date cell is 'not text'", () => {
-    const issues = plan(withRow(sheetOf(), "The Great Rivalry", { threshold: "15 Boeing + 20 Airbus" })).issues;
-    expect(issues).toEqual([expect.objectContaining({ id: "the-great-rivalry", level: "error", message: expect.stringContaining("more than one number") })]);
+  it("a changed cell that is not one whole number is a warning, never a guess or a block: cell written, target kept, award flagged; a boolean or date cell is 'not text'", () => {
+    const planned = plan(withRow(sheetOf(), "The Great Rivalry", { threshold: "15 Boeing + 20 Airbus" }));
+    expect(planned.issues).toEqual([expect.objectContaining({ id: "the-great-rivalry", level: "warning", message: expect.stringContaining("more than one number") })]);
+    const rivalry = FIELD_AWARD_CATALOG.find((d) => d.id === "the-great-rivalry")!;
+    expect(planned.awards).toEqual([
+      { id: "the-great-rivalry", changes: [{ field: "thresholdCell", from: rivalry.thresholdCell, to: "15 Boeing + 20 Airbus" }], targetNeedsRuling: true },
+    ]);
+    // Once the cell is the base's, the same sheet plans nothing for that award.
+    const after = BASE.map((a) => (a.id === "the-great-rivalry" ? { ...a, thresholdCell: "15 Boeing + 20 Airbus", target: 40 } : a));
+    expect(planFieldAwardsImport(withRow(sheetOf(), "The Great Rivalry", { threshold: "15 Boeing + 20 Airbus" }), [], after)).toMatchObject({ awards: [], issues: [] });
+    // The flag is part of the plan hash.
+    const basis = { publishedVersion: 1, draftVersion: 0 };
+    const plain = { awards: planned.awards.map(({ id, changes }) => ({ id, changes })) };
+    expect(fieldAwardsPlanHash(basis, planned)).not.toBe(fieldAwardsPlanHash(basis, plain));
+    // Another row's readable change is untouched by the unreadable one.
+    const both = plan(withRow(withRow(sheetOf(), "The Great Rivalry", { threshold: "15 Boeing + 20 Airbus" }), "Logbook 100", { threshold: "150 Flights" }));
+    expect(both.awards.map((a) => a.id)).toEqual(["century", "the-great-rivalry"]);
+    expect(both.awards.find((a) => a.id === "century")).not.toHaveProperty("targetNeedsRuling");
     expect(targetFromThreshold("15 Boeing + 20 Airbus")).toHaveProperty("error");
     expect(targetFromThreshold("1,000 Miles")).toEqual({ target: 1000 });
     expect(parseFieldAwardsSheet([["Field Award", "Current criteria", "Threshold"], ["X", "c", true]]).issues).toEqual([
@@ -142,10 +159,11 @@ describe("planFieldAwardsImport", () => {
     const twice = plan([...rows, { row: 41, name: "First Solo", criteria: "again", threshold: "1 Trip" }]);
     expect(twice.issues).toEqual([expect.objectContaining({ row: 41, id: "first-flight", message: expect.stringContaining("listed twice") })]);
 
-    expect(plan(withRow(rows, "Frequent Flyer", { threshold: "2.5 Trips" })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer" })]);
-    expect(plan(withRow(rows, "Frequent Flyer", { threshold: "0 Trips" })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer" })]);
+    // Unreadable or unusable targets are warnings (target kept), see the test above.
+    expect(plan(withRow(rows, "Frequent Flyer", { threshold: "2.5 Trips" })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer", level: "warning" })]);
+    expect(plan(withRow(rows, "Frequent Flyer", { threshold: "0 Trips" })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer", level: "warning" })]);
     expect(plan(withRow(rows, "Frequent Flyer", { criteria: "x".repeat(2001) })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer", message: expect.stringContaining("criteria") })]);
-    expect(plan(withRow(rows, "Frequent Flyer", { threshold: "2,000,000,000 Trips" })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer", message: expect.stringContaining("target") })]);
+    expect(plan(withRow(rows, "Frequent Flyer", { threshold: "2,000,000,000 Trips" })).issues).toEqual([expect.objectContaining({ id: "frequent-flyer", level: "warning", message: expect.stringContaining("target") })]);
   });
 
   it("an award found by its title in force or by a draft title is matched too", () => {

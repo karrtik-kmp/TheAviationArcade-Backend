@@ -1556,13 +1556,15 @@ paths:
         Each row is matched to an award by its name (case-insensitive; the sheet has no id, and ten of the 28 Unity code ids differ from
         the sheet's own naming, so the catalog title, the title in force and the draft title all count). `title` and `criteria` are the
         cells, trimmed and otherwise verbatim. `target` is read from the Threshold cell only when that cell differs from the Threshold
-        cell of the version in force, and must then start with a whole number of at least 1 ("100,000 Miles" is 100000); a cell that is
-        unchanged keeps the target as it is. The sheet has no `hidden` column, so `hidden` is never touched. The plan is the diff
+        cell of the version in force, and a cell that reads as one whole number of at least 1 ("100,000 Miles" is 100000) updates it; a cell
+        that is unchanged keeps the target as it is. A changed cell that cannot be read as one whole-number target ("15 Boeing + 15
+        Airbus", "Many Trips") is not an error: the new cell is written, the target stays, the award carries `targetNeedsRuling: true`
+        in the plan and a `warnings` entry names the row; staff then rule the target with `PATCH .../draft`, which sticks. The sheet has no `hidden` column, so `hidden` is never touched. The plan is the diff
         against the preview (the version in force with the draft overlay on top): a field the sheet shows differently from the
         preview is a change, whoever made the earlier edit. An import never adds, renames away or removes an award.
 
         Errors, all in one 422 `import_invalid` with a `report` (row 0 = the whole file), and nothing is written: a row that is not an
-        award we have, an award missing from the sheet, an award listed twice, a target that is not a whole number of at least 1, a
+        award we have, an award missing from the sheet, an award listed twice, a
         title or criteria over the draft limits, a missing cell, and a result that the document validators (the checks of a publish)
         refuse.
 
@@ -2564,7 +2566,7 @@ components:
       additionalProperties: false
       required: [field, from, to]
       properties:
-        field: { type: string, enum: [title, criteria, target] }
+        field: { type: string, enum: [title, criteria, target, thresholdCell] }
         from:
           description: The value in the preview (version in force plus draft overlay).
           oneOf: [{ type: string }, { type: integer }]
@@ -2581,6 +2583,13 @@ components:
           type: array
           minItems: 1
           items: { $ref: "#/components/schemas/FieldAwardsImportChange" }
+        targetNeedsRuling:
+          type: boolean
+          const: true
+          description: >-
+            Present (true) when the Threshold cell changed but no single whole-number target can be read from it (for example
+            "15 Boeing + 15 Airbus"). The new `thresholdCell` is written, the `target` is left as it is, and staff must rule the
+            target with `PATCH .../draft`; that ruling then sticks, because the same sheet no longer changes the cell. Covered by the planHash.
     FieldAwardsImportCounts:
       type: object
       additionalProperties: false
@@ -2593,7 +2602,7 @@ components:
     FieldAwardsImportDryRun:
       type: object
       additionalProperties: false
-      required: [dryRun, publishedVersion, draftVersion, counts, planHash, requiresConfirm, awards]
+      required: [dryRun, publishedVersion, draftVersion, counts, planHash, requiresConfirm, awards, warnings]
       properties:
         dryRun: { type: boolean, const: true }
         publishedVersion:
@@ -2609,10 +2618,14 @@ components:
           type: array
           description: Only the awards that change, in catalog order. Empty when the sheet matches the preview.
           items: { $ref: "#/components/schemas/FieldAwardsImportAward" }
+        warnings:
+          type: array
+          description: Non-blocking notes, in row order. An award whose changed Threshold cell cannot be read as one whole number is named here and flagged `targetNeedsRuling`.
+          items: { $ref: "#/components/schemas/ImportIssue" }
     FieldAwardsImportApplied:
       type: object
       additionalProperties: false
-      required: [applied, publishedVersion, draftVersion, counts, planHash, requiresConfirm, awards]
+      required: [applied, publishedVersion, draftVersion, counts, planHash, requiresConfirm, awards, warnings]
       properties:
         applied: { type: boolean, description: "False: the sheet changes nothing, so nothing was written or stored." }
         publishedVersion:
@@ -2626,6 +2639,10 @@ components:
         awards:
           type: array
           items: { $ref: "#/components/schemas/FieldAwardsImportAward" }
+        warnings:
+          type: array
+          description: Non-blocking notes, in row order. An award whose changed Threshold cell cannot be read as one whole number is named here and flagged `targetNeedsRuling`.
+          items: { $ref: "#/components/schemas/ImportIssue" }
         file:
           description: Present when `applied` is true.
           type: object
