@@ -92,7 +92,13 @@ function collectErrorCodes(node: unknown, found: Set<string>, planned = false, i
 }
 
 /** Sample values for path parameters of planned operations. */
-const PLANNED_PATH_SAMPLES: Record<string, string> = { name: "field-awards", version: "1" };
+const PLANNED_PATH_SAMPLES: Record<string, string> = {
+  name: "field-awards",
+  version: "1",
+  mediaId: "med-1",
+  module: "aircraft-identifier-military",
+  id: "mil-a1",
+};
 
 describe("openapi contract parity", () => {
   it("documents exactly the routes Express registers (x-planned operations excluded)", () => {
@@ -102,9 +108,9 @@ describe("openapi contract parity", () => {
     expect(specRoutes()).toEqual(registered);
   });
 
-  it("x-planned operations are not served yet: not registered, and 404 not_found (none are planned since 0.10.0; runs for the next one)", async () => {
-    // Since 0.10.0 (T5) no operation is planned, so the loops below check nothing today. Kept on purpose (the next planned
-    // operation is covered the day it is marked), and stated here so a green run is not mistaken for coverage.
+  it("x-planned operations are not served yet: not registered, and 404 not_found (today: the planned media contract, plan T0)", async () => {
+    // Every x-planned operation is checked. Today those are the media routes (plan T0); a route that gets built must lose its
+    // mark in the same change, or the registered-route assertion below fails.
     const planned = specRoutes("planned");
     const registered = new Set(expressRoutes());
     const auth = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
@@ -643,6 +649,52 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
     expect(valid("FieldAwardCatalogDocument", doc)).toBe(true);
     expect(valid("FieldAwardCatalogDocument", { ...doc, awards: [{ ...award, id: "first-solo" }] })).toBe(false);
     expect(valid("FieldAwardCatalogDocument", { ...doc, awards: [{ ...award, miles: 100 }] })).toBe(false);
+  });
+
+  it("planned media schemas accept their samples and stay strict (plan T0)", () => {
+    const licence = { credit: "A. Pilot", licenceName: "CC BY 4.0", licenceUrl: "https://example.org/l", sourceUrl: null, attributionText: null, creditRequired: true };
+    const version = {
+      version: 1, sha256: "a".repeat(64), contentType: "image/jpeg", byteSize: 1000, width: 800, height: 600, licence,
+      publishedAt: null, createdAt: "2026-11-03T12:00:00Z",
+    };
+    const item = {
+      id: "med-1", state: "unverified", revision: 1, draftVersion: 1, publishedVersion: null, draft: version,
+      createdAt: "2026-11-03T12:00:00Z", updatedAt: "2026-11-03T12:00:00Z",
+    };
+    expect(valid("MediaItem", item)).toBe(true);
+    expect(valid("MediaItem", { ...item, owner: "firebase:demo-airplane-games:u1" })).toBe(true); // admin callers only
+    expect(valid("MediaItem", { ...item, state: "deleted" })).toBe(false);
+    expect(valid("MediaItem", { ...item, extra: 1 })).toBe(false);
+    for (const id of ["med-0", "med-01", "med-1234567890123456", "mil-a1", "med-", "med--1"]) {
+      expect(valid("MediaId", id), id).toBe(false);
+    }
+    expect(valid("MediaId", "med-999999999999999")).toBe(true); // 15 digits: a JavaScript-safe integer
+
+    const ref = { mediaId: "med-1", version: 1, sha256: "a".repeat(64), contentType: "image/png", width: 8, height: 8, licence };
+    const signed = { ...ref, url: "https://cdn.example.org/x?token=t&expires=1", expiresAt: "2026-11-04T12:00:00Z", reason: null };
+    const unsigned = { ...ref, url: null, expiresAt: null, reason: "cdn_not_configured" };
+    expect(valid("ImageRef", signed)).toBe(true);
+    expect(valid("ImageRef", unsigned)).toBe(true);
+    expect(valid("ImageRef", { ...signed, expiresAt: null })).toBe(false); // url and expiresAt are both set or both null
+    expect(valid("ImageRef", { ...unsigned, reason: null })).toBe(false);
+    expect(valid("ImageRef", { ...signed, reason: "cdn_not_configured" })).toBe(false);
+    expect(valid("ImageRef", { ...signed, owner: "x" })).toBe(false);
+
+    expect(valid("MediaList", { items: [item], nextCursor: null })).toBe(true);
+    expect(valid("MediaList", { items: [item] })).toBe(false);
+    expect(valid("MediaImages", { images: [signed] })).toBe(true);
+    expect(valid("MediaEditRequest", { revision: 2, licence: { credit: null, creditRequired: false }, note: "fix" })).toBe(true);
+    expect(valid("MediaEditRequest", { revision: 2, licence: { licenceUrl: "ftp://x" } })).toBe(false);
+    expect(valid("MediaEditRequest", { licence: { credit: "x" } })).toBe(false);
+    expect(valid("MediaEditRequest", { revision: 2, licence: { credit: "x" } })).toBe(true);
+    expect(valid("MediaEditRequest", { revision: 2 })).toBe(false); // licence is required
+    expect(valid("MediaEditRequest", { revision: 2, note: "fix" })).toBe(false); // a note-only call is not an edit
+    expect(valid("MediaEditRequest", { revision: 2, licence: {} })).toBe(false); // an empty licence edit changes nothing
+    expect(valid("MediaEditRequest", { revision: 2, licence: { credit: "x" }, owner: "x" })).toBe(false);
+    expect(valid("MediaRevisionRequest", { revision: 1, extra: 1 })).toBe(false);
+    expect(valid("ContentItemMediaRequest", { mediaId: null, expectedVersion: 3 })).toBe(true);
+    expect(valid("ContentItemMediaRequest", { mediaId: "med-7", expectedVersion: 3 })).toBe(true);
+    expect(valid("ContentItemMediaRequest", { mediaId: "7", expectedVersion: 3 })).toBe(false);
   });
 
   it("planned response samples validate", () => {

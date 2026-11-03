@@ -167,7 +167,7 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Files: the two sources, two tests, `vitest.config.ts`. Depends on: none. **Parallel with T0.**
 - [ ] **T2: Schema and migration 0017** — M
   - `media_items`: `id bigint GENERATED ALWAYS AS IDENTITY` (rendered `med-<n>` in the API, parsed strictly with
-    `^med-[1-9][0-9]{0,15}$`), `owner` (uploader principal), `state` (`unverified|published|withdrawn`, TS-list parity),
+    `^med-[1-9][0-9]{0,14}$`, 15 digits so ids stay JS-safe integers), `owner` (uploader principal), `state` (`unverified|published|withdrawn`, TS-list parity),
     `revision` (>= 1, the optimistic fence for every write: licence, state, new version), `draft_version` (latest upload)
     and `published_version` NULL (what players and releases see; user 2026-11-03: a published image and credit stay live
     until an admin publishes the change), `created_by`/`updated_by` (1-256), timestamps from the database clock (no
@@ -214,7 +214,13 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
 - [ ] **T4: New version, licence edit, publish, withdraw** — M
   - `POST .../{mediaId}/versions` (required `Idempotency-Key`, `?revision=`), `PATCH .../{mediaId}` `{ revision, licence?,
     note? }` (strict; absent keeps a field, `null` clears it; edits the draft version's licence), `POST .../publish` and
-    `.../withdraw` `{ revision }` (`@Roles("admin")`). Every write is fenced by `media_items.revision` (stale → 409
+    `.../withdraw` `{ revision }` (`@Roles("admin")`). **Licence edits never touch the live version** (lead, from
+    the 2026-11-03 ruling): when `draftVersion == publishedVersion`, a PATCH creates a new draft version with the same
+    file (sha256, type, size, dimensions), `version + 1` and the edited licence; otherwise it edits the unpublished draft
+    in place. `licence` is required in a PATCH (`note` optional). **Idempotency first:** on both upload routes the
+    `Idempotency-Key` lookup runs before the `revision` fence; a replay needs the same operation, `mediaId` and sha256
+    (else 422 `idempotency_key_reused`) and answers 200 with the item as stored. Withdrawn items may get new versions
+    and be published again. Every write is fenced by `media_items.revision` (stale → 409
     `version_conflict`, nothing changes). A photographer's new version or licence edit changes only the draft; the
     `published_version` and its credit stay live until an admin publishes (user, 2026-11-03). Publishing checks the draft's
     licence (422 `content_invalid`); publishing an unchanged published draft → 409 `nothing_to_publish`.

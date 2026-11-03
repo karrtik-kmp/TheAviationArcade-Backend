@@ -89,8 +89,11 @@ info:
     `invalid_request` from both Round routes until it adopts this. Unity changes: open a segment per Trip with a fresh
     `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts, call `complete` after the 10th Round.
 
-    **Planned contract.** Nothing is planned any more: the Logbook was the last `x-planned` operation (0.10.0), and 0.11.0 added
-    only built routes. The marks stay defined for the next one. An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
+    **Planned contract.** The media contract is planned (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002): the staff
+    routes under `/v1/admin/media`, `PUT /v1/admin/content/{module}/items/{id}/media` and `GET /v1/media?ids=`, with the schemas
+    `MediaItem`, `MediaVersion`, `MediaLicence`, `ImageRef` and the error code `media_invalid`. None of it is served, so `info.version`
+    does not change; each route moves to built, with a changelog entry, when its slice lands. Before it, the Logbook was the last
+    planned operation (0.10.0), and 0.11.0 to 0.13.0 added only built routes. An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
     against it. It is NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
     `x-planned-properties`; the built shapes beside them are what the server does now. Error codes only planned
@@ -140,6 +143,8 @@ tags:
     description: Flight Segments (Unity Trips) of ten Rounds (Unity Flights). Open, complete and abandon are built.
   - name: content
     description: The content manifest and the versioned data documents it points to.
+  - name: media
+    description: Images with their licence, upload and publish for staff, and a batch read of published images (PLANNED, media plan T0).
 
 paths:
   /v1/health:
@@ -2149,6 +2154,433 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  # ---------------------------------------------------------------------------------------------------------
+  # Media pipeline (plan T0). PLANNED: every operation below is x-planned and answers 404 `not_found` until its slice is built.
+  # ---------------------------------------------------------------------------------------------------------
+
+  /v1/admin/media:
+    post:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T3 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: uploadMedia
+      summary: Upload a new image
+      description: |
+        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies) and a verified email; 403 `forbidden` otherwise. The
+        body is the raw image (Content-Type `image/jpeg` or `image/png`, at most 5 MB), not JSON. The 5 MB limit applies only after the
+        token and the role are verified; another Content-Type is 415, a larger body 413 (both `invalid_request`).
+
+        The server sniffs the bytes itself (JPEG or PNG signature and dimensions, at most 4096 px a side), hashes them, stores the file
+        under its digest, reads it back and compares, then in one transaction records the item (`unverified`, `revision` 1, version 1,
+        owner = the verified caller) and one audit row. A bad image is 422 `media_invalid`. The licence starts empty (fill it with
+        `PATCH`); nothing reaches players until an admin publishes.
+
+        Requires an `Idempotency-Key`, looked up FIRST (this route has no `revision` fence). A replay needs the same operation (create,
+        not a version upload) and the same sha256: it answers 200 with the item as stored now (current state; nothing new is written).
+        Anything else with that key (another operation, another `mediaId`, other bytes) is 422 `idempotency_key_reused`. Two callers
+        may use the same key independently. Counts against the rate limit before the body is read. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: { type: string, format: binary, maxLength: 5242880 }
+          image/png:
+            schema: { type: string, format: binary, maxLength: 5242880 }
+      responses:
+        "200":
+          description: Replay of an `Idempotency-Key` this caller already used with the same bytes; the item as it stands now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "201":
+          description: Item created.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/MediaBodyTooLarge" }
+        "415": { $ref: "#/components/responses/MediaUnsupportedType" }
+        "422": { $ref: "#/components/responses/MediaUploadRefused" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/MediaStorageUnavailable" }
+    get:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T5 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: listMedia
+      summary: List media items
+      description: |
+        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer sees only their own items; an admin
+        sees all (and the `owner` field). Newest first. `state` filters. `limit` is 1 to 100 (default 50). `nextCursor` is opaque; pass
+        it back as `cursor` for the next page, `null` on the last. A cursor this route did not return, or one that is too long, is 400
+        `invalid_request`. Exempt from the client version gate.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/MediaState" }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque; only a `nextCursor` this route returned is accepted (otherwise 400).
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: A page of items.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/media/{mediaId}:
+    get:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T5 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: getMedia
+      summary: One media item with its version history
+      description: |
+        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer reads only their own items; for another's
+        item (or an unknown id) the answer is 404 `not_found`. Returns the item, every version with its licence, and a `preview`
+        `ImageRef` for the draft version, signed in any state. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+      responses:
+        "200":
+          description: The item.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    patch:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: editMedia
+      summary: Edit the draft version's licence
+      description: |
+        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer edits only their own items (others
+        are 404 `not_found`). Allowed in every state, including `withdrawn`. Strict body `{ revision, licence, note? }`: `licence` is
+        required (a body with only `revision`, or `revision` and `note`, is 400); inside `licence`, an absent key keeps the stored
+        value and `null` clears it. `note` goes to the audit row only.
+
+        The edit always targets the DRAFT version. When `draftVersion` equals `publishedVersion` (no newer upload), the edit creates a
+        NEW draft version: the same file (sha256, type, size, dimensions), `version` + 1 and the edited licence; `draftVersion`
+        advances while `publishedVersion` and its frozen licence and credit stay live until an admin publishes. When `draftVersion`
+        is greater than `publishedVersion` (or nothing is published), that draft version is edited in place. Fenced by `revision`
+        (stale is 409 `version_conflict`, nothing written). A change bumps `revision` and writes one audit row with the field diff.
+        Sending the stored values is a 200 with no change, no new version and no new `revision`. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaEditRequest" }
+      responses:
+        "200":
+          description: The item as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "409": { $ref: "#/components/responses/MediaWriteConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/media/{mediaId}/versions:
+    post:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: uploadMediaVersion
+      summary: Upload a new file version of an item
+      description: |
+        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer adds versions only to their own items
+        (others are 404 `not_found`). Allowed in every state, including `withdrawn` (the owner and admins may add a version to a
+        withdrawn item; it can be published again). The body is the raw image exactly as for `POST /v1/admin/media` (same limits,
+        413, 415, sniffing and 422 `media_invalid`), plus the item `revision` as a query parameter (fence: stale is 409
+        `version_conflict`). The new file becomes the draft version with an empty licence to fill in; the published version and its
+        credit stay live until an admin publishes.
+
+        Requires an `Idempotency-Key`. The key lookup runs FIRST: it precedes the `revision` fence, so an identical retry still
+        replays after the item's `revision` has moved on. A replay needs the same operation (version upload, not create), the same
+        `mediaId` and the same sha256, and answers 200 with the item as stored now (current state; nothing new is written). Anything
+        else with that key (another operation, another `mediaId`, other bytes) is 422 `idempotency_key_reused`. A new version bumps
+        `revision`; one audit row. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+        - $ref: "#/components/parameters/MediaIdempotencyKey"
+        - name: revision
+          in: query
+          required: true
+          description: The item's `revision` as the caller read it.
+          schema: { type: integer, minimum: 1, maximum: 2147483647 }
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: { type: string, format: binary, maxLength: 5242880 }
+          image/png:
+            schema: { type: string, format: binary, maxLength: 5242880 }
+      responses:
+        "200":
+          description: Replay of an `Idempotency-Key` this caller already used for the same operation, item and bytes; the item as it stands now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "201":
+          description: Version added.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "409": { $ref: "#/components/responses/MediaWriteConflict" }
+        "413": { $ref: "#/components/responses/MediaBodyTooLarge" }
+        "415": { $ref: "#/components/responses/MediaUnsupportedType" }
+        "422": { $ref: "#/components/responses/MediaUploadRefused" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/MediaStorageUnavailable" }
+
+  /v1/admin/media/{mediaId}/publish:
+    post:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: publishMedia
+      summary: Publish the draft version
+      description: |
+        PLANNED. Admin only. Makes the draft version the published one (`state` `published`, `publishedVersion` = `draftVersion`); its
+        licence is frozen with it. The draft's licence must name a licence and, when `creditRequired`, a credit: otherwise 422
+        `content_invalid`. Publishing a draft that is already the published version is 409 `nothing_to_publish`. Fenced by `revision`
+        (stale is 409 `version_conflict`). Bumps `revision`; one audit row. Answers 200, not 201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaRevisionRequest" }
+      responses:
+        "200":
+          description: The item as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "409":
+          description: |
+            `version_conflict`: `revision` is stale. `nothing_to_publish`: the draft is already the published version. Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict, nothing_to_publish]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`content_invalid`: the draft's licence has no `licenceName`, or `creditRequired` is true and `credit` is empty. Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/media/{mediaId}/withdraw:
+    post:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T4 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: withdrawMedia
+      summary: Withdraw a published image
+      description: |
+        PLANNED. Admin only. `published` to `withdrawn`: players and the website stop seeing it (`publishedVersion` becomes null). An
+        item that is not published is 409 `version_conflict`. Fenced by `revision`. Bumps `revision`; one audit row. Answers 200, not
+        201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaRevisionRequest" }
+      responses:
+        "200":
+          description: The item as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "409": { $ref: "#/components/responses/MediaWriteConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/items/{id}/media:
+    put:
+      tags: [media, admin]
+      x-planned: true
+      x-planned-note: Media plan T6 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: linkContentItemMedia
+      summary: Link or unlink a content item's image
+      description: |
+        PLANNED. Admin only. Sets (or with `mediaId: null` clears) the image of a content item. Optimistic on the item `version`
+        (`expectedVersion`, as on the edit route); a change bumps the item version, sets `source` to `admin` and writes one
+        `content_media_link` audit row. Runs in one transaction under the module's write lock. Linking the stored value is 200 with
+        `changed: false`. An unknown `mediaId` is 422 `media_invalid`; an unknown module or item is 404 `not_found`. A spreadsheet import
+        never changes the link. The link counts as a staff write for the client-sheet replay rule.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - $ref: "#/components/parameters/ContentItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentItemMediaRequest" }
+      responses:
+        "200":
+          description: "The item as it is now (with `mediaId`). `changed: false` means nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentItemChange" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `expectedVersion` is not the item's stored version. `import_in_progress`: an import or another edit holds
+            the module's write lock; retry after `Retry-After` seconds (that response only). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`media_invalid`: `mediaId` names no media item. Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [media_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/media:
+    get:
+      tags: [media]
+      x-planned: true
+      x-planned-note: Media plan T7 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
+      operationId: getPublishedMedia
+      summary: Read published images by id
+      description: |
+        PLANNED. Any signed-in caller (no player row or role needed); the website calls it with `X-Client: web`. `ids` is a
+        comma-separated list of 1 to 50 media ids, each strictly `med-<n>`; a malformed id, an empty list, an empty element, more
+        than 50 entries as sent, or a repeated `ids` parameter is 400 `invalid_request`. Duplicates are collapsed. The answer holds
+        one `ImageRef` (the PUBLISHED version, with its frozen licence and a signed link) per requested id that is published, in
+        request order; unknown, unpublished and withdrawn ids are simply absent, never 404. Never returns an owner or any principal.
+        Always `Cache-Control: no-store`: the links expire (see `ImageRef.expiresAt`), so ask again rather than cache the answer.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - name: ids
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            items: { $ref: "#/components/schemas/MediaId" }
+      responses:
+        "200":
+          description: The published images among those asked for.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaImages" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
 components:
   securitySchemes:
     firebaseBearer:
@@ -2205,6 +2637,26 @@ components:
       required: true
       description: The role to revoke. Any other value is 404 `not_found`.
       schema: { type: string, enum: [photographer, admin] }
+
+    MediaIdPath:
+      x-planned: true
+      name: mediaId
+      in: path
+      required: true
+      description: A media item id, `med-<n>`. A malformed or unknown id is 404 `not_found`.
+      schema: { $ref: "#/components/schemas/MediaId" }
+
+    MediaIdempotencyKey:
+      x-planned: true
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        1-128 of `A-Z a-z 0-9 _ -`; missing or malformed is 400 `invalid_request`. Scoped to the caller. The key is looked up FIRST,
+        before the `revision` fence. Repeating a key with the same operation (create vs version upload), the same `mediaId` (version
+        uploads) and the same sha256 replays with 200 and the item as stored now; any other combination with that key is 422
+        `idempotency_key_reused`. Mint a new key per new upload.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
 
     TripId:
       name: tripId
@@ -2334,6 +2786,78 @@ components:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
       x-error-codes: [version_conflict]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MediaBodyTooLarge:
+      x-planned: true
+      description: |
+        Image body over 5 MB (`invalid_request`). This route's limit applies only to a caller whose Bearer token is verified and who
+        holds the required role; the larger body is read after that check. Anything else is read under the global 16 KB limit.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [invalid_request]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MediaUnsupportedType:
+      x-planned: true
+      description: A Content-Type other than `image/jpeg` or `image/png` (`invalid_request`). The bytes are also sniffed; a mismatch is 422 `media_invalid`.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [invalid_request]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MediaNotFound:
+      x-planned: true
+      description: |
+        No such media item, or the id is malformed. A photographer who is not the owner gets the same answer (the item's existence is
+        not revealed).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MediaWriteConflict:
+      x-planned: true
+      description: |
+        `version_conflict`: `revision` is not the item's current revision, or the item is not in a state the move starts from. The
+        message names the current state and revision. Nothing was written; reload and decide again.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [version_conflict]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MediaUploadRefused:
+      x-planned: true
+      description: |
+        `media_invalid`: the bytes are not a JPEG or PNG the server accepts (truncated, content that does not match the type, or a side
+        over 4096 px). `idempotency_key_reused`: the key already stored a different file for this caller. Nothing was written.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [media_invalid, idempotency_key_reused]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MediaStorageUnavailable:
+      x-planned: true
+      description: |
+        `storage_unavailable`: file storage could not be written or read back (nothing was written to the database). Also
+        `auth_unavailable` and `service_unavailable` as on every route. All carry `Retry-After`; retry the same request, with the same
+        `Idempotency-Key` for an upload.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      x-error-codes: [storage_unavailable, auth_unavailable, service_unavailable]
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2487,6 +3011,8 @@ components:
                 - local_date_mismatch
                 - idempotency_key_reused
                 - trip_incomplete
+              x-planned-enum:
+                - media_invalid
             message:
               type: string
               description: For logs, not for display or logic.
@@ -2574,6 +3100,10 @@ components:
       type: object
       additionalProperties: false
       required: [id, rank, status, source, version, data, updatedAt]
+      x-planned-properties:
+        mediaId:
+          type: [string, "null"]
+          description: The linked image (`med-<n>`), null when none. Planned with `PUT .../items/{id}/media` (media plan T6); not returned yet. A link or unlink is one `media` entry in the change `diff`.
       properties:
         id: { type: string, description: "Stable item id, e.g. mil-a5." }
         rank: { $ref: "#/components/schemas/Rank" }
@@ -3842,3 +4372,186 @@ components:
         entries:
           type: array
           items: { $ref: "#/components/schemas/AircraftTagEntry" }
+
+    # ---------------------------------------------------------------------------------------------------------
+    # Media pipeline schemas (plan T0, docs/plans/media-pipeline.md, ADR-0001, ADR-0002). PLANNED, not served yet: every
+    # operation that uses them is x-planned. Shapes follow the committed media tables (migration 0017).
+    # ---------------------------------------------------------------------------------------------------------
+
+    MediaId:
+      type: string
+      pattern: "^med-[1-9][0-9]{0,14}$"
+      description: |
+        `med-<n>`, n the identity of the item (no leading zero, at most 15 digits so it stays a JavaScript-safe integer). Parsed
+        strictly; anything else is 404 `not_found` in a path and 400 `invalid_request` in a query or body.
+    MediaState:
+      type: string
+      enum: [unverified, published, withdrawn]
+      description: |
+        `unverified`: uploaded, never published. `published`: exactly while `publishedVersion` is set; players and the website see
+        only these. `withdrawn`: taken down by an admin (it can be published again; the owner and admins may still add versions and
+        edit the draft licence).
+    MediaContentType:
+      type: string
+      enum: [image/jpeg, image/png]
+    MediaLicence:
+      type: object
+      additionalProperties: false
+      required: [credit, licenceName, licenceUrl, sourceUrl, attributionText, creditRequired]
+      description: |
+        The licence of ONE file version (a published credit is frozen with its file). Any field except `creditRequired` is null
+        until a staff member fills it in. A version can be published only with a `licenceName` and, when `creditRequired`, a `credit`
+        (422 `content_invalid` otherwise).
+      properties:
+        credit: { type: [string, "null"], minLength: 1, maxLength: 200, description: The photographer or rights holder to credit. }
+        licenceName: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        licenceUrl: { type: [string, "null"], maxLength: 2048, pattern: "^https?://" }
+        sourceUrl: { type: [string, "null"], maxLength: 2048, pattern: "^https?://" }
+        attributionText: { type: [string, "null"], maxLength: 1000 }
+        creditRequired: { type: boolean }
+    MediaLicenceUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        A partial licence edit. A key that is absent keeps the stored value; `null` clears it (`creditRequired` cannot be null).
+        Text is trimmed and kept verbatim otherwise; control characters are refused (400). URLs must start with `http://` or
+        `https://` and are at most 2048 characters.
+      properties:
+        credit: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        licenceName: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        licenceUrl: { type: [string, "null"], maxLength: 2048, pattern: "^https?://" }
+        sourceUrl: { type: [string, "null"], maxLength: 2048, pattern: "^https?://" }
+        attributionText: { type: [string, "null"], maxLength: 1000 }
+        creditRequired: { type: boolean }
+    MediaVersion:
+      type: object
+      additionalProperties: false
+      required: [version, sha256, contentType, byteSize, width, height, licence, publishedAt, createdAt]
+      description: |
+        One uploaded file of a media item, with its own licence. The storage path is never returned. Two versions may share the same
+        file: a licence edit on a published item creates a new version (version + 1) with the same sha256, type, size and dimensions.
+      properties:
+        version: { type: integer, minimum: 1 }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: Digest of the file bytes. }
+        contentType: { $ref: "#/components/schemas/MediaContentType" }
+        byteSize: { type: integer, minimum: 1, maximum: 5242880 }
+        width: { type: integer, minimum: 1, maximum: 4096 }
+        height: { type: integer, minimum: 1, maximum: 4096 }
+        licence: { $ref: "#/components/schemas/MediaLicence" }
+        publishedAt: { type: [string, "null"], format: date-time, description: When this version went live; null if it never did. }
+        createdAt: { type: string, format: date-time }
+    MediaItem:
+      type: object
+      additionalProperties: false
+      required: [id, state, revision, draftVersion, publishedVersion, draft, createdAt, updatedAt]
+      description: |
+        One image. `revision` (>= 1) is the optimistic fence for EVERY write to the item (new version, licence edit, publish,
+        withdraw): send the value you read, a stale one is 409 `version_conflict`. `draftVersion` is the latest version (a new
+        upload, or a licence edit made while the draft equals the published version); `publishedVersion` is what players see (null
+        unless `state` is `published`) and stays live, with its credit, until an admin publishes the change.
+
+        `owner` (the uploader's principal) is present ONLY in responses to a caller who holds the `admin` role; for any other caller
+        the key is absent. It is never in `GET /v1/media`.
+      properties:
+        id: { $ref: "#/components/schemas/MediaId" }
+        state: { $ref: "#/components/schemas/MediaState" }
+        revision: { type: integer, minimum: 1 }
+        draftVersion: { type: integer, minimum: 1 }
+        publishedVersion: { type: [integer, "null"], minimum: 1 }
+        draft: { $ref: "#/components/schemas/MediaVersion" }
+        owner: { type: string, minLength: 1, maxLength: 256, description: Admin callers only; absent otherwise. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ImageRef:
+      description: |
+        A reference to one published or previewed file version. `url` and `expiresAt` are BOTH set (a signed, expiring CDN link,
+        `expiresAt` the signed expiry in whole seconds) or BOTH null, in which case `reason` says why (`cdn_not_configured`: the
+        server has no CDN host or signing key, as on a local run). `reason` is null exactly when `url` is set. Verify the file against
+        `sha256`; the link may be cached until `expiresAt` and then asked for again.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mediaId, version, sha256, url, expiresAt, reason, contentType, width, height, licence]
+          properties:
+            mediaId: { $ref: "#/components/schemas/MediaId" }
+            version: { type: integer, minimum: 1 }
+            sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+            url: { type: string, format: uri }
+            expiresAt: { type: string, format: date-time }
+            reason: { type: "null" }
+            contentType: { $ref: "#/components/schemas/MediaContentType" }
+            width: { type: integer, minimum: 1, maximum: 4096 }
+            height: { type: integer, minimum: 1, maximum: 4096 }
+            licence: { $ref: "#/components/schemas/MediaLicence" }
+        - type: object
+          additionalProperties: false
+          required: [mediaId, version, sha256, url, expiresAt, reason, contentType, width, height, licence]
+          properties:
+            mediaId: { $ref: "#/components/schemas/MediaId" }
+            version: { type: integer, minimum: 1 }
+            sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+            url: { type: "null" }
+            expiresAt: { type: "null" }
+            reason: { type: string, enum: [cdn_not_configured] }
+            contentType: { $ref: "#/components/schemas/MediaContentType" }
+            width: { type: integer, minimum: 1, maximum: 4096 }
+            height: { type: integer, minimum: 1, maximum: 4096 }
+            licence: { $ref: "#/components/schemas/MediaLicence" }
+    MediaDetail:
+      type: object
+      additionalProperties: false
+      required: [item, versions, preview]
+      properties:
+        item: { $ref: "#/components/schemas/MediaItem" }
+        versions:
+          type: array
+          description: Every version, oldest first.
+          items: { $ref: "#/components/schemas/MediaVersion" }
+        preview:
+          description: The draft version, signed in any state (for staff review).
+          $ref: "#/components/schemas/ImageRef"
+    MediaList:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MediaItem" } }
+        nextCursor: { type: [string, "null"], description: Opaque. Null on the last page. }
+    MediaImages:
+      type: object
+      additionalProperties: false
+      required: [images]
+      properties:
+        images:
+          type: array
+          maxItems: 50
+          description: One `ImageRef` (the published version) per requested id that is published, in request order, duplicates collapsed. Others are absent.
+          items: { $ref: "#/components/schemas/ImageRef" }
+    MediaRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        revision: { type: integer, minimum: 1, maximum: 2147483647, description: The item's `revision` as the caller read it. }
+    MediaEditRequest:
+      type: object
+      additionalProperties: false
+      required: [revision, licence]
+      description: |
+        Edits the DRAFT version's licence; the published version and its credit stay live until an admin publishes. `licence` is
+        required: `{ revision }` alone and `{ revision, note }` are 400. When the draft equals the published version the edit
+        creates a new draft version (same file, version + 1); otherwise it edits the draft in place. `note` goes to the audit row only.
+      properties:
+        revision: { type: integer, minimum: 1, maximum: 2147483647 }
+        licence: { $ref: "#/components/schemas/MediaLicenceUpdate" }
+        note: { type: string, minLength: 1, maxLength: 500 }
+    ContentItemMediaRequest:
+      type: object
+      additionalProperties: false
+      required: [mediaId, expectedVersion]
+      properties:
+        mediaId:
+          description: The image to link; null removes the link.
+          oneOf: [{ $ref: "#/components/schemas/MediaId" }, { type: "null" }]
+        expectedVersion: { type: integer, minimum: 1, description: The content item `version` the caller read. }
