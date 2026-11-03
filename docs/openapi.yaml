@@ -1042,7 +1042,16 @@ paths:
         Staff only. The body is the raw `.xlsx` (Content-Type
         `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; also bounded when
         unpacked). The first worksheet is read. Only modules with a mapping can be imported (today
-        `aircraft-identifier-military`); any other module is 404 `not_found`.
+        `aircraft-identifier-military` and `airport-spotter`); any other module is 404 `not_found`.
+
+        `airport-spotter` (sheet "Airport Spotter v1.xlsx", columns LEVEL, Correct Airport, Wrong Airport 1-3, File
+        name): items are `apt-a<N>` in sheet order, natural key = the `File name` value, payload
+        `{ answer, wrong[3], sourceFile }` (3-letter IATA codes, upper-cased, all four distinct; no airport names and
+        no photographer are stored). A client sheet import applies a fixed table of seven named corrections
+        (rows 9, 17, 21, 24, 32, 40, 44 of the v1 sheet; user ruling 2026-11-03) and reports each as a `warnings`
+        entry naming the original and corrected value; a correction fires only while the row still holds that
+        original value. Anything else wrong is a row error. The sheet as delivered embeds photos (13 MB) and is
+        over the upload cap: re-save it without the pictures first.
 
         Two kinds of file. A **client sheet** has no `Id` column (the client's own spreadsheet) and is
         authoritative: each row is matched to a stored item by its natural key (Military: the trimmed `file`
@@ -1201,7 +1210,8 @@ paths:
         empty body, `{}` and `{ "itemIds": [] }` are valid (the last counts nothing). Any other field is 400.
 
         Only modules with a content mapping AND a deal policy answer (today `aircraft-identifier-military`);
-        any other module is 404 `not_found`. Order of checks: auth (401, 403), body size (413), body validation
+        any other module is 404 `not_found` (`airport-spotter` is importable but has no deal policy yet, so it is
+        404 here). Order of checks: auth (401, 403), body size (413), body validation
         (400, then 415), and only then the module (404): a bad body for an unmapped module is 400, not 404.
       parameters:
         - $ref: "#/components/parameters/ContentModule"
@@ -1883,7 +1893,7 @@ components:
       name: module
       in: path
       required: true
-      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`); others are 404.
+      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military` and `airport-spotter`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
 
     ContentItemId:
@@ -2185,7 +2195,7 @@ components:
         version: { type: integer, minimum: 1, description: Bumped by every edit. }
         data:
           type: object
-          description: Module payload. Military Aircraft Identifier is `{ answer, wrong[3], sourceFile, photographer }`.
+          description: Module payload. Military Aircraft Identifier is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter is `{ answer, wrong[3], sourceFile }` (IATA codes).
         updatedAt: { type: string, format: date-time }
     ContentItemList:
       type: object
@@ -2212,7 +2222,7 @@ components:
         rank: { $ref: "#/components/schemas/Rank" }
         data:
           type: object
-          description: The whole module payload (replaces the stored one). Military is `{ answer, wrong[3], sourceFile, photographer }`.
+          description: The whole module payload (replaces the stored one). Military is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter is `{ answer, wrong[3], sourceFile }`.
     ContentItemVersionRequest:
       type: object
       additionalProperties: false
@@ -2519,7 +2529,7 @@ components:
             required: [id, naturalKey]
             properties:
               id: { type: string }
-              naturalKey: { type: string, description: "Military: the file name." }
+              naturalKey: { type: string, description: "Military and Airport Spotter: the file name." }
         warnings:
           type: array
           items: { $ref: "#/components/schemas/ImportIssue" }
