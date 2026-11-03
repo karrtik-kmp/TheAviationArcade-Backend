@@ -17,6 +17,7 @@ import type { CompletedTrip } from "../src/rules/trips.js";
 import { parseFieldAwards } from "../src/content/documents/documents.js";
 import { catalogInForce } from "../src/trips/catalog-in-force.js";
 import { toCounters } from "../src/trips/counters-store.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { ensureMilitaryItem, factsFor, newKey, openBody, utcToday } from "./trip-helpers.js";
 
@@ -37,6 +38,8 @@ beforeAll(async () => {
   await app.listen(0, "127.0.0.1");
   server = app.getHttpServer();
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff");
 });
 
 afterAll(async () => {

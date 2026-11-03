@@ -14,6 +14,7 @@ import { BLOB_STORE } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import type { TestCell } from "./fixtures.js";
 import { xlsx } from "./fixtures.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
 // Slice A2: re-importing a later Field Awards sheet through plan, confirm and apply into the field-awards DRAFT.
@@ -62,6 +63,8 @@ async function reset() {
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff", "second", "unverified", "noemail");
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
   configureApp(app);

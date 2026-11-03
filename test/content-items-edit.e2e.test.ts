@@ -13,6 +13,7 @@ import { BLOB_STORE } from "../src/storage/blob-store.js";
 import type { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { clientSheet } from "./fixtures.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
 // A1: staff edit-in-place of content items (PATCH .../items/:id, POST .../retire, POST .../restore).
@@ -29,6 +30,8 @@ let sql: pg.Pool;
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff");
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
   configureApp(app);

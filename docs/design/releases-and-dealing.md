@@ -98,10 +98,10 @@ clock), `created_by`. `content_items.photo_sha256` text NULL, FK → `content_ph
 edits, retire, restore never touch it). `admin_audit_action_check` gains `photo_upload`; a link is audited as
 `content_edit` with `detail.photo: { from, to }`. TS list and S5 parity updated.
 
-### 2.2 Staff routes (`@StaffOnly`, `@SkipClientVersion`)
+### 2.2 Staff routes (`@Roles(...)` per ADR-0002, was `@StaffOnly`; `@SkipClientVersion`)
 
 - `POST /v1/admin/content/photos`: raw body (`image/jpeg` | `image/png`, <= 5 MB) through a route-scoped
-  `staffBodyReader`. A pure sniffer checks magic bytes and reads dimensions (JPEG SOFn, PNG IHDR); mismatch or out of range
+  `roleBodyReader` (was `staffBodyReader`). A pure sniffer checks magic bytes and reads dimensions (JPEG SOFn, PNG IHDR); mismatch or out of range
   → 422 `photo_invalid` (new). Put first, then insert. 201 `{ sha256, contentType, byteSize, width, height }`, or 200 when
   already stored.
 - `PUT /v1/admin/content/{module}/items/{id}/photo` `{ sha256 | null, expectedVersion }`: stale → 409
@@ -154,7 +154,7 @@ release-package.v1: { format, module, version, contentVersion, items: [ { id, ph
 `contentVersion` = `r<version>-` + first 12 hex of the snapshot sha256. `reference` holds module-level data an adapter
 needs (e.g. Airport Spotter's code-to-name table). The package carries no answers.
 
-### 3.3 Staff routes (`@StaffOnly`, `@SkipClientVersion`)
+### 3.3 Staff routes (`@Roles("admin")` per ADR-0002, was `@StaffOnly`; `@SkipClientVersion`)
 
 - `POST /v1/admin/content/{module}/releases?dryRun=` `{ itemIds: string[] (1..2000, required, R-3), note? }` through a
   route-scoped 160 KB JSON reader. Under the advisory lock `content-release:<module>`, each item goes through the adapter's

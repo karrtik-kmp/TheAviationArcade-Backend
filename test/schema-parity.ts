@@ -1,10 +1,12 @@
 import { getTableConfig, PgDialect, type PgTable } from "drizzle-orm/pg-core";
 import { HINT_LEDGER_KINDS, MILES_LEDGER_KINDS } from "../src/balance/ledger-kinds.js";
 import {
+  ACCOUNT_ROLES,
   ADMIN_AUDIT_ACTIONS,
   CONTENT_DOCUMENT_NAMES,
   CONTENT_SOURCES,
   CONTENT_STATUSES,
+  ROLE_STATES,
   ROUND_COMPLETIONS,
   ROUND_STATUSES,
   TRIP_OUTCOMES,
@@ -42,7 +44,15 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "player_field_awards.player_field_awards_award_id_check": FIELD_AWARD_IDS,
   "content_documents.content_documents_name_check": CONTENT_DOCUMENT_NAMES,
   "content_drafts.content_drafts_name_check": CONTENT_DOCUMENT_NAMES,
+  "account_roles.account_roles_role_check": ACCOUNT_ROLES,
+  "account_roles.account_roles_state_check": ROLE_STATES,
 };
+
+/**
+ * CHECKs that compare against a single literal but are rules, not enumerations of a TypeScript list (the live-database scan
+ * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts.
+ */
+const RULE_CHECKS: ReadonlySet<string> = new Set(["account_roles.account_roles_decided_check", "account_roles.account_roles_pending_role_check"]);
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */
 export function extractLiterals(expression: string): string[] {
@@ -82,7 +92,7 @@ export function compareChecks(
     if (d) problems.push(`${key}: ${where} differs from TypeScript\n${d}`);
   }
   for (const key of Object.keys(actual)) {
-    if (!(key in expected)) {
+    if (!(key in expected) && !RULE_CHECKS.has(key)) {
       problems.push(`${key}: enumerated CHECK in ${where} has no TypeScript list (add it to EXPECTED_ENUM_CHECKS)`);
     }
   }

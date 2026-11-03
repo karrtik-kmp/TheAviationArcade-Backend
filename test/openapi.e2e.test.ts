@@ -16,6 +16,7 @@ import { RANKS } from "../src/rules/ranks.js";
 import { XLSX_MIME } from "../src/content/xlsx.js";
 import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
 import { clientSheet } from "./fixtures.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
@@ -35,6 +36,8 @@ beforeAll(async () => {
   await app.listen(0, "127.0.0.1");
   server = app.getHttpServer();
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff");
 });
 
 afterAll(async () => {

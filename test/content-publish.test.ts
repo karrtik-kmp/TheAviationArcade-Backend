@@ -232,7 +232,18 @@ describe("client tags, history and acknowledgements", () => {
 describe("codes and audit actions", () => {
   it("the three new error codes exist and content_publish is an audit action", () => {
     for (const code of ["version_conflict", "nothing_to_publish", "content_invalid"]) expect(ERROR_CODES).toContain(code);
-    expect(ADMIN_AUDIT_ACTIONS).toEqual(["content_import", "content_publish", "content_edit", "content_retire", "content_restore"]);
+    expect(ADMIN_AUDIT_ACTIONS).toEqual([
+      "content_import",
+      "content_publish",
+      "content_edit",
+      "content_retire",
+      "content_restore",
+      "role_request",
+      "role_approve",
+      "role_reject",
+      "role_grant",
+      "role_revoke",
+    ]);
   });
 });
 

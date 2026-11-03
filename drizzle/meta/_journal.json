@@ -113,6 +113,13 @@
       "when": 1793692595342,
       "tag": "0015_content_item_edit_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793705272042,
+      "tag": "0016_account_roles",
+      "breakpoints": true
     }
   ]
 }

@@ -1,10 +1,19 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.11.0
+  version: 0.12.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.12.0 (plan R-a, Backend ADR-0002, staff-only, no change for the game's own calls).** Privilege now comes only
+    from ACTIVE rows of the `account_roles` table for the verified principal, read on every request (a revoke applies to the
+    next call). `STAFF_EMAILS` no longer grants anything, and the 403 on every `/v1/admin` route now means "no active admin role
+    (or the email is not verified)" rather than "not on the allowlist"; its message changed accordingly, the `forbidden` code did
+    not. `GET /v1/admin/me` gains the required `roles` (the caller's active roles, in the order player, photographer, admin);
+    `staff` stays and is always true. The upload routes (`.../imports`, `.../field-awards/imports`, `.../trip-coverage`) now
+    also count against the per-principal rate limit before the body is read, so a refused caller is 429 `rate_limited` at the
+    limit. There is no route to grant a role yet: the first admin comes from the coming operator command `roles:grant`.
 
     **Changelog 0.11.0 (slice T6, design 8, staff-only, no change for the game's own calls).** Five staff routes edit and publish
     the three documents: `GET /v1/admin/content/documents`, `GET` and `PATCH /v1/admin/content/documents/{name}/draft`,
@@ -97,8 +106,10 @@ info:
       instead of a build number and is exempt. That is a compatibility label, not a credential: the token is still verified, and the app
       must never send it.
     - Retry guidance: 503 and 429 carry `Retry-After` (seconds). Never retry any other 4xx unchanged.
-    - Admin routes (`/v1/admin/*`, tag `admin`) are for staff only and are called by the website admin, not the
-      app: the verified token email must be on the server allowlist (403 `forbidden` otherwise), and they are
+    - Admin routes (`/v1/admin/*`, tag `admin`) need the `admin` role and are called by the website admin, not the
+      app: the verified principal must hold an ACTIVE `admin` row in the backend's `account_roles` table and the token's
+      email must be verified (403 `forbidden` otherwise; Backend ADR-0002). Roles are read on every request, so a revoke
+      takes effect on the next call. No email list, header, query or body field grants a role. They are
       exempt from the client version gate. The staff import takes the raw `.xlsx` as the body (at most 5 MB),
       not JSON.
 servers:
@@ -1014,14 +1025,15 @@ paths:
     get:
       tags: [admin]
       operationId: getAdminMe
-      summary: Am I staff?
+      summary: Am I an admin?
       description: |
-        Staff only. Lets the website check access: 200 `{ principal, staff: true }` for a verified token whose
-        email is on the server allowlist, 403 `forbidden` for any other signed-in caller. A staff caller needs
-        no player row. Exempt from the client version gate.
+        Admin only. Lets the website check access: 200 `{ principal, staff: true, roles }` for an active `admin` with a
+        verified email, 403 `forbidden` for any other signed-in caller (a photographer included). `staff` is kept for
+        existing callers and is always `true`; `roles` lists every ACTIVE role of the caller (`player`, `photographer`,
+        `admin`, in that order). An admin needs no player row. Exempt from the client version gate.
       responses:
         "200":
-          description: The caller is staff.
+          description: The caller is an active admin.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1039,7 +1051,7 @@ paths:
       operationId: importContent
       summary: Import a content spreadsheet
       description: |
-        Staff only. The body is the raw `.xlsx` (Content-Type
+        Admin only. The body is the raw `.xlsx` (Content-Type
         `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; also bounded when
         unpacked). The first worksheet is read. Only modules with a mapping can be imported (today
         `aircraft-identifier-military` and `airport-spotter`); any other module is 404 `not_found`.
@@ -1198,7 +1210,7 @@ paths:
       operationId: contentTripCoverage
       summary: Trip coverage of a module's content
       description: |
-        Staff only. For each rank, how many Flights a Trip would hold if dealt from the module's **approved**
+        Admin only. For each rank, how many Flights a Trip would hold if dealt from the module's **approved**
         items (draft or retired items are not counted), capped at `flightsPerTrip`; below that the content
         cannot fill a Trip at that rank. Computed by the same dealer the dealer contract publishes, under the
         module's deal policy, over the items in natural id order. An item without a photo (blank `sourceFile`
@@ -1244,9 +1256,9 @@ paths:
         "413":
           description: |
             Body too large. This route's limit is 160 KB (not the 16 KB of other routes), but it applies only to a
-            caller whose Bearer token is a verified staff token; a request without a well-formed Bearer header
-            is read under the global 16 KB limit and gets this answer above it (a junk token is 401 and a non-staff
-            token 403 before the body is read).
+            caller whose Bearer token is verified and who holds the `admin` role; a request without a well-formed Bearer header
+            is read under the global 16 KB limit and gets this answer above it (a junk token is 401 and a caller without
+            the role 403 before the body is read).
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1281,7 +1293,7 @@ paths:
       operationId: listContentItems
       summary: List content items
       description: |
-        Staff only. All items of the module in natural id order (`mil-a2` before `mil-a10`), retired ones
+        Admin only. All items of the module in natural id order (`mil-a2` before `mil-a10`), retired ones
         included (see `status`).
       parameters:
         - $ref: "#/components/parameters/ContentModule"
@@ -1306,7 +1318,7 @@ paths:
       operationId: editContentItem
       summary: Edit a content item in place
       description: |
-        Staff only. Changes an item's `rank` and/or its whole `data` payload (a replacement, not a merge: send every
+        Admin only. Changes an item's `rank` and/or its whole `data` payload (a replacement, not a merge: send every
         field). Optimistic: `version` must equal the item's stored version, else 409 `version_conflict` and nothing
         changes. The payload is checked by the module's own rules, the same function the sheet import uses (Military:
         `{ answer, wrong[3], sourceFile, photographer }`, text trimmed, answer and the three wrong answers present,
@@ -1382,7 +1394,7 @@ paths:
       operationId: retireContentItem
       summary: Retire a content item
       description: |
-        Staff only. Sets the item to `retired` (kept, not dealt: it no longer counts in Trip coverage). Optimistic on
+        Admin only. Sets the item to `retired` (kept, not dealt: it no longer counts in Trip coverage). Optimistic on
         `version`; on a change the version goes up by one, `source` becomes `admin`, and a `content_retire` audit row is
         written. Already retired is 200 `changed: false` (the version is still checked). Answers 200, not 201.
       parameters:
@@ -1436,7 +1448,7 @@ paths:
       operationId: restoreContentItem
       summary: Restore a retired content item
       description: |
-        Staff only. Sets the item back to `approved`. Optimistic on `version`; on a change the version goes up by one,
+        Admin only. Sets the item back to `approved`. Optimistic on `version`; on a change the version goes up by one,
         `source` becomes `admin`, and a `content_restore` audit row is written. Already approved is 200 `changed: false`
         (the version is still checked). Answers 200, not 201.
       parameters:
@@ -1490,7 +1502,7 @@ paths:
       operationId: exportContent
       summary: Export content as a spreadsheet
       description: |
-        Staff only. An `.xlsx` with columns `Id, Version, Level, Correct Answer, Wrong Answer 1, Wrong Answer 2,
+        Admin only. An `.xlsx` with columns `Id, Version, Level, Correct Answer, Wrong Answer 1, Wrong Answer 2,
         Wrong Answer 3, file, Photographer, Status` (Level in the client wording), natural id order, retired
         items included (`Status` is `approved` or `retired`). Edit it and import it again: the `Version`
         column makes the import an edit of exactly that version. The `Status` column is informational and is
@@ -1521,7 +1533,7 @@ paths:
       operationId: listContentDocumentDrafts
       summary: Every published document with its draft state
       description: |
-        Staff only (slice T6, design 8). One entry per document (`field-awards`, `clipper-cards`, `aircraft-tags`): the
+        Admin only (slice T6, design 8). One entry per document (`field-awards`, `clipper-cards`, `aircraft-tags`): the
         version players are served (`publishedVersion`, null for `clipper-cards` before it was first sealed), the draft
         revision (`draftVersion`, 0 = no draft yet), whether a publish would change anything and the pending edits.
         Nothing here is visible to players until it is published.
@@ -1547,7 +1559,7 @@ paths:
       operationId: importFieldAwards
       summary: Re-import a later Field Awards sheet into the draft
       description: |
-        Staff only. The body is the client's updated Field Awards sheet, raw `.xlsx` (Content-Type
+        Admin only. The body is the client's updated Field Awards sheet, raw `.xlsx` (Content-Type
         `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; the same unpack and cell-reference guards
         as the content import). The first worksheet is read; its header is `Field Award`, `Current criteria`, `Threshold`.
         The result is **edits in the `field-awards` draft**, not a new version: nothing reaches players until staff publish it with
@@ -1684,7 +1696,7 @@ paths:
       operationId: getContentDocumentDraft
       summary: The draft of one document
       description: |
-        Staff only. The pending edits and `body`, the document a publish would write now (the version in force with the
+        Admin only. The pending edits and `body`, the document a publish would write now (the version in force with the
         edits applied, as `publishedVersion + 1`; for `clipper-cards` rebuilt from the approved Military content as it stands
         now, so it also shows Cards that were added or retired since the last publish). A preview: players are not served it.
       parameters:
@@ -1709,7 +1721,7 @@ paths:
       operationId: editContentDocumentDraft
       summary: Edit the draft of one document
       description: |
-        Staff only. Merges edits into the draft as the next draft revision; nothing is published and players see nothing.
+        Admin only. Merges edits into the draft as the next draft revision; nothing is published and players see nothing.
         `draftVersion` is the revision you read: when it is not the current one the answer is 409 `version_conflict` and
         nothing changes (an edit never overwrites another editor's). The body depends on the document, all strict (any other
         field, including `id` and `metric`, is 400):
@@ -1770,7 +1782,7 @@ paths:
       operationId: discardContentDocumentDraft
       summary: Throw away the pending edits
       description: |
-        Staff only. Clears the draft (revision + 1), version checked like an edit; also the way out of a stored draft that no
+        Admin only. Clears the draft (revision + 1), version checked like an edit; also the way out of a stored draft that no
         longer validates (422 `content_invalid`). With no draft yet (`draftVersion` 0) nothing is written. Answers 200.
       parameters:
         - $ref: "#/components/parameters/ContentDocumentNamePath"
@@ -1810,7 +1822,7 @@ paths:
       operationId: publishContentDocument
       summary: Publish the draft as the next document version
       description: |
-        Staff only. In one transaction: writes the draft as the next immutable version of the document
+        Admin only. In one transaction: writes the draft as the next immutable version of the document
         (`content_documents`, version = highest stored + 1, `created_by` = the verified staff principal), writes exactly one
         audit row (`content_publish`: actor, document, versions, digest, the draft revision, the note, every editor and the edit and discard
         history since the last publish, and the list of changes cut at 200) and resets the draft (revision + 1). Players then see it with no write to any player: the manifest `version`
@@ -1991,7 +2003,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: Signed in, but not staff (the verified token email is not on the server allowlist).
+      description: Signed in, but without the required ACTIVE role in `account_roles`, or the role needs a verified email and the token's is not (Backend ADR-0002).
       headers:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -2181,10 +2193,15 @@ components:
     AdminMe:
       type: object
       additionalProperties: false
-      required: [principal, staff]
+      required: [principal, staff, roles]
       properties:
         principal: { type: string, description: "firebase:<projectId>:<uid>" }
-        staff: { type: boolean, const: true }
+        staff: { type: boolean, const: true, description: Kept for existing callers; always true (the caller is an active admin). }
+        roles:
+          type: array
+          uniqueItems: true
+          description: The caller's ACTIVE roles from `account_roles`, in the order player, photographer, admin (Backend ADR-0002).
+          items: { type: string, enum: [player, photographer, admin] }
     ContentItem:
       type: object
       additionalProperties: false

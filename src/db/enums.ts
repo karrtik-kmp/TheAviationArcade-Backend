@@ -8,10 +8,24 @@ export const ROUND_STATUSES = ["open", "completed", "abandoned"] as const;
 export const ROUND_COMPLETIONS = ["perfect", "standard", "unfinished"] as const;
 export const CONTENT_STATUSES = ["approved", "retired"] as const;
 export const CONTENT_SOURCES = ["client_sheet", "admin"] as const;
-export const ADMIN_AUDIT_ACTIONS = ["content_import", "content_publish", "content_edit", "content_retire", "content_restore"] as const;
+export const ADMIN_AUDIT_ACTIONS = [
+  "content_import",
+  "content_publish",
+  "content_edit",
+  "content_retire",
+  "content_restore",
+  "role_request",
+  "role_approve",
+  "role_reject",
+  "role_grant",
+  "role_revoke",
+] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
 export const CONTENT_DOCUMENT_NAMES = ["field-awards", "clipper-cards", "aircraft-tags"] as const;
+/** Account roles (Backend ADR-0002). Only an `active` row grants anything; `admin` includes every `photographer` permission. */
+export const ACCOUNT_ROLES = ["player", "photographer", "admin"] as const;
+export const ROLE_STATES = ["pending", "active", "rejected", "revoked"] as const;
 
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
@@ -21,3 +35,5 @@ export type AdminAuditAction = (typeof ADMIN_AUDIT_ACTIONS)[number];
 export type TripStatus = (typeof TRIP_STATUSES)[number];
 export type TripOutcome = (typeof TRIP_OUTCOMES)[number];
 export type ContentDocumentName = (typeof CONTENT_DOCUMENT_NAMES)[number];
+export type AccountRole = (typeof ACCOUNT_ROLES)[number];
+export type RoleState = (typeof ROLE_STATES)[number];

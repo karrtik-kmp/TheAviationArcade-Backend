@@ -17,7 +17,7 @@ export type FirebaseIdentity = {
   principal: string;
   uid: string;
   emailVerified: boolean;
-  /** The token's email claim, only when it is a string of at most 320 chars. Used for the staff allowlist, never stored. */
+  /** The token's email claim, only when it is a string of at most 320 chars. Only the role check's verified-email rule reads it; never stored. */
   email: string | undefined;
 };
 

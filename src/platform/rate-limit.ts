@@ -7,6 +7,32 @@ import { ApiError } from "../common/errors.js";
 import type { AppConfig } from "../config/config.module.js";
 
 const WINDOW_MS = 60_000;
+const THROTTLER_NAME = "default";
+
+/** Requests already counted by the pre-body role check (app.setup.ts); RateLimitGuard must not count them again. */
+const countedEarly = new WeakSet<object>();
+
+/**
+ * The rate-limit count for an authenticated request that is answered or read before Nest's guards run (the upload
+ * pre-reader). Same storage, window, limit, key and 429 as RateLimitGuard, so a request counts exactly once: this marks `req`
+ * and the guard then skips it. Throws the 429 ApiError (with Retry-After) when the principal's window is full.
+ */
+export async function countAuthenticatedRequest(
+  storage: ThrottlerStorage,
+  config: Pick<AppConfig, "rateLimitAuthPerMin">,
+  principal: string,
+  req: object,
+): Promise<void> {
+  const limit = config.rateLimitAuthPerMin;
+  const record = await storage.increment(`${THROTTLER_NAME}:principal:${principal}`, WINDOW_MS, limit, 0, THROTTLER_NAME);
+  countedEarly.add(req);
+  if (record.isBlocked) throw rateLimited(record.timeToBlockExpire);
+}
+
+function rateLimited(timeToBlockExpire: number): ApiError {
+  const seconds = Math.max(1, Math.ceil(timeToBlockExpire));
+  return new ApiError(429, "rate_limited", "Too many requests. Slow down.", { "Retry-After": String(seconds) });
+}
 
 /**
  * One sliding window per tracker, shared by every route (not per route, which is the library default),
@@ -44,6 +70,10 @@ export function throttlerOptions(
  */
 @Injectable()
 export class RateLimitGuard extends ThrottlerGuard {
+  protected override async shouldSkip(context: ExecutionContext): Promise<boolean> {
+    return countedEarly.has(context.switchToHttp().getRequest<object>());
+  }
+
   protected override async getTracker(req: Record<string, any>): Promise<string> {
     const principal = (req as Request).principal;
     // Prefixes keep a principal and an IP from ever sharing a bucket.
@@ -58,7 +88,6 @@ export class RateLimitGuard extends ThrottlerGuard {
     _context: ExecutionContext,
     detail: ThrottlerLimitDetail,
   ): Promise<void> {
-    const seconds = Math.max(1, Math.ceil(detail.timeToBlockExpire));
-    throw new ApiError(429, "rate_limited", "Too many requests. Slow down.", { "Retry-After": String(seconds) });
+    throw rateLimited(detail.timeToBlockExpire);
   }
 }

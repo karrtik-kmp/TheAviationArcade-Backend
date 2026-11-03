@@ -9,6 +9,7 @@ import { configureApp } from "../src/app.setup.js";
 import { MAX_UPLOAD_BYTES, XLSX_MIME, readFirstSheet } from "../src/content/xlsx.js";
 import { BLOB_STORE } from "../src/storage/blob-store.js";
 import type { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { xlsx } from "./fixtures.js";
 import type { TestCell } from "./fixtures.js";
@@ -31,6 +32,8 @@ let stripped: Buffer;
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff");
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
   configureApp(app);

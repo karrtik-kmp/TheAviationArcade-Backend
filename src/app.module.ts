@@ -3,7 +3,7 @@ import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { AdminModule } from "./admin/admin.module.js";
 import { FirebaseAuthGuard } from "./auth/firebase-auth.guard.js";
-import { StaffGuard } from "./auth/staff.js";
+import { RolesGuard, RolesService } from "./auth/roles.js";
 import { ApiExceptionFilter } from "./common/api-exception.filter.js";
 import { APP_CONFIG, ConfigModule } from "./config/config.module.js";
 import type { AppConfig } from "./config/config.module.js";
@@ -46,14 +46,15 @@ import { UgsModule } from "./ugs/ugs.module.js";
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },
     // Guards run in this order. Version gate first: an outdated client is turned away before any token
-    // work. Auth next. Rate limit next, so it can key on the verified principal. Staff check last: it needs
-    // the verified identity, and a non-staff caller still counts against the rate limit.
+    // work. Auth next. Rate limit next, so it can key on the verified principal. Role check last: it needs
+    // the verified identity, and a caller without the role still counts against the rate limit.
     { provide: APP_GUARD, useClass: ClientVersionGuard },
     // Every route requires a verified token unless it is marked @Public() (health only).
     { provide: APP_GUARD, useClass: FirebaseAuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
-    // Enforces @StaffOnly() routes (the admin API); a no-op everywhere else.
-    { provide: APP_GUARD, useClass: StaffGuard },
+    // Enforces @Roles() routes (Backend ADR-0002) from account_roles; a no-op everywhere else.
+    RolesService,
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
 export class AppModule {}

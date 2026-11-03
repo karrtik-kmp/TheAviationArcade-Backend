@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import http from "node:http";
-import type { AddressInfo } from "node:net";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import pg from "pg";
@@ -16,10 +14,12 @@ import { BLOB_STORE, StorageRequestError } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { CLIENT_HEADER, clientRow, clientSheet, xlsx } from "./fixtures.js";
 import type { TestCell } from "./fixtures.js";
+import { seedAdmins } from "./roles-helpers.js";
+import { unfinishedUpload as sharedUnfinishedUpload } from "./upload-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
-// Phase 5.0 admin content store: staff gate, import/export semantics, idempotency, storage failure.
-// STAFF_EMAILS comes from vitest.e2e.config.ts: staff@sites.test and Other.Staff@Sites.Test.
+// Phase 5.0 admin content store: admin gate, import/export semantics, idempotency, storage failure.
+// The "staff" uid holds an active admin row in account_roles (seeded below; Backend ADR-0002). Role rules: roles.e2e.test.ts.
 
 const MODULE = "aircraft-identifier-military";
 const STAFF_PRINCIPAL = "firebase:demo-airplane-games:staff";
@@ -50,6 +50,8 @@ let blobs: MemoryBlobStore;
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff");
   ({ server, blobs } = await buildApp());
 });
 
@@ -117,12 +119,12 @@ describe("staff gate", () => {
     expect((await request(server).get("/v1/admin/me").set("Authorization", "Bearer garbage")).status).toBe(401);
   });
 
-  it("a signed-in caller who is not on the allowlist is 403 forbidden 'Staff only.'", async () => {
+  it("a signed-in caller with no role is 403 forbidden 'Requires the admin role.'", async () => {
     const caller = bearer(emulatorToken(`uid-${randomUUID()}`));
     for (const [method, path] of routes) {
       const res = await request(server)[method](path).set(caller);
       expect(res.status, `${method} ${path}`).toBe(403);
-      expect(res.body.error).toMatchObject({ code: "forbidden", message: "Staff only." });
+      expect(res.body.error).toMatchObject({ code: "forbidden", message: "Requires the admin role." });
     }
     // Importing is refused before the file is looked at: nothing stored, nothing written.
     const res = await upload(await clientSheet(), "", caller);
@@ -131,7 +133,7 @@ describe("staff gate", () => {
     expect(blobs.size).toBe(0);
   });
 
-  it("a listed email whose address is not verified is 403", async () => {
+  it("an active admin whose email is not verified is 403", async () => {
     const res = await request(server)
       .get("/v1/admin/me")
       .set(bearer(emulatorToken("staff", "demo-airplane-games", "password", { emailVerified: false })));
@@ -150,18 +152,17 @@ describe("staff gate", () => {
     expect(res.status).toBe(403);
   });
 
-  it("the allowlist match is case-insensitive", async () => {
+  it("the email address grants nothing: a former allowlist address without a role row is 403 (Google sign-in too)", async () => {
     const res = await request(server)
       .get("/v1/admin/me")
-      .set(bearer(emulatorToken("someone-else", "demo-airplane-games", "google.com", { email: "OTHER.STAFF@sites.test" })));
-    expect(res.status).toBe(200);
-    expect(res.body.staff).toBe(true);
+      .set(bearer(emulatorToken(`uid-${randomUUID()}`, "demo-airplane-games", "google.com", { email: "staff@sites.test" })));
+    expect(res.status).toBe(403);
   });
 
-  it("a verified listed caller gets { principal, staff: true } and needs no player row", async () => {
+  it("an active verified admin gets { principal, staff: true, roles } and needs no player row", async () => {
     const res = await request(server).get("/v1/admin/me").set(staff);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ principal: STAFF_PRINCIPAL, staff: true });
+    expect(res.body).toEqual({ principal: STAFF_PRINCIPAL, staff: true, roles: ["admin"] });
     expect(res.headers["cache-control"]).toBe("no-store");
     expect((await sql.query("SELECT 1 FROM players WHERE id = $1", [STAFF_PRINCIPAL])).rowCount).toBe(0);
   });
@@ -879,23 +880,9 @@ describe("client sheet is authoritative", () => {
 // ---------------------------------------------------------------------------------------------------------------
 // The 5 MB body is read only after the token and staff rule have passed.
 
-/** POST headers plus the start of a body that never ends; resolves with the response status. */
+/** POST headers plus the start of a body that never ends; resolves with the response status (test/upload-helpers.ts). */
 function unfinishedUpload(headers: Record<string, string>, path = IMPORTS, contentType = XLSX_MIME): Promise<number> {
-  const { port } = (server as { address(): AddressInfo }).address();
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: "127.0.0.1", port, method: "POST", path, headers: { ...headers, "Content-Type": contentType, "Content-Length": String(50 * 1024 * 1024) } },
-      (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-        req.destroy();
-      },
-    );
-    req.on("error", (error) => {
-      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
-    });
-    req.write(Buffer.alloc(1024)); // headers go out; the other 50 MB never does
-  });
+  return sharedUnfinishedUpload(server, headers, path, contentType);
 }
 
 describe("auth before the upload body", () => {

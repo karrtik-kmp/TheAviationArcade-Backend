@@ -10,7 +10,7 @@ export default defineConfig({
       "test/database-errors.test.ts",
       "test/guard-filter.test.ts",
       "test/platform.test.ts",
-      "test/staff.test.ts",
+      "test/roles.test.ts",
       "test/blob-store.test.ts",
       "test/xlsx.test.ts",
       "test/military-mapping.test.ts",
@@ -31,6 +31,7 @@ export default defineConfig({
       "test/logbook.test.ts",
       "test/content-publish.test.ts", "test/rate-limit-store.test.ts",
       "test/field-awards-import.test.ts", "test/content-item-edit.test.ts", "test/clock.test.ts",
+      "test/image-sniff.test.ts", "test/cdn-signer.test.ts",
     ],
   },
 });

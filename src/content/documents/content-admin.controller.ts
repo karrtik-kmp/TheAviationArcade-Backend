@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { Principal } from "../../auth/firebase-auth.guard.js";
-import { StaffOnly } from "../../auth/staff.js";
+import { Roles } from "../../auth/roles.js";
 import { ApiError } from "../../common/errors.js";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe.js";
 import { importQuery, sanitiseFileName } from "../content.controller.js";
@@ -27,11 +27,11 @@ function parse<T>(schema: { safeParse(value: unknown): { success: true; data: T 
 
 /**
  * Staff-only editing and publishing of the published documents (slice T6, design 8): read the draft, edit it, discard it, publish
- * it. Same guard as ContentController (staff allowlist after authentication) and the same exemption from the client version gate,
+ * it. Same guard as ContentController (the `admin` role after authentication, Backend ADR-0002) and the same exemption from the client version gate,
  * because the website that calls it has no app build number (it also sends `X-Client: web`). The staff identity is the verified token's
  * principal and nothing in the body. Players never see a draft: only a publish changes what the manifest serves.
  */
-@StaffOnly()
+@Roles("admin")
 @SkipClientVersion()
 @Controller("v1/admin/content/documents")
 export class ContentAdminController {

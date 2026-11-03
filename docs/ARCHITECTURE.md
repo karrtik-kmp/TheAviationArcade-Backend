@@ -49,13 +49,13 @@ src/main.ts               bootstrap: request id + log middleware, global filter,
 src/config/               env parsed once with zod; fail fast
 src/db/                   drizzle schema + pg Pool provider; migrations in drizzle/
 src/common/               ApiError + ErrorCode, exception filter, ZodValidationPipe, request-id middleware
-src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal()
+src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal(), roles.ts (RolesGuard, @Roles(), RolesService, @CallerRoles())
 src/rules/                pure, Unity-mirrored logic: scoring, ranks (isPleasureCruise), first-class, banking (bankRound), trips, Clipper Cards, Field Awards (+ products.ts catalog later)
 src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
 src/players/, src/rounds/, src/trips/ feature modules: controller (HTTP) + service (transactions, domain outcomes); src/trips/trip-store.ts holds the segment helpers RoundsService shares, src/trips/trip-completion.ts completes a full segment (Cards, counters, awards)
 src/storage/              BlobStore (Bunny / memory / none), key validation
 src/content/              staff xlsx import/export: module mappings, pure import planner, service, controller
-src/admin/                GET /v1/admin/me (staff check for the website)
+src/admin/                GET /v1/admin/me (admin check for the website; lists the caller's active roles)
 src/ugs/                  UGS progress mirror: link route, token check, outbox helper, worker, admin client
 ```
 
@@ -124,15 +124,20 @@ Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only ke
   module + id; payload in `data` jsonb, validated by the module mapping before every write). The website admin
   and Unity consume it in follow-ups; there is no player-facing content route and no release yet, so nothing
   reaches players.
-- **Staff.** Token `email_verified === true` AND the lowercased `email` in the server-only `STAFF_EMAILS`
-  allowlist (the website's rule). `@StaffOnly()` + `StaffGuard` run after the auth and rate-limit guards (401
-  first, then 403 `forbidden`). A client-chosen role, header or query never grants anything. A staff caller needs
-  no player row. No email is stored anywhere: rows carry the principal only.
+- **Roles** ([ADR-0002](adr/ADR-0002-role-based-access.md), supersedes the `STAFF_EMAILS` allowlist). Admin routes carry
+  `@Roles("admin")`; `RolesGuard` (`src/auth/roles.ts`) runs after the auth and rate-limit guards (401 first, then 403
+  `forbidden`) and reads the caller's ACTIVE roles from `account_roles` by the verified principal in one primary-key
+  lookup per request, no cache, so a revoke applies to the next call. `admin` satisfies `photographer`; both need
+  `email_verified === true` and an email claim in the token. The roles are on the request (`@CallerRoles()`) for
+  ownership checks. A client-chosen role, header, query or email never grants anything; no environment list exists. An
+  admin needs no player row. No email is stored anywhere: rows carry the principal only. The table's CHECKs tie the fields to the
+  state: pending exactly while `decided_at` and `decided_by` are both NULL, only a photographer request can be pending, and
+  `revision >= 1` is the optimistic fence for decisions (R-b bumps it on every transition).
 - **Import (`POST /v1/admin/content/:module/imports`).** Raw xlsx, 5 MB. Unzip-bomb guard before parsing
   (`fflate` streaming count of real output: 25 MB / 100 entries; the xlsx libraries have none), plus 5,000 rows
   and 50 columns checked on the cell references in every worksheet's XML before `read-excel-file` runs (it
   allocates a dense grid up to the furthest cell, so one cell at `XFD1048576` in a 3 KB file would exhaust memory).
-  The upload middleware verifies the token and the staff rule before reading the body. The pure planner (`planImport`) treats two kinds of file differently (user, 2026-10-28):
+  The upload middleware verifies the token and reads the caller's roles (same `RolesService`) before reading the body, and count the request against the per-principal rate limit first (`countAuthenticatedRequest`; `RateLimitGuard` then skips that request, so it counts once), so refused callers cannot flood role queries. The pure planner (`planImport`) treats two kinds of file differently (user, 2026-10-28):
   - *Client sheet* (no `Id` column) is authoritative. Rows match stored items by natural key (Military: the
     trimmed `file`, exact). Unmatched rows get the next free id (`mil-a<max suffix + 1>`, sheet order; into an empty
     module that is row order, so `mil-a1`…). A matched row with different rank/data is an update (version + 1,

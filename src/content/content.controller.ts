@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Re
 import type { Response } from "express";
 import { z } from "zod";
 import { Principal } from "../auth/firebase-auth.guard.js";
-import { StaffOnly } from "../auth/staff.js";
+import { Roles } from "../auth/roles.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { DEAL_POLICY } from "../rules/dealer.js";
@@ -76,10 +76,10 @@ export function sanitiseFileName(raw: string | undefined): string {
 }
 
 /**
- * Staff-only content administration. Not exempt from auth or rate limiting; exempt from the client
+ * Admin-only content administration (`@Roles("admin")`, Backend ADR-0002). Not exempt from auth or rate limiting; exempt from the client
  * version gate, because the website that calls it has no app build number.
  */
-@StaffOnly()
+@Roles("admin")
 @SkipClientVersion()
 @Controller("v1/admin/content")
 export class ContentController {

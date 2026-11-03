@@ -5,7 +5,7 @@ progress. A standalone Node server — **NestJS + PostgreSQL (Drizzle)** — ver
 the same Firebase project the website (`../website`) uses, so a player is one principal across app,
 website and backend. Deployed separately from the website. Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-This slice covers **player identity and progress**, plus a **staff-only admin content store** (Phase 5.0:
+This slice covers **player identity and progress**, plus an **admin-only content store** (Phase 5.0:
 import and export of question spreadsheets; nothing reaches players yet). Content delivery to players,
 purchases, Flight Segment bonuses, leaderboards and the community forum are later slices — see [docs/TASKS.md](docs/TASKS.md).
 
@@ -64,7 +64,6 @@ keys. Players created this way live in your local database only.
 | `RATE_LIMIT_POOL_MAX` | Default 3 (1–10). Size of the rate limiter's own pool; used only with `RATE_LIMIT_STORE=postgres`. It is in addition to `DB_POOL_MAX` |
 | `MIN_CLIENT_BUILD` | Optional, 1–999999999. When set, requests need `X-Client-Version: <build>` at or above it, else 426. Health routes, `DELETE /v1/me` and the website's server (`X-Client: web`) exempt. Unset = gate off (build scheme undecided) |
 | `SHUTDOWN_DRAIN_MS` | Default 10000. On SIGTERM/SIGINT: `/v1/health/ready` turns 503, then the server stops accepting, finishes in-flight requests (answering `Connection: close`), closes the pool and exits 0; exit 1 past the deadline; a second signal exits at once |
-| `STAFF_EMAILS` | Optional, comma-separated. Emails (trimmed, case-insensitive) allowed to call `/v1/admin/*`, and only with a Firebase-verified token email. Server-only: a client-chosen role never grants access. Unset = nobody is staff. Never logged |
 | `BLOB_STORE` | `none` / `memory` / `bunny`. Where staff-uploaded files go. Default `memory` locally and in tests (lost on restart), `none` in production (uploads answer 503 `storage_unavailable`); production refuses `memory` |
 | `BUNNY_STORAGE_ZONE` / `BUNNY_STORAGE_PASSWORD` | Required when `BLOB_STORE=bunny`. Zone `aviation-arcade-website` (shared with the website) and its read-write zone password, used exactly as given (not trimmed); a secret, never logged or echoed in config errors. Any `BUNNY_STORAGE_*` set while `BLOB_STORE` is not `bunny` fails at startup |
 | `BUNNY_STORAGE_REGION` / `BUNNY_STORAGE_PREFIX` | Default `de` (endpoint `https://de-s3.storage.bunnycdn.com`) and `backend/`. The prefix keeps this backend's objects apart from the website's: lowercase `[a-z0-9_-]` segments, ending in `/`, no leading `/` or `..` |
@@ -135,16 +134,16 @@ All endpoints except health need `Authorization: Bearer <Firebase ID token>`. Er
 | POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts }`. Scores and banks it from the segment's own Perfect Streak; moves the day streak (+1 hint on every 7th consecutive local day, `hintGrants`). Flight facts that break a module rule are 400 and bank nothing. An `Idempotency-Key` header is accepted and ignored (the Round id is the key) |
 | POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
-| GET | `/v1/admin/me` | Staff only. `{ principal, staff: true }`; 403 `forbidden` for anyone else |
-| POST | `/v1/admin/content/:module/imports` | Staff only. Raw `.xlsx` body (≤ 5 MB), optional `X-File-Name`, `?dryRun=true` (plan + field diffs + `planHash`), `?confirm=<planHash>`. 201 imported, 200 plan or `replayed: true`, 422 `import_invalid` (row report, or "dry run first"), 409 `plan_changed` or `import_in_progress`, 503 `storage_unavailable` |
-| POST | `/v1/admin/content/:module/trip-coverage` | Staff only. Optional JSON `{ itemIds?: string[] }` (≤ 2000, repeats count once). 200 `{ module, policy, flightsPerTrip, ranks: [{ rank, dealable }] }`: Flights a Trip would hold per rank from the module's approved items (blank photo not dealable). 404 for a module with no mapping or no deal policy, 422 `unknown_item_ids`, 400 for a bad body |
-| GET | `/v1/admin/content/documents` | Staff only (T6). `{ documents: [...] }`, one per document name: `publishedVersion` (the version players are served), `draftVersion` (0 = no draft), `changed`, `edits`, `changes` |
-| GET | `/v1/admin/content/documents/:name/draft` | Staff only. The draft plus `body`, the document a publish would write now (a preview, not served). 404 for an unknown name |
-| PATCH | `/v1/admin/content/documents/:name/draft` | Staff only. `{ draftVersion, awards \| names \| entries }` per document: Field Award `title`/`criteria`/`target`/`hidden`, Card `name`, a Card's tag list. Never an id or metric (400). Stale `draftVersion` = 409 `version_conflict`; an unknown Card = 422 `content_invalid` |
-| POST | `/v1/admin/content/documents/:name/draft/discard` | Staff only. `{ draftVersion }`. 200, clears the draft (also the way out of a stored draft that no longer validates) |
-| POST | `/v1/admin/content/documents/:name/publish` | Staff only. `{ draftVersion, note? }`. 201 `{ name, version, previousVersion, sha256, byteSize, draftVersion, changeCount, manifestVersion }`. One transaction: next immutable version, one `content_publish` audit row, draft reset. 409 `version_conflict` / `nothing_to_publish`, 422 `content_invalid`; nothing is written on a refusal |
-| GET | `/v1/admin/content/:module/items` | Staff only. Items in natural id order, retired ones included (`status`) |
-| GET | `/v1/admin/content/:module/export` | Staff only. `.xlsx` in the client's columns plus `Id`, `Version`, `Status` (retired rows included) |
+| GET | `/v1/admin/me` | Admin only. `{ principal, staff: true, roles }` (`roles` = the caller's ACTIVE roles); 403 `forbidden` for anyone else, a photographer included |
+| POST | `/v1/admin/content/:module/imports` | Admin only. Raw `.xlsx` body (≤ 5 MB), optional `X-File-Name`, `?dryRun=true` (plan + field diffs + `planHash`), `?confirm=<planHash>`. 201 imported, 200 plan or `replayed: true`, 422 `import_invalid` (row report, or "dry run first"), 409 `plan_changed` or `import_in_progress`, 503 `storage_unavailable` |
+| POST | `/v1/admin/content/:module/trip-coverage` | Admin only. Optional JSON `{ itemIds?: string[] }` (≤ 2000, repeats count once). 200 `{ module, policy, flightsPerTrip, ranks: [{ rank, dealable }] }`: Flights a Trip would hold per rank from the module's approved items (blank photo not dealable). 404 for a module with no mapping or no deal policy, 422 `unknown_item_ids`, 400 for a bad body |
+| GET | `/v1/admin/content/documents` | Admin only (T6). `{ documents: [...] }`, one per document name: `publishedVersion` (the version players are served), `draftVersion` (0 = no draft), `changed`, `edits`, `changes` |
+| GET | `/v1/admin/content/documents/:name/draft` | Admin only. The draft plus `body`, the document a publish would write now (a preview, not served). 404 for an unknown name |
+| PATCH | `/v1/admin/content/documents/:name/draft` | Admin only. `{ draftVersion, awards \| names \| entries }` per document: Field Award `title`/`criteria`/`target`/`hidden`, Card `name`, a Card's tag list. Never an id or metric (400). Stale `draftVersion` = 409 `version_conflict`; an unknown Card = 422 `content_invalid` |
+| POST | `/v1/admin/content/documents/:name/draft/discard` | Admin only. `{ draftVersion }`. 200, clears the draft (also the way out of a stored draft that no longer validates) |
+| POST | `/v1/admin/content/documents/:name/publish` | Admin only. `{ draftVersion, note? }`. 201 `{ name, version, previousVersion, sha256, byteSize, draftVersion, changeCount, manifestVersion }`. One transaction: next immutable version, one `content_publish` audit row, draft reset. 409 `version_conflict` / `nothing_to_publish`, 422 `content_invalid`; nothing is written on a refusal |
+| GET | `/v1/admin/content/:module/items` | Admin only. Items in natural id order, retired ones included (`status`) |
+| GET | `/v1/admin/content/:module/export` | Admin only. `.xlsx` in the client's columns plus `Id`, `Version`, `Status` (retired rows included) |
 
 Result status codes: 200 banked (or `replayed: true` for a Round already banked — safe to retry),
 404 not this player's Round, 410 expired or abandoned (`round_expired`, `round_closed`, or `trip_expired` when the segment ran out first), 400 bad Flight facts, 429 submitted too soon after issue (retry after
@@ -166,14 +165,17 @@ Ranks and module IDs on the wire are kebab-case: `trainee`, `first-officer`, `ca
 ## Admin content
 
 The backend Postgres is the source of truth for admin-curated question content (the website admin and Unity
-consume it in later slices). Staff = a Firebase-verified token email that is on the server's `STAFF_EMAILS`
-list; nothing the client sends can grant it. Admin routes sit behind the normal auth and rate-limit guards and
+consume it in later slices). Admin routes need the `admin` role: an ACTIVE row for the verified principal in the
+`account_roles` table and a Firebase-verified token email ([ADR-0002](docs/adr/ADR-0002-role-based-access.md)). Roles are
+read on every request, so a revoke takes effect on the next call; no environment list (the retired `STAFF_EMAILS`), email,
+header or body field can grant one. Until the role routes (R-b) and `roles:grant` (R-c) exist, a role row is inserted
+directly in the database. Admin routes sit behind the normal auth and rate-limit guards and
 are exempt from the app's client version gate. Today only `aircraft-identifier-military` has a mapping (the
 client's `Military Airplane Identifier v1.xlsx`: 31 rows → `mil-a1`…`mil-a31`, imported as `approved`); any other
 module is 404. Importing is all-or-nothing (any row error → 422, nothing written) and a retry is safe: identical
 bytes replay while that upload is still the module's latest import (a dry run says `replay: true`); bytes of an older
 import are planned again like any file. One import per module at a time (409 `import_in_progress`, retry after 2 s).
-The token and the staff rule are checked before the upload body is read. Sheets are limited to 5,000 rows and 50
+The token and the admin role are checked before the upload body is read (the request is rate limited first, per principal, so refusals count). Sheets are limited to 5,000 rows and 50
 columns, judged by every cell reference (so a near-empty sheet with one far-off cell is refused, 400). Two kinds
 of file (ruled 2026-10-28):
 
@@ -191,7 +193,7 @@ of file (ruled 2026-10-28):
   continue the sequence (at most the highest existing number plus the file's row count).
 
 The original upload is kept forever in Bunny Storage under `backend/imports/<module>/<sha256>.xlsx`. No email is
-stored: receipts and the append-only audit log carry the staff principal. Details: ARCHITECTURE.md "Admin content store".
+stored: receipts and the append-only audit log carry the admin's principal. Details: ARCHITECTURE.md "Admin content store".
 
 ## Content documents and the manifest (slice T4)
 

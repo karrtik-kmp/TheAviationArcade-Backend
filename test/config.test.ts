@@ -43,7 +43,6 @@ describe("loadConfig", () => {
       rateLimitPublicPerMin: 60,
       rateLimitStore: "postgres",
       minClientBuild: undefined,
-      staffEmails: [],
       blobStore: "memory",
       bunny: undefined,
     });
@@ -189,17 +188,12 @@ describe("loadConfig", () => {
     });
   });
 
-  describe("STAFF_EMAILS", () => {
-    it("is empty when unset or blank", () => {
-      expect(loadConfig(local).staffEmails).toEqual([]);
-      expect(loadConfig({ ...local, STAFF_EMAILS: "  ,, " }).staffEmails).toEqual([]);
-    });
-
-    it("trims, lowercases, drops empty entries and duplicates", () => {
-      expect(loadConfig({ ...local, STAFF_EMAILS: " Josh@Example.com, ,hiren@KMPHITECH.com,josh@example.com," }).staffEmails).toEqual([
-        "josh@example.com",
-        "hiren@kmphitech.com",
-      ]);
+  describe("STAFF_EMAILS (retired by Backend ADR-0002)", () => {
+    it("is not read: setting it changes nothing in the config, and no email list exists to grant anything", () => {
+      const withList = loadConfig({ ...local, STAFF_EMAILS: "staff@sites.test" });
+      expect(withList).toEqual(loadConfig(local));
+      expect(JSON.stringify(withList)).not.toContain("staff@sites.test");
+      expect(Object.keys(withList).some((key) => /staff|email/i.test(key))).toBe(false);
     });
   });
 

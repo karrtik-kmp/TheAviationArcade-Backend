@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
+import type { AccountRole } from "../db/enums.js";
 
 declare module "express-serve-static-core" {
   interface Request {
     requestId?: string;
     /** Set by FirebaseAuthGuard from a verified token only. */
     principal?: string;
-    /** The verified token's email claim (if any) and whether Firebase verified it. For the staff check only; never stored or logged. */
+    /** The verified token's email claim (if any) and whether Firebase verified it. For the role check's verified-email rule only; never stored or logged. */
     email?: string;
     emailVerified?: boolean;
+    /** The caller's ACTIVE roles, set by RolesGuard on @Roles() routes only (read from account_roles for this request). */
+    roles?: readonly AccountRole[];
   }
 }
 

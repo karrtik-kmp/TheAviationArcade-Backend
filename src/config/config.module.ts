@@ -37,9 +37,7 @@ export type AppConfig = {
   rateLimitStore: RateLimitStoreKind;
   /** Lowest accepted X-Client-Version build number. Undefined = the gate is off. */
   minClientBuild: number | undefined;
-  /** Lowercased emails that may call staff-only (admin) routes, together with a verified token email. Never logged. */
-  staffEmails: readonly string[];
-  /** Where staff-uploaded files go: none = refuse (503), memory = process-local (local/test only), bunny = Bunny Storage. */
+  /** Where admin-uploaded files go: none = refuse (503), memory = process-local (local/test only), bunny = Bunny Storage. */
   blobStore: BlobStoreKind;
   /** Present only when blobStore is "bunny". The password is a secret: never log or echo it. */
   bunny: BunnyConfig | undefined;
@@ -127,16 +125,6 @@ const BUNNY_ZONE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** Relative key prefix: lowercase segments joined and ended by "/", so no leading "/", no "//", no "..". */
 const BUNNY_PREFIX = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*\/$/;
 
-/** Comma-separated emails: trimmed, lowercased, empty entries dropped, duplicates removed. */
-function parseStaffEmails(raw: string | undefined): readonly string[] {
-  if (!raw) return [];
-  const emails = raw
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter((email) => email.length > 0);
-  return [...new Set(emails)];
-}
-
 const envSchema = z.object({
   /** Where this process runs. Required, so a deployment can never fall back to local behaviour. */
   APP_ENV: z.enum(["local", "test", "production"]),
@@ -161,8 +149,6 @@ const envSchema = z.object({
   /** postgres (default, correct with several instances) or memory (one instance only). */
   RATE_LIMIT_STORE: z.enum(["postgres", "memory"]).default("postgres"),
   MIN_CLIENT_BUILD: optionalInt(1, 999_999_999),
-  /** Server-only allowlist for staff routes. Unset = nobody is staff. */
-  STAFF_EMAILS: z.string().optional(),
   /** Default depends on APP_ENV (memory locally, none in production), so it is applied after parsing. */
   BLOB_STORE: z.enum(["none", "memory", "bunny"]).optional(),
   BUNNY_STORAGE_ZONE: z.string().trim().optional(),
@@ -205,7 +191,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     RATE_LIMIT_PUBLIC_PER_MIN,
     RATE_LIMIT_STORE,
     MIN_CLIENT_BUILD,
-    STAFF_EMAILS,
     BUNNY_STORAGE_ZONE,
     BUNNY_STORAGE_PASSWORD,
     BUNNY_STORAGE_REGION,
@@ -322,7 +307,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rateLimitPublicPerMin: RATE_LIMIT_PUBLIC_PER_MIN,
     rateLimitStore: RATE_LIMIT_STORE,
     minClientBuild: MIN_CLIENT_BUILD,
-    staffEmails: parseStaffEmails(STAFF_EMAILS),
     blobStore,
     bunny,
     ugs,

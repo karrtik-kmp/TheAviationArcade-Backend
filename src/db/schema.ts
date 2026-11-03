@@ -17,10 +17,12 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type {
+  AccountRole,
   AdminAuditAction,
   ContentDocumentName,
   ContentSource,
   ContentStatus,
+  RoleState,
   RoundCompletion,
   RoundStatus,
   TripOutcome,
@@ -354,7 +356,51 @@ export const adminAudit = pgTable(
     detail: jsonb("detail").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
-  (t) => [check("admin_audit_action_check", sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore')`)],
+  (t) => [
+    check(
+      "admin_audit_action_check",
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke')`,
+    ),
+  ],
+);
+
+/**
+ * Account roles (Backend ADR-0002): the ONLY source of privilege. One row per (principal, role); the principal is the
+ * verified `firebase:<projectId>:<uid>`, never an email. Separate from `players` (no foreign key), so deleting game data
+ * never removes a role and an admin needs no player row. Only `state = 'active'` grants anything; RolesGuard reads the
+ * caller's active roles on every protected request through the primary key (principal first), so a revoke takes effect on
+ * the next call. Every change is audited in `admin_audit` (role_* actions). Timestamps come from the database clock.
+ */
+export const accountRoles = pgTable(
+  "account_roles",
+  {
+    principal: text("principal").notNull(),
+    role: text("role").$type<AccountRole>().notNull(),
+    state: text("state").$type<RoleState>().notNull(),
+    // No default: writers stamp it from the database clock (src/database/clock.ts), not the transaction-start now().
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    // The deciding admin's principal, `operator:<os user>` for the one-time grant command, or `system:signup`. NULL while pending.
+    decidedBy: text("decided_by"),
+    note: text("note"),
+    // Optimistic fence for decisions: every transition bumps it, so a stale decision cannot overwrite a newer one.
+    revision: integer("revision").notNull().default(1),
+  },
+  (t) => [
+    primaryKey({ name: "account_roles_pk", columns: [t.principal, t.role] }),
+    check("account_roles_role_check", sql`${t.role} IN ('player', 'photographer', 'admin')`),
+    check("account_roles_state_check", sql`${t.state} IN ('pending', 'active', 'rejected', 'revoked')`),
+    // Pending exactly while undecided: every non-pending row carries both decided_at and decided_by.
+    check("account_roles_decided_check", sql`(${t.state} = 'pending' AND ${t.decidedAt} IS NULL AND ${t.decidedBy} IS NULL) OR (${t.state} <> 'pending' AND ${t.decidedAt} IS NOT NULL AND ${t.decidedBy} IS NOT NULL)`),
+    // Only a photographer request is ever pending; admin and player rows are issued directly.
+    check("account_roles_pending_role_check", sql`${t.state} <> 'pending' OR ${t.role} = 'photographer'`),
+    check("account_roles_revision_check", sql`${t.revision} >= 1`),
+    // The admin queue: oldest pending request first.
+    index("account_roles_pending_queue").on(t.requestedAt, t.principal).where(sql`${t.state} = 'pending'`),
+    check("account_roles_principal_check", sql`length(${t.principal}) BETWEEN 1 AND 256`),
+    check("account_roles_decided_by_check", sql`${t.decidedBy} IS NULL OR length(${t.decidedBy}) BETWEEN 1 AND 256`),
+    check("account_roles_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
+  ],
 );
 
 /**

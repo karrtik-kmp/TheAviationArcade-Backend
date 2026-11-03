@@ -23,6 +23,7 @@ import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { catalogInForce } from "../src/trips/catalog-in-force.js";
 import { clientSheet } from "./fixtures.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
@@ -75,6 +76,8 @@ async function removeTestVersions(pool: pg.Pool = sql) {
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff");
   await removeTestVersions(); // a crashed earlier run must not leave a version 2 behind
   ({ app, server } = await buildApp());
 });
@@ -807,6 +810,8 @@ describe("the v1 seed", () => {
     await recreateDatabase(name);
     try {
       process.env["DATABASE_URL"] = urlOf(name);
+      const seeder = new pg.Pool({ connectionString: urlOf(name) });
+      await seedAdmins(seeder, "staff").finally(() => seeder.end());
       const fresh = await buildApp();
       const player = bearer();
       const before = (await request(fresh.server).get(MANIFEST).set(player)).body;

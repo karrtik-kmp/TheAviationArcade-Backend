@@ -14,6 +14,7 @@ import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { FIELD_AWARD_CATALOG } from "../src/rules/field-award-catalog.js";
 import { militaryCardKey } from "../src/rules/clipper-cards.js";
 import { catalogInForce } from "../src/trips/catalog-in-force.js";
+import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
@@ -72,6 +73,8 @@ async function reset() {
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // Admin access comes from account_roles only (Backend ADR-0002).
+  await seedAdmins(sql, "staff", "second", "unverified", "noemail");
   await reset();
   app = await buildApp();
   server = app.getHttpServer();
@@ -172,7 +175,7 @@ describe("staff only: 401, 403, and the staff identity comes from the token", ()
     expect(await count("content_documents", "version > 1 AND name <> 'clipper-cards'")).toBe(0);
   });
 
-  it("a staff caller needs no player row and no app build number (the staff allowlist is matched case-insensitively)", async () => {
+  it("an admin caller needs no player row and no app build number (both callers hold seeded admin rows)", async () => {
     expect((await list(otherStaff)).status).toBe(200);
     expect((await list()).status).toBe(200);
   });

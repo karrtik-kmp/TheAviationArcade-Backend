@@ -2,13 +2,16 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { AuthUnavailableError, verifyFirebaseToken } from "./auth/firebase.js";
-import { isStaff } from "./auth/staff.js";
+import { RolesService } from "./auth/roles.js";
+import type { AccountRole } from "./db/enums.js";
 import { ApiError } from "./common/errors.js";
 import { APP_CONFIG } from "./config/config.module.js";
 import type { AppConfig } from "./config/config.module.js";
 import { requestContext } from "./common/request-context.js";
 import { MAX_UPLOAD_BYTES, XLSX_MIME } from "./content/xlsx.js";
 import { DrainState } from "./platform/drain-state.js";
+import { countAuthenticatedRequest } from "./platform/rate-limit.js";
+import { ThrottlerStorage } from "@nestjs/throttler";
 
 /** API responses are per-player and must never be stored by a cache. Health is the one exception. */
 function noStore(req: Request, res: Response, next: NextFunction): void {
@@ -23,25 +26,36 @@ const UNAUTHORIZED = () => new ApiError(401, "unauthorized", "Sign in required."
 const readCoverageJson = express.json({ limit: "160kb" });
 
 /**
- * A larger body for one staff route, read by `read` only after the caller's token is verified as staff.
- * Used for the xlsx import (POST /v1/admin/content/:module/imports, raw xlsx, 5 MB) and Trip coverage
- * (POST /v1/admin/content/:module/trip-coverage, JSON, 160 KB). Everything
- * else keeps the 16 KB JSON-only rule. The body is read only after this middleware has verified the
- * Firebase token and the staff rule (same helpers and the same 401/403/503 answers as the guards), so
- * neither an anonymous caller nor a signed-in non-staff caller can make the server buffer it. A request
- * without a well-formed Bearer header is passed on unread; the guards, which still run afterwards, answer it.
+ * A larger body for one role-protected route, read by `read` only after the caller's token is verified and the caller
+ * holds one of `required` (Backend ADR-0002). Used for the xlsx import (POST /v1/admin/content/:module/imports, raw xlsx,
+ * 5 MB) and Trip coverage (POST /v1/admin/content/:module/trip-coverage, JSON, 160 KB), both admin-only. Everything else
+ * keeps the 16 KB JSON-only rule. The body is read only after this middleware has verified the Firebase token and read the
+ * caller's active roles from account_roles (same helpers and the same 401/403/503/429 answers as the guards; the request is
+ * counted against the rate limit here, before the role lookup, and RateLimitGuard then skips it), so neither an
+ * anonymous caller nor a signed-in caller without the role can make the server buffer it. A request without a well-formed
+ * Bearer header is passed on unread; the guards, which still run afterwards (and check the role again), answer it.
  */
-function staffBodyReader(app: NestExpressApplication, read: (req: Request, res: Response, next: NextFunction) => void) {
+function roleBodyReader(
+  app: NestExpressApplication,
+  required: readonly AccountRole[],
+  read: (req: Request, res: Response, next: NextFunction) => void,
+) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const token = /^bearer (\S+)$/i.exec(req.header("authorization") ?? "")?.[1];
     if (req.method !== "POST" || !token) return next();
     const config = app.get<AppConfig>(APP_CONFIG);
     verifyFirebaseToken(token, { projectId: config.firebaseProjectId, emulator: config.emulatorTokens }).then(
       (identity) => {
-        if (!isStaff(identity.email, identity.emailVerified, config.staffEmails)) {
-          return next(new ApiError(403, "forbidden", "Staff only."));
-        }
-        read(req, res, next);
+        // A throwaway view of the request: the guards set the real identity later from the same token.
+        const probe = { principal: identity.principal, email: identity.email, emailVerified: identity.emailVerified } as Request;
+        // Count the request against the rate limit first, exactly as RateLimitGuard would (it then skips this request), so a
+        // caller refused below is still counted and a flood of refusals cannot run unlimited role queries.
+        countAuthenticatedRequest(app.get<ThrottlerStorage>(ThrottlerStorage), config, identity.principal, req)
+          .then(() => app.get(RolesService).authorize(probe, required))
+          .then(
+            () => read(req, res, next),
+            (error: unknown) => next(error),
+          );
       },
       (error: unknown) => {
         if (error instanceof AuthUnavailableError) {
@@ -80,9 +94,9 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   });
   // Default headers, and no X-Powered-By. Before the body parser so a 413 carries them too.
   app.useSecurityHeaders();
-  app.use("/v1/admin/content/:module/imports", staffBodyReader(app, readXlsx));
-  app.use("/v1/admin/content/documents/field-awards/imports", staffBodyReader(app, readXlsx));
-  app.use("/v1/admin/content/:module/trip-coverage", staffBodyReader(app, readCoverageJson));
+  app.use("/v1/admin/content/:module/imports", roleBodyReader(app, ["admin"], readXlsx));
+  app.use("/v1/admin/content/documents/field-awards/imports", roleBodyReader(app, ["admin"], readXlsx));
+  app.use("/v1/admin/content/:module/trip-coverage", roleBodyReader(app, ["admin"], readCoverageJson));
   // JSON only (no urlencoded). Round results are a few hundred bytes; 16 KB is generous.
   app.useBodyParser("json", { limit: "16kb" });
   app.use(noStore);
