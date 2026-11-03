@@ -628,6 +628,29 @@ export const ugsBudget = pgTable(
   (t) => [check("ugs_budget_tokens_check", sql`${t.tokens} >= 0`)],
 );
 
+/**
+ * Shared rate-limit state (A4): one row per (throttler name, sha256 of the key), so several instances enforce one limit.
+ * `hit_expiries` holds the expiry instant of every counted hit (the built-in store's per-hit sliding window; its length is
+ * the hit count). The write is the SQL function rate_limit_increment (migration 0014), on the database clock. The raw
+ * principal or IP is never stored, only its sha256.
+ */
+export const rateLimitHits = pgTable(
+  "rate_limit_hits",
+  {
+    throttlerName: text("throttler_name").notNull(),
+    keyHash: text("key_hash").notNull(),
+    hitExpiries: timestamp("hit_expiries", { withTimezone: true }).array().notNull().default(sql`'{}'::timestamptz[]`),
+    windowExpiresAt: timestamp("window_expires_at", { withTimezone: true }).notNull(),
+    blocked: boolean("blocked").notNull().default(false),
+    blockExpiresAt: timestamp("block_expires_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.throttlerName, t.keyHash] }),
+    index("rate_limit_hits_window_expires_at_idx").on(t.windowExpiresAt),
+    check("rate_limit_hits_key_hash_check", sql`${t.keyHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
 export type PlayerRow = typeof players.$inferSelect;
 export type RoundRow = typeof rounds.$inferSelect;
 export type TripRow = typeof trips.$inferSelect;

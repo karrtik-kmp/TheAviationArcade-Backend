@@ -31,6 +31,8 @@ export type AppConfig = {
   /** Requests per minute per verified principal, and per client IP on public routes. */
   rateLimitAuthPerMin: number;
   rateLimitPublicPerMin: number;
+  /** Where rate-limit counters live: postgres = shared by every instance (default), memory = per process. */
+  rateLimitStore: RateLimitStoreKind;
   /** Lowest accepted X-Client-Version build number. Undefined = the gate is off. */
   minClientBuild: number | undefined;
   /** Lowercased emails that may call staff-only (admin) routes, together with a verified token email. Never logged. */
@@ -57,6 +59,8 @@ export type UgsConfig = {
   /** Least seconds between two Cloud Save copy writes for one player (C3); 0 disables the delay. Deletions are never delayed. */
   mirrorMinIntervalSec: number;
 };
+
+export type RateLimitStoreKind = "postgres" | "memory";
 
 export type BlobStoreKind = "none" | "memory" | "bunny";
 
@@ -151,6 +155,8 @@ const envSchema = z.object({
   SHUTDOWN_PRESTOP_MS: optionalInt(0, 60_000),
   RATE_LIMIT_AUTH_PER_MIN: z.coerce.number().int().min(1).max(100_000).default(120),
   RATE_LIMIT_PUBLIC_PER_MIN: z.coerce.number().int().min(1).max(100_000).default(60),
+  /** postgres (default, correct with several instances) or memory (one instance only). */
+  RATE_LIMIT_STORE: z.enum(["postgres", "memory"]).default("postgres"),
   MIN_CLIENT_BUILD: optionalInt(1, 999_999_999),
   /** Server-only allowlist for staff routes. Unset = nobody is staff. */
   STAFF_EMAILS: z.string().optional(),
@@ -193,6 +199,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     SHUTDOWN_PRESTOP_MS,
     RATE_LIMIT_AUTH_PER_MIN,
     RATE_LIMIT_PUBLIC_PER_MIN,
+    RATE_LIMIT_STORE,
     MIN_CLIENT_BUILD,
     STAFF_EMAILS,
     BUNNY_STORAGE_ZONE,
@@ -308,6 +315,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     shutdownPrestopMs: prestopMs,
     rateLimitAuthPerMin: RATE_LIMIT_AUTH_PER_MIN,
     rateLimitPublicPerMin: RATE_LIMIT_PUBLIC_PER_MIN,
+    rateLimitStore: RATE_LIMIT_STORE,
     minClientBuild: MIN_CLIENT_BUILD,
     staffEmails: parseStaffEmails(STAFF_EMAILS),
     blobStore,

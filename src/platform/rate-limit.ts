@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ExecutionContext } from "@nestjs/common";
 import { ThrottlerGuard } from "@nestjs/throttler";
-import type { ThrottlerLimitDetail, ThrottlerModuleOptions } from "@nestjs/throttler";
+import type { ThrottlerLimitDetail, ThrottlerModuleOptions, ThrottlerStorage } from "@nestjs/throttler";
 import type { Request } from "express";
 import { ApiError } from "../common/errors.js";
 import type { AppConfig } from "../config/config.module.js";
@@ -14,13 +14,15 @@ const WINDOW_MS = 60_000;
  * after it was made. blockDuration 0 means no punitive lockout: a request over the limit is rejected
  * (and not counted) only while the window is full, and Retry-After is the time until the oldest hit
  * expires. (The library default blocks the caller for a whole extra window after the first excess.)
- * The store is the library's in-memory one, correct for a single instance only. A shared store
- * (Redis or Postgres) is Phase 6, before running more than one instance.
+ * The store is RATE_LIMIT_STORE: postgres (PostgresThrottlerStorage, shared by every instance) or memory (the
+ * library's own store, one process only). With no `storage` argument the library's in-memory store is used.
  */
 export function throttlerOptions(
   config: Pick<AppConfig, "rateLimitAuthPerMin" | "rateLimitPublicPerMin">,
+  storage?: ThrottlerStorage,
 ): ThrottlerModuleOptions {
   return {
+    ...(storage ? { storage } : {}),
     throttlers: [
       {
         ttl: WINDOW_MS,

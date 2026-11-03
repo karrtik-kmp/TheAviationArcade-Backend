@@ -4,7 +4,8 @@ import { Controller, Get } from "@nestjs/common";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import pg from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { Public } from "../src/auth/public.decorator.js";
@@ -49,6 +50,14 @@ async function buildAppHandle(
 async function buildApp(env: Record<string, string> = {}, trustProxy: false | number = false) {
   return (await buildAppHandle(env, trustProxy)).server;
 }
+
+// Rate-limit counters now live in Postgres (default store) and every test here comes from the same IP: start each test
+// with none, or one test's hits would count against the next (and against the next run).
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+beforeEach(async () => {
+  await pool.query("TRUNCATE rate_limit_hits");
+});
+afterAll(() => pool.end());
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));

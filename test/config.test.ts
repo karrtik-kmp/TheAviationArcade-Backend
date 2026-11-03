@@ -40,6 +40,7 @@ describe("loadConfig", () => {
       shutdownPrestopMs: 0,
       rateLimitAuthPerMin: 120,
       rateLimitPublicPerMin: 60,
+      rateLimitStore: "postgres",
       minClientBuild: undefined,
       staffEmails: [],
       blobStore: "memory",
@@ -159,6 +160,12 @@ describe("loadConfig", () => {
       ).toMatchObject({ shutdownDrainMs: 20_000, rateLimitAuthPerMin: 300, rateLimitPublicPerMin: 30 });
       expect(message({ ...local, RATE_LIMIT_AUTH_PER_MIN: "0" })).toContain("RATE_LIMIT_AUTH_PER_MIN");
       expect(message({ ...local, SHUTDOWN_DRAIN_MS: "10" })).toContain("SHUTDOWN_DRAIN_MS");
+    });
+
+    it("RATE_LIMIT_STORE defaults to postgres and accepts only postgres or memory", () => {
+      expect(loadConfig(local).rateLimitStore).toBe("postgres");
+      expect(loadConfig({ ...local, RATE_LIMIT_STORE: "memory" }).rateLimitStore).toBe("memory");
+      expect(message({ ...local, RATE_LIMIT_STORE: "redis" })).toContain("RATE_LIMIT_STORE");
     });
 
     it("SHUTDOWN_PRESTOP_MS defaults to 5 s in production and 0 elsewhere, and must be below the drain budget", () => {
