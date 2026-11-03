@@ -111,7 +111,7 @@ export class ContentController {
       res.status(200);
       return this.content.dryRun(mapping, body);
     }
-    const result = await this.content.apply(mapping, body, sanitiseFileName(fileName), principal, new Date(), query.confirm);
+    const result = await this.content.apply(mapping, body, sanitiseFileName(fileName), principal, query.confirm);
     res.status(result.replayed ? 200 : 201);
     return result;
   }
@@ -156,7 +156,7 @@ export class ContentController {
     @Body(new ZodValidationPipe(editBody, "Expected { version: integer, rank?: Rank, data?: object } and nothing else.")) body: EditBody,
   ) {
     const mapping = mappingFor(module);
-    return this.edits.edit(mapping, itemId(id), body.version, { rank: body.rank, data: body.data }, principal, new Date());
+    return this.edits.edit(mapping, itemId(id), body.version, { rank: body.rank, data: body.data }, principal);
   }
 
   @Post(":module/items/:id/retire")
@@ -168,7 +168,7 @@ export class ContentController {
     @Body(new ZodValidationPipe(versionBody, "Expected { version: integer } and nothing else.")) body: VersionBody,
   ) {
     const mapping = mappingFor(module);
-    return this.edits.setStatus(mapping.module, itemId(id), body.version, "retired", principal, new Date());
+    return this.edits.setStatus(mapping.module, itemId(id), body.version, "retired", principal);
   }
 
   @Post(":module/items/:id/restore")
@@ -180,7 +180,7 @@ export class ContentController {
     @Body(new ZodValidationPipe(versionBody, "Expected { version: integer } and nothing else.")) body: VersionBody,
   ) {
     const mapping = mappingFor(module);
-    return this.edits.setStatus(mapping.module, itemId(id), body.version, "approved", principal, new Date());
+    return this.edits.setStatus(mapping.module, itemId(id), body.version, "approved", principal);
   }
 
   @Get(":module/export")

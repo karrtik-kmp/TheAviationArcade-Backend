@@ -1,15 +1,18 @@
+import { randomUUID } from "node:crypto";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import pg from "pg";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { XLSX_MIME, readFirstSheet } from "../src/content/xlsx.js";
+import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { militaryCardKey } from "../src/rules/clipper-cards.js";
 import { BLOB_STORE } from "../src/storage/blob-store.js";
 import type { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { clientSheet } from "./fixtures.js";
+import { factsFor, newKey, openBody } from "./trip-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
 // A1: staff edit-in-place of content items (PATCH .../items/:id, POST .../retire, POST .../restore).
@@ -323,9 +326,53 @@ describe("re-uploading the client sheet after a staff change", () => {
     const res = await upload(bytes);
     expect(res.status).toBe(200);
     expect(res.body.replayed).toBe(true);
-    // a card_key freeze (a Round) is not an edit
-    await sql.query("UPDATE content_items SET card_key = card_key WHERE module = $1", [MODULE]);
+  });
+
+  it("the real lazy card_key freeze (a Round on a Military item with no key) is not an edit: updated_at stays and the sheet still replays", async () => {
+    const bytes = await clientSheet(6);
+    // A row older than migration 0009: no frozen key. Set directly, leaving updated_at alone.
+    await sql.query("UPDATE content_items SET card_key = NULL WHERE module = $1 AND id = 'mil-a1'", [MODULE]);
+    const before = await row("mil-a1");
+    expect(before.card_key).toBeNull();
+
+    const uid = `uid-${randomUUID()}`;
+    const player = { Authorization: `Bearer ${emulatorToken(uid)}` };
+    expect((await request(server).put("/v1/me").set(player)).status).toBe(201);
+    const trip = await request(server).post("/v1/trips").set(player).set("Idempotency-Key", newKey()).send(openBody(MODULE));
+    expect(trip.status, JSON.stringify(trip.body)).toBe(201);
+    const issued = await request(server).post("/v1/rounds").set(player).send({ tripId: trip.body.trip.tripId });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    const roundId = issued.body.round.roundId as string;
+    await sql.query("UPDATE rounds SET issued_at = issued_at - ($1::int * interval '1 millisecond') WHERE id = $2", [MIN_ROUND_MS * 2, roundId]);
+    const banked = await request(server)
+      .post(`/v1/rounds/${roundId}/result`)
+      .set(player)
+      .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor(MODULE, { aircraftKey: "mil-a1" }) });
+    expect(banked.status, JSON.stringify(banked.body)).toBe(200);
+
+    const after = await row("mil-a1");
+    expect(after.card_key).toBe(militaryCardKey(String(before.data.answer))); // the freeze really ran
+    expect(after.updated_at).toEqual(before.updated_at);
+    expect(after.version).toBe(before.version);
     expect((await upload(bytes)).body.replayed).toBe(true);
+  });
+
+  it("an edit stamped by the database clock still ends the replay when the process clock is a day behind", async () => {
+    const bytes = await clientSheet(6);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 24 * 3_600_000 });
+    try {
+      const original = await dataOf("mil-a2");
+      // The staff token is minted on the same (faked) clock, so the request is accepted as of a day ago.
+      const dayAgo = { Authorization: `Bearer ${emulatorToken("staff")}` };
+      expect((await patch("mil-a2", { version: 1, data: { ...original, answer: "Staff Wording" } }, dayAgo)).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+    const edited = await row("mil-a2");
+    const receipt = (await sql.query("SELECT created_at FROM content_imports WHERE module = $1", [MODULE])).rows[0];
+    expect(edited.updated_at.getTime()).toBeGreaterThanOrEqual(receipt.created_at.getTime()); // not a day earlier
+    const dry = await upload(bytes, "?dryRun=true");
+    expect(dry.body.replay).toBe(false);
   });
 
   it("a staff restore also counts: the same sheet is planned afterwards, not replayed", async () => {

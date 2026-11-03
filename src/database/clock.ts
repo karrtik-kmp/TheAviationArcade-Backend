@@ -22,6 +22,15 @@ export function databaseClock(): SQL {
   return sql`date_trunc('milliseconds', clock_timestamp() + ${testSkewMs}::double precision * interval '1 millisecond')`;
 }
 
+/**
+ * The same clock at full microsecond precision, as a timestamptz SQL fragment. For stamps that are later compared with
+ * `>` against another stamp of the same clock inside SQL (content import receipts vs item edits): at millisecond
+ * precision two writes that commit one after the other could share a stamp.
+ */
+export function databaseClockMicros(): SQL {
+  return sql`clock_timestamp() + ${testSkewMs}::double precision * interval '1 millisecond'`;
+}
+
 /** The database instant, milliseconds. Prefer `locked.now` inside PlayerBalance.update; this is for the one statement a write makes itself. */
 export async function databaseNow(db: Database | Tx): Promise<Date> {
   const result = await db.execute(sql`SELECT ${databaseClock()} AS at`);

@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
+import { databaseClock } from "../database/clock.js";
 import { rootCause } from "../database/database-errors.js";
 import type { DatabaseService } from "../database/database.module.js";
 import { players, ugsLinks, ugsMirrorDeletions, ugsMirrorOutbox } from "../db/schema.js";
@@ -27,16 +28,27 @@ import type { UgsClient, WriteResult } from "./ugs-client.js";
  */
 export type QueueTime = "database" | "caller";
 
-/** SQL for "now" in the chosen mode. */
+/**
+ * SQL for "now" in the chosen mode. The database mode is exactly `databaseClock()` (milliseconds, with the test-only skew),
+ * the clock `enqueueMirror` stamps `due_at` with, so enqueue and claim agree in tests too. It is VOLATILE: a statement that
+ * needs one instant must read it once (`WITH t AS MATERIALIZED (SELECT ${nowSql(...)} AS at)` and `(SELECT at FROM t)`),
+ * and a WHERE on `due_at` must compare against that single value, not the function, or the planner cannot use the index.
+ */
 function nowSql(time: QueueTime, now: Date): SQL {
-  return time === "database" ? sql`clock_timestamp()` : sql`${now.toISOString()}::timestamptz`;
+  return time === "database" ? databaseClock() : sql`${now.toISOString()}::timestamptz`;
+}
+
+/** One-instant handle: `WITH t ...` goes in front of the statement, `t.at` stands for the instant inside it. */
+const INSTANT = sql`(SELECT at FROM t)`;
+function withInstant(time: QueueTime, now: Date): SQL {
+  return sql`t AS MATERIALIZED (SELECT ${nowSql(time, now)} AS at)`;
 }
 
 /** SQL for the instant `dueAt` that the worker computed as `now + delay`: the same delay after database time, or `dueAt` itself. */
 function dueSql(time: QueueTime, dueAt: Date, now: Date): SQL {
   if (time === "caller") return sql`${dueAt.toISOString()}::timestamptz`;
   const delayMs = Math.max(0, dueAt.getTime() - now.getTime());
-  return sql`clock_timestamp() + ${delayMs}::double precision * interval '1 millisecond'`;
+  return sql`${databaseClock()} + ${delayMs}::double precision * interval '1 millisecond'`;
 }
 
 /** A row this worker has leased. `key` is the player id (writes) or the UGS player id (deletions). */
@@ -85,18 +97,17 @@ type QueueTable = {
  * Both queue tables name their lease columns `due_at` and `claim_id`; the rest comes from the typed handles.
  */
 async function leaseDue(database: DatabaseService, q: QueueTable, limit: number, now: Date, time: QueueTime): Promise<Claimed[]> {
-  const at = nowSql(time, now);
   const result = await database.db.execute(sql`
-    WITH picked AS (
+    WITH ${withInstant(time, now)}, picked AS (
       SELECT ${q.key} AS k
       FROM ${q.table}
-      WHERE due_at <= ${at}
+      WHERE due_at <= ${INSTANT}
       ORDER BY due_at
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     )
     UPDATE ${q.table}
-    SET due_at = ${at} + ${LEASE_MS}::double precision * interval '1 millisecond', claim_id = gen_random_uuid()
+    SET due_at = ${INSTANT} + ${LEASE_MS}::double precision * interval '1 millisecond', claim_id = gen_random_uuid()
     FROM picked
     WHERE ${q.key} = picked.k
     RETURNING ${q.key} AS key, ${q.generation} AS generation, ${q.claimId} AS claim_id, ${q.attempts} AS attempts
@@ -110,10 +121,10 @@ async function leaseDue(database: DatabaseService, q: QueueTable, limit: number,
 }
 
 async function countDue(database: DatabaseService, table: PgTable, now: Date, time: QueueTime): Promise<{ count: number; lagMs: number }> {
-  const at = nowSql(time, now);
   const result = await database.db.execute(sql`
-    SELECT count(*)::int AS n, coalesce(extract(epoch FROM (${at} - min(due_at))) * 1000, 0)::double precision AS lag_ms
-    FROM ${table} WHERE due_at <= ${at}
+    WITH ${withInstant(time, now)}
+    SELECT count(*)::int AS n, coalesce(extract(epoch FROM ((SELECT at FROM t) - min(due_at))) * 1000, 0)::double precision AS lag_ms
+    FROM ${table} WHERE due_at <= (SELECT at FROM t)
   `);
   const row = result.rows[0] as { n: number; lag_ms: number | string } | undefined;
   return { count: Number(row?.n ?? 0), lagMs: Math.max(0, Math.round(Number(row?.lag_ms ?? 0))) };
@@ -186,8 +197,9 @@ export class ProgressWriteQueue implements MirrorQueue {
    * lost (lease expired) matches nothing. Clears `urgent`.
    */
   private async resetChanged(claimed: Claimed, now: Date): Promise<void> {
-    const at = nowSql(this.time, now);
+    const at = INSTANT;
     await this.database.db.execute(sql`
+      WITH ${withInstant(this.time, now)}
       UPDATE ugs_mirror_outbox o
       SET due_at = CASE
             WHEN o.urgent OR ${this.minIntervalSec}::int <= 0 THEN ${at}

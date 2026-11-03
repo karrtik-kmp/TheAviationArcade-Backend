@@ -1,6 +1,6 @@
 ﻿import { createHash, randomUUID } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { ApiError } from "../common/errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
@@ -18,7 +18,7 @@ import { BLOB_STORE } from "../storage/blob-store.js";
 import { storeImportBlob } from "./import-blob.js";
 import type { BlobStore } from "../storage/blob-store.js";
 import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from "./content-module.js";
-import { lockContentModule } from "./content-lock.js";
+import { lockContentModule, readContentStamp } from "./content-lock.js";
 import { compareIds } from "./content-modules.js";
 import { ContentDocumentsService } from "./documents/content-documents.service.js";
 import { planHash, planImport } from "./import-plan.js";
@@ -148,7 +148,6 @@ export class ContentService {
     bytes: Uint8Array,
     fileName: string,
     principal: string,
-    now: Date,
     confirm?: string,
   ): Promise<ApplyResult> {
     const module = mapping.module;
@@ -167,6 +166,7 @@ export class ContentService {
       // Serialises imports per module, so two uploads can never plan against the same stale rows. Try, never
       // wait: a waiting import would hold a pooled connection, so a busy module is a retryable 409 instead.
       await lockContentModule(tx, module);
+      const now = await readContentStamp(tx); // one database instant after the lock; see readContentStamp
       const raced = await this.replayableImport(module, sha256, tx);
       if (raced) return { replayed: true, import: summary(raced) };
 
@@ -432,7 +432,8 @@ export class ContentService {
     const [edited] = await (tx ?? this.database.db)
       .select({ id: contentItems.id })
       .from(contentItems)
-      .where(and(eq(contentItems.module, module), gt(contentItems.updatedAt, latest.createdAt)))
+      // Compared in SQL against the stored receipt stamp (microseconds), never a JS Date, which would round it down.
+      .where(and(eq(contentItems.module, module), sql`${contentItems.updatedAt} > (SELECT created_at FROM content_imports WHERE id = ${latest.id})`))
       .limit(1);
     return edited ? undefined : latest;
   }

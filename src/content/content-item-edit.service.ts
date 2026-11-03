@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { and, eq, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { ApiError } from "../common/errors.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
@@ -10,7 +11,7 @@ import { militaryCardKey } from "../rules/clipper-cards.js";
 import { isRank } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import type { ContentModuleMapping } from "./content-module.js";
-import { lockContentModule } from "./content-lock.js";
+import { lockContentModule, readContentStamp } from "./content-lock.js";
 import { canonicalJson, diffItem, planImport } from "./import-plan.js";
 import type { ExistingItem, FieldDiff } from "./import-plan.js";
 import type { ItemView } from "./content.service.js";
@@ -53,7 +54,7 @@ type Outcome = { ok: true; value: ItemChange } | { ok: false; error: ApiError };
 export class ContentItemEditService {
   constructor(private readonly database: DatabaseService) {}
 
-  async edit(mapping: ContentModuleMapping, id: string, expectedVersion: number, change: ItemEdit, principal: string, now: Date): Promise<ItemChange> {
+  async edit(mapping: ContentModuleMapping, id: string, expectedVersion: number, change: ItemEdit, principal: string): Promise<ItemChange> {
     // The payload rules are the mapping's own (the sheet parser calls the same function), checked before any lock.
     let checked: { data: Record<string, unknown> } | undefined;
     if (change.data !== undefined) {
@@ -63,7 +64,7 @@ export class ContentItemEditService {
       }
       checked = { data: result.data };
     }
-    return this.run(mapping.module, id, expectedVersion, principal, async (tx, stored, existing) => {
+    return this.run(mapping.module, id, expectedVersion, principal, async (tx, stored, existing, now) => {
       const rank = change.rank ?? (isRank(stored.rank) ? stored.rank : undefined);
       if (!rank) throw new ApiError(422, "import_invalid", "The stored rank is not valid; send a rank. Nothing was changed.");
       const data = checked?.data ?? (stored.data as Record<string, unknown>);
@@ -94,12 +95,12 @@ export class ContentItemEditService {
         .where(and(eq(contentItems.module, mapping.module), eq(contentItems.id, id), eq(contentItems.version, stored.version)))
         .returning();
       return { kind: "changed", row, diff, action: "content_edit" };
-    }, now);
+    });
   }
 
   /** retire → `retired`, restore → `approved`. Already in that state is `changed: false`. */
-  async setStatus(module: string, id: string, expectedVersion: number, status: ContentStatus, principal: string, now: Date): Promise<ItemChange> {
-    return this.run(module, id, expectedVersion, principal, async (tx, stored) => {
+  async setStatus(module: string, id: string, expectedVersion: number, status: ContentStatus, principal: string): Promise<ItemChange> {
+    return this.run(module, id, expectedVersion, principal, async (tx, stored, _existing, now) => {
       if (stored.status === status) return { kind: "unchanged" };
       const [row] = await tx
         .update(contentItems)
@@ -112,7 +113,7 @@ export class ContentItemEditService {
         diff: [{ field: "status", from: stored.status, to: status }],
         action: status === "retired" ? "content_retire" : "content_restore",
       };
-    }, now);
+    });
   }
 
   private async run(
@@ -124,13 +125,14 @@ export class ContentItemEditService {
       tx: Tx,
       stored: ContentItemRow,
       existing: Map<string, ExistingItem>,
+      now: SQL,
     ) => Promise<{ kind: "unchanged" } | { kind: "changed"; row: ContentItemRow | undefined; diff: FieldDiff[]; action: AdminAuditAction }>,
-    now: Date,
   ): Promise<ItemChange> {
     // Expected refusals are returned, not thrown, so the connection goes back to the pool instead of being destroyed.
     const outcome = await this.database.withTransaction(async (tx): Promise<Outcome> => {
       try {
         await lockContentModule(tx, module);
+        const now = await readContentStamp(tx); // one database instant after the lock; see readContentStamp
         const rows = await tx.select().from(contentItems).where(eq(contentItems.module, module));
         const stored = rows.find((r) => r.id === id);
         if (!stored) return { ok: false, error: new ApiError(404, "not_found", "No such item.") };
@@ -142,7 +144,7 @@ export class ContentItemEditService {
         }
         const existing = new Map<string, ExistingItem>();
         for (const r of rows) if (isRank(r.rank)) existing.set(r.id, { id: r.id, rank: r.rank, status: r.status, version: r.version, data: r.data });
-        const result = await step(tx, stored, existing);
+        const result = await step(tx, stored, existing, now);
         if (result.kind === "unchanged") return { ok: true, value: { changed: false, item: view(stored), diff: [] } };
         if (!result.row) throw new Error("Item update was not stored."); // the advisory lock makes this unreachable
         await tx.insert(adminAudit).values({

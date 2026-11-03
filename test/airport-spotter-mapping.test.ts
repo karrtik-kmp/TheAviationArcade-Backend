@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { planImport } from "../src/content/import-plan.js";
 import type { ExistingItem } from "../src/content/import-plan.js";
@@ -10,9 +9,7 @@ import type { SheetRow } from "../src/content/xlsx.js";
 import { xlsx } from "./fixtures.js";
 import type { TestCell } from "./fixtures.js";
 
-/** The client's sheet sits in ../../docs from the real repo; CLIENT_DOCS_DIR overrides it (e.g. in a worktree). */
-const docsDir = process.env["CLIENT_DOCS_DIR"];
-const CLIENT_FILE = docsDir ? new URL(`file:///${join(docsDir, "Airport Spotter v1.xlsx").replaceAll("\\", "/")}`) : new URL("../../docs/Airport Spotter v1.xlsx", import.meta.url);
+const CLIENT_FILE = new URL("../../docs/Airport Spotter v1.xlsx", import.meta.url);
 const UNITY_PACK = "C:/Unity/Projects/AviationArcade_v2/Assets/_Project/Resources/ClientContent/Arcade/airport_questions.json";
 
 const HEADER = ["LEVEL", "Correct Airport", "Wrong Airport 1", "Wrong Airport 2", "Wrong Airport 3", "File name", "Image"];

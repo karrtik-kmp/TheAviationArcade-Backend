@@ -923,6 +923,11 @@ describe("mirror disabled", () => {
 // `now` a worker passes in is its process clock; in "database" mode it must not change what is claimed, when the lease
 // ends, or when a backed-off row is due again.
 describe("mirror queues on the database clock", () => {
+  // Counts are whole-table: start each test with empty queues so earlier tests' leftovers cannot change them.
+  beforeEach(async () => {
+    await sql.query("DELETE FROM ugs_mirror_outbox");
+    await sql.query("DELETE FROM ugs_mirror_deletions");
+  });
   const DAY = 24 * 3_600_000;
   const dbDueAt = async (principal: string) =>
     (await sql.query<{ ms: string }>("SELECT (extract(epoch FROM due_at) * 1000)::bigint AS ms FROM ugs_mirror_outbox WHERE player_id = $1", [principal])).rows[0];

@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import pg from "pg";
@@ -20,8 +19,7 @@ const MODULE = "airport-spotter";
 const BASE = `/v1/admin/content/${MODULE}`;
 const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
 
-const docsDir = process.env["CLIENT_DOCS_DIR"];
-const REAL_SHEET = docsDir ? new URL(`file:///${join(docsDir, "Airport Spotter v1.xlsx").replaceAll("\\", "/")}`) : new URL("../../docs/Airport Spotter v1.xlsx", import.meta.url);
+const REAL_SHEET = new URL("../../docs/Airport Spotter v1.xlsx", import.meta.url);
 const haveSheet = existsSync(REAL_SHEET);
 
 let app: NestExpressApplication;
