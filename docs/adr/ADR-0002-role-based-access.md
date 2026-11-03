@@ -56,6 +56,17 @@ Fixed constraints:
   keeps role rows and audit rows (decision 1).
 - `roles:grant` accepts only `admin` and runs only when no active admin exists (first admin or recovery), with `--yes`.
 
+## Follow-up rulings (user, 2026-11-03, R-d, after the website adopted backend roles)
+
+- New state `blocked`, photographer only. An admin blocks from pending, active, rejected or revoked; it is left only by
+  unblock, which goes to `revoked`. A blocked account's request is refused. Audit actions `role_block`, `role_unblock`.
+- A block is per principal. A new Firebase account can request again, and blocks are never matched by email.
+- Block and admin stay apart: an active admin cannot be photographer-blocked (revoke admin first), and admin cannot be
+  granted to a blocked photographer. Admin still includes every photographer permission.
+- An admin row may carry an email typed at grant (`grant_email`). It is unverified, display-only and never compared with
+  token emails. An admin can correct it (audited as `role_email_edit`, without the value). `DELETE /v1/me` clears it.
+  No email is ever written to `admin_audit`.
+
 ## Options considered
 
 | Option | Verdict |

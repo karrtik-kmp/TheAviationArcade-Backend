@@ -136,6 +136,77 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   decisions); commit; push; message the website session (its `STAFF_EMAILS` rule is superseded for backend routes;
   `GET /v1/me/roles` and the request route for its photographer screens).
 
+### Phase 0b: role follow-ups (user, 2026-11-03, from the website's adoption of ADR-0002)
+
+- [ ] **R-d: role block, typed admin email, email edit** — M (gate: senior-lead + backend-expert, APPROVE WITH CHANGES,
+  all folded in below)
+  - **Why.** The website moves its staff screens fully to backend roles (website session, 2026-11-03). User rulings:
+    (1) an admin row shows an email **typed at grant**, display only, never used for authorisation, and an admin can
+    **correct** it later; (2) "block from role" is a real, lasting photographer state; (3) block and admin stay apart:
+    an account with an active `admin` row cannot be photographer-blocked (revoke admin first), and admin cannot be
+    granted (API or `roles:grant`) to an account whose photographer row is `blocked`; both 409 `version_conflict`,
+    checked under the role lock. The guard's admin-implies-photographer rule is unchanged.
+  - **Sequencing gate.** T3 (with its review fixes) is committed and pushed before R-d or T4 starts. R-d alone owns
+    the schema in this lane: T4 changes no migration, `src/db/schema.ts` or `src/db/enums.ts` (if it needs one it stops
+    and the lead serialises it after 0018). Each slice is committed separately with explicit `git add <paths>`.
+    `docs/openapi.yaml` and `test/api.test.ts` are shared: each implementer edits only its own operations; the lead
+    does the version bump (0.15.0), changelog and route count, then runs the openapi parity e2e on the merged tree.
+  - **Migration 0018** (generated with no other schema edit pending; 0016/0017 are immutable). Expected SQL, inspected
+    before use: DROP/ADD `account_roles_state_check` (`ROLE_STATES` + `blocked`), DROP/ADD `admin_audit_action_check`
+    (+ `role_block`, `role_unblock`, `role_email_edit`), ADD COLUMN `account_roles.grant_email` text NULL, two rule
+    CHECKs written with `=` (not `IN`): `state <> 'blocked' OR role = 'photographer'` and `grant_email IS NULL OR
+    (role = 'admin' AND char_length(grant_email) BETWEEN 3 AND 320)` (same limit as `request_email`), and a partial
+    index `account_roles_blocked_queue (requested_at, principal) WHERE state = 'blocked'`. `account_roles_decided_check`
+    is unchanged (it already requires `decided_*` for every non-pending state). Safe on existing rows: nothing is
+    `blocked`, every `grant_email` is NULL. No down migration: reverting needs a new migration, with `blocked` rows first
+    set to `revoked`. Parity: `blocked` and the three audit actions in the TS lists; both rule CHECKs added to
+    `RULE_CHECKS` in `test/schema-parity.ts`, with behavioural tests (a blocked admin row and `grant_email` on a
+    photographer row are refused; a blocked row with NULL `decided_at` is refused).
+  - **Block / unblock** (photographer only, fixed routes, never the `:role` route, so the last-admin invariant cannot
+    break): `POST /v1/admin/accounts/{principal}/roles/photographer/block` strict `{ revision, note? }`, from `pending`,
+    `active`, `rejected` or `revoked` to `blocked`; `.../unblock` `{ revision, note? }`, `blocked` to `revoked` (the
+    account may request again; the openapi says a `revoked` after unblock does not mean it was ever approved). Own store
+    methods with a set of from-states, fenced `state = <current> AND revision = $rev`; same lock, actor re-check,
+    404 (no photographer row) / 409 rules and audit shape as R-b. Revoke, approve or reject of a `blocked` row is 409.
+  - **Request while blocked:** `RequestOutcome` gains `{ ok: false, error }`. Under the lock, `before.state ===
+    'blocked'` gives 403 `forbidden` ("blocked from this role"), no write, no audit; the post-upsert re-read repeats the
+    check defensively. `blocked` is NOT added to the unlocked pre-read short-circuit. A blocked row never passes: the
+    guard and `roleBodyReader` read `state = 'active'` only.
+  - **Typed email:** one shared `normalizeTypedEmail()` in `src/accounts/` (trim, lowercase, one `@`, no whitespace or
+    control characters, 3-320 code points, else 400 `invalid_request`), used by the controller and by
+    `scripts/roles-grant.mjs` through `dist/` (`--email X` or `--email=X`; a bad value exits 2 before the database is
+    contacted). Typed emails are lowercased; token emails (`request_email`) are stored as the token gives them, a
+    deliberate difference. `POST .../roles/admin/grant` takes strict `{ note?, email? }`: insert `email ?? null`; a
+    re-grant from `revoked` replaces it when given and keeps it otherwise.
+  - **Email edit** (user ruling): `PUT /v1/admin/accounts/{principal}/roles/admin/email` strict `{ revision,
+    email: string | null }` on an `active` or `revoked` admin row; revision-fenced, bumps `revision`, audit
+    `role_email_edit` with `detail = { role, from, to, emailChanged: true }`; an unchanged value is a 200 no-op.
+  - **No email in audit, ever:** `admin_audit` is append-only and principal-only; grant, edit and request audit rows
+    carry no email value (`emailChanged: true` at most).
+  - **Delete:** `clearRequestEmail` becomes `clearEmails` (both columns NULL where either is set; roles, revision and
+    audit unchanged); update the players.service comment, the schema.ts comment and the openapi `DELETE /v1/me` text.
+  - **Contract (additive):** keep `requestEmail`; add required-nullable `grantEmail`, plus `email` and
+    `emailSource: "verified_at_request" | "typed" | null` on the admin views; the openapi says a typed email is
+    unverified and display-only. The queue `state` enum and its 400 message gain `blocked` (listed by original request
+    time). A block is per principal: a new Firebase account can request again; blocks are never matched by email.
+  - Acceptance (tests): block from each of the four states; block to block 409; unblock from non-blocked 409; block with
+    no photographer row 404; block refused while the account is an active admin; grant (API and `roles:grant`)
+    refused while blocked; a blocked request is 403 with `request_email`, revision and audit count unchanged, including
+    when the block lands between the unlocked pre-read and the lock; concurrent block vs request (both orders) and
+    block vs approve at one revision (one wins, 409); two admins racing block/unblock; a blocked photographer gets 403
+    on `POST /v1/admin/media` before the body is read; unblock, request, approve end to end; `GET /v1/me/roles` shows
+    `blocked`; `?state=blocked` lists only photographer rows and paginates; block/unblock/edit bodies carrying role or
+    state are 400; an invalid grant email (non-string, too long, control characters) is 400; re-grant replace vs keep,
+    and after `DELETE /v1/me` (stays NULL); email edit fenced, no-op, audited without the value; no email in any audit
+    row; `roles:grant --email` stores it, and a bad value exits 2 with nothing written; `DELETE /v1/me` clears both
+    emails; 0018 over rows seeded in every prior state, then a fresh-database migrate; live parity e2e green;
+    `role_block`, `role_unblock` and `role_email_edit` audit rows have the R-b shape.
+  - Files: `drizzle/0018_*` + `drizzle/meta/*` (generated), `src/db/schema.ts`, `src/db/enums.ts`,
+    `test/schema-parity.ts`, `src/accounts/{role-store,accounts.controller}.ts` + the email helper,
+    `src/players/players.service.ts` (comment and call rename), `scripts/roles-grant.mjs`, README, `docs/openapi.yaml`
+    (role operations and schemas only), role e2e tests, `test/media-schema.e2e.test.ts` (CHECK tests). Depends on:
+    R-b, R-c, T3 committed.
+
 ### Phase 1: foundation
 
 - [ ] **T0: Record the media contract as `x-planned`** — S
@@ -208,6 +279,8 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
   - Acceptance: 201 `MediaItem`; same key + same bytes → 200 replay with the same item; same key + other bytes → 422
     `idempotency_key_reused`; concurrent duplicate → exactly one item; bad image → 422 `media_invalid`; > 5 MB → 413;
     storage down → 503 `storage_unavailable` and nothing written; no response contains the storage path.
+  - An identical re-put is allowed (T3 review): a retry, lost race or second upload of the same bytes re-puts
+    the same file under its content-addressed key; ADR-0001's "nothing is overwritten" holds for content.
   - Verify: e2e `test/media.e2e.test.ts` against `MemoryBlobStore`; the route moves from `x-planned` to built in openapi.
   - Files: `src/content/media/{media.module,media.controller,media.service}.ts`, `src/app.setup.ts`,
     `src/app.module.ts`, `docs/openapi.yaml`, `src/common/errors.ts`, the test. Depends on: T1, T2.
