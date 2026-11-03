@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { eq } from "drizzle-orm";
+import { RoleStore } from "../accounts/role-store.js";
 import { PlayerBalance } from "../balance/player-balance.js";
 import { DatabaseService } from "../database/database.module.js";
 import { players } from "../db/schema.js";
@@ -20,6 +21,7 @@ export class PlayersService {
   constructor(
     private readonly database: DatabaseService,
     private readonly balance: PlayerBalance,
+    private readonly roles: RoleStore,
   ) {}
 
   async getPlayer(principal: string): Promise<PlayerRow | null> {
@@ -36,11 +38,15 @@ export class PlayersService {
     return withLiveStreak(this.database.db, player);
   }
 
-  /** Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. */
+  /** Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. Also issues the `player` role. */
   async ensurePlayer(principal: string): Promise<{ player: PlayerRow; created: boolean }> {
-    return this.balance.open(principal, {
+    const opened = await this.balance.open(principal, {
       postings: [{ account: "hints", delta: STARTER_HINTS, kind: "starter", ref: "starter" }],
     });
+    // Every sign-in issues the informational `player` role (Backend ADR-0002), in its own short transaction after the player
+    // exists. Existing players get it on their next sign-in; a revoked one is never reactivated. Nothing requires it yet.
+    await this.roles.issuePlayer(principal);
+    return opened;
   }
 
   /**
@@ -65,6 +71,8 @@ export class PlayersService {
 
   /** Erase this backend data for the principal (PlayerBalance.erase). Idempotent. Returns whether a player existed. */
   async deletePlayer(principal: string): Promise<boolean> {
+    // The requester email kept on a photographer request goes with the account; role rows and audit rows stay.
+    await this.roles.clearRequestEmail(principal);
     return this.balance.erase(principal);
   }
 }

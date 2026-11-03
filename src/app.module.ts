@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { ThrottlerModule } from "@nestjs/throttler";
+import { AccountsModule } from "./accounts/accounts.module.js";
 import { AdminModule } from "./admin/admin.module.js";
 import { FirebaseAuthGuard } from "./auth/firebase-auth.guard.js";
 import { RolesGuard, RolesService } from "./auth/roles.js";
@@ -33,6 +34,7 @@ import { UgsModule } from "./ugs/ugs.module.js";
       useFactory: (config: AppConfig) =>
         throttlerOptions(config, config.rateLimitStore === "postgres" ? createPostgresThrottlerStorage(config) : undefined),
     }),
+    AccountsModule,
     PlayersModule,
     LogbookModule,
     RoundsModule,

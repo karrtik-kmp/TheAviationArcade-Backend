@@ -1,10 +1,21 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.13.0 (plan R-b, Backend ADR-0002; no change for the game's own calls except one extra database write).** Role
+    registration and admin decisions are built. `PUT /v1/me` now also issues the informational `player` role on every call (an
+    existing player gets it on the next sign-in; a revoked one is never reactivated; nothing requires it yet). New routes:
+    `GET /v1/me/roles` (the caller's own rows), `POST /v1/me/roles/photographer` (ask for the role: needs a verified email,
+    creates no player row; 201 when recorded, 200 and no change when already pending or active), and for admins
+    `GET /v1/admin/role-requests` (a queue, oldest first, with a cursor) and `POST /v1/admin/accounts/{principal}/roles/...`
+    `photographer/approve`, `photographer/reject`, `{photographer|admin}/revoke` and `admin/grant`. Decisions are fenced by the
+    row's `revision`: a stale one is 409 `version_conflict` naming the current state and revision, as is any move the state
+    machine does not allow and the revoke of the last active admin. Every change is audited. No new error code. A photographer request stores the
+    token's verified email (`requestEmail`, shown to admins only, never used for authorisation); `DELETE /v1/me` clears it.
 
     **Changelog 0.12.0 (plan R-a, Backend ADR-0002, staff-only, no change for the game's own calls).** Privilege now comes only
     from ACTIVE rows of the `account_roles` table for the verified principal, read on every request (a revoke applies to the
@@ -123,6 +134,8 @@ tags:
   - name: rounds
   - name: shop
   - name: admin
+  - name: roles
+    description: Role registration and admin decisions (Backend ADR-0002).
   - name: trips
     description: Flight Segments (Unity Trips) of ten Rounds (Unity Flights). Open, complete and abandon are built.
   - name: content
@@ -170,7 +183,8 @@ paths:
       summary: Sign-in handshake
       description: |
         Call after every Firebase sign-in. Creates the player on first call (201), otherwise 200.
-        Idempotent. No request body.
+        Idempotent. No request body. Every call also makes sure the account holds the informational `player` role (inserted
+        once, audited once; a revoked row is left as it is).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       responses:
@@ -203,7 +217,9 @@ paths:
       description: |
         Account deletion. Erases backend data only; the app deletes the Firebase account itself.
         Idempotent: 204 whether or not a player existed. A later `PUT /v1/me` with a still-valid token starts
-        a fresh player at zero. No request body. Exempt from the client version gate (never 426).
+        a fresh player at zero. No request body. Exempt from the client version gate (never 426). Role rows (`player`,
+        `photographer`, `admin`) and their audit rows are not game data and stay; only the requester email on a photographer
+        request is cleared.
       responses:
         "204":
           description: Deleted (or nothing to delete).
@@ -213,6 +229,65 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/me/roles:
+    get:
+      tags: [roles]
+      operationId: getMyRoles
+      summary: My role rows
+      description: |
+        Any signed-in caller. Every role row of the caller in any state (`player`, `photographer`, `admin`, in that order). A
+        `pending`, `rejected` or `revoked` row grants nothing. No query parameters (any is 400).
+      responses:
+        "200":
+          description: The caller's rows (empty before the first `PUT /v1/me`).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OwnRolesEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/me/roles/photographer:
+    post:
+      tags: [roles]
+      operationId: requestPhotographerRole
+      summary: Ask for the photographer role
+      description: |
+        Any signed-in caller whose token has a verified email (otherwise 403). The role is fixed by the path: a body or query naming
+        a role, state or anything else is 400. No body. Creates no player row. A missing, `rejected` or `revoked` row becomes
+        `pending` (a rejected or revoked one at `revision` + 1); a `pending` or `active` row is never touched (200,
+        `changed: false`). An admin approves or rejects it. Audit action `role_request`, only when a row changed.
+      responses:
+        "200":
+          description: Already `pending` or `active`; nothing changed.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PhotographerRequestResult" }
+        "201":
+          description: "The request was recorded (`state: pending`)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PhotographerRequestResult" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
@@ -1042,6 +1117,197 @@ paths:
               schema: { $ref: "#/components/schemas/AdminMe" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/role-requests:
+    get:
+      tags: [roles, admin]
+      operationId: listRoleRequests
+      summary: Role queue
+      description: |
+        Admin only. `photographer` and `admin` rows in one `state` (default `pending`), oldest request first (then principal,
+        role). `limit` is 1 to 100 (default 50). `nextCursor` is opaque; pass it back as `cursor` for the next page, `null` on the
+        last. Shows `requestEmail` for photographer rows. Exempt from the client version gate.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/RoleState" }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque; only a `nextCursor` this route returned is accepted (otherwise 400).
+          schema: { type: string, minLength: 1, maxLength: 700 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: A page of rows.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleRequestList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/accounts/{principal}/roles/photographer/approve:
+    post:
+      tags: [roles, admin]
+      operationId: approvePhotographer
+      summary: Approve a photographer request
+      description: |
+        `pending` to `active`. Audit action `role_approve`.
+        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
+        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
+        is 409 `version_conflict` naming the current state and revision. Every change bumps `revision` and writes one audit row
+        (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/accounts/{principal}/roles/photographer/reject:
+    post:
+      tags: [roles, admin]
+      operationId: rejectPhotographer
+      summary: Reject a photographer request
+      description: |
+        `pending` to `rejected`; the account may ask again. Audit action `role_reject`.
+        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
+        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
+        is 409 `version_conflict` naming the current state and revision. Every change bumps `revision` and writes one audit row
+        (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/accounts/{principal}/roles/{role}/revoke:
+    post:
+      tags: [roles, admin]
+      operationId: revokeAccountRole
+      summary: Revoke a photographer or admin role
+      description: |
+        `active` to `revoked`, for `photographer` or `admin` (any other role segment is 404 `not_found`; `player` is never
+        revoked in this wave). Revoking an admin is refused with 409 `version_conflict` when fewer than two active admins
+        exist, so one always remains; revoking yourself is allowed while another admin remains. Audit action `role_revoke`.
+        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
+        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
+        is 409 `version_conflict` naming the current state and revision. Every change bumps `revision` and writes one audit row
+        (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+        - $ref: "#/components/parameters/RevocableRole"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/accounts/{principal}/roles/admin/grant:
+    post:
+      tags: [roles, admin]
+      operationId: grantAdmin
+      summary: Grant the admin role
+      description: |
+        A missing row becomes `active`; a `revoked` row becomes `active` again (the same row, `revision` + 1). An `active`,
+        `pending` or `rejected` admin row is 409 `version_conflict`. Admin is never self-registered; `photographer` is never
+        granted this way. Audit action `role_grant`. The body has no `revision` (there is nothing to fence on a missing row).
+        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
+        written. The only 409 `version_conflict` is a row that exists and is not revoked, naming its current state and revision.
+        Every change bumps `revision` and writes one audit row (`detail`: role, from and to state and revision, note).
+        Answers 200, not 201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminGrantRequest" }
+      responses:
+        "200":
+          description: The row as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/RoleRowNotFound" }
+        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
@@ -1924,6 +2190,22 @@ components:
       description: A document name. Any other name is 404 `not_found`.
       schema: { $ref: "#/components/schemas/ContentDocumentName" }
 
+    AccountPrincipal:
+      name: principal
+      in: path
+      required: true
+      description: |
+        The target account, URL-encoded: exactly `firebase:<the configured Firebase project>:<uid>`, uid 1 to 128 characters with no
+        surrounding whitespace and no `:`, `/` or control character. Anything else is 400 `invalid_request`.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+
+    RevocableRole:
+      name: role
+      in: path
+      required: true
+      description: The role to revoke. Any other value is 404 `not_found`.
+      schema: { type: string, enum: [photographer, admin] }
+
     TripId:
       name: tripId
       in: path
@@ -2031,6 +2313,27 @@ components:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
       x-error-codes: [content_invalid]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RoleRowNotFound:
+      description: The account has no row for that role (`not_found`), or the role segment names no such route.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RoleVersionConflict:
+      description: |
+        `version_conflict`: the row is not in the state the move starts from, or not at the `revision` sent (someone decided first);
+        the message names the current state and revision. Also the refusal to revoke the last active admin, and to grant admin to an
+        account that already holds it. Nothing was written. Reload and decide again.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [version_conflict]
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -2202,6 +2505,71 @@ components:
           uniqueItems: true
           description: The caller's ACTIVE roles from `account_roles`, in the order player, photographer, admin (Backend ADR-0002).
           items: { type: string, enum: [player, photographer, admin] }
+    RoleState:
+      type: string
+      enum: [pending, active, rejected, revoked]
+    OwnRole:
+      type: object
+      additionalProperties: false
+      required: [role, state, revision, requestedAt, decidedAt]
+      properties:
+        role: { type: string, enum: [player, photographer, admin] }
+        state: { $ref: "#/components/schemas/RoleState" }
+        revision: { type: integer, minimum: 1, description: "Bumped by every change of the row." }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: [string, "null"], format: date-time, description: "Null while pending." }
+    OwnRolesEnvelope:
+      type: object
+      additionalProperties: false
+      required: [roles]
+      properties:
+        roles: { type: array, items: { $ref: "#/components/schemas/OwnRole" } }
+    PhotographerRequestResult:
+      type: object
+      additionalProperties: false
+      required: [role, changed]
+      properties:
+        role: { $ref: "#/components/schemas/OwnRole" }
+        changed: { type: boolean, description: "False when the row was already pending or active and nothing was written." }
+    RoleDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        revision: { type: integer, minimum: 1, maximum: 2147483647, description: The row's `revision` as the admin read it. }
+        note: { type: string, minLength: 1, maxLength: 500 }
+    AdminGrantRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, minLength: 1, maxLength: 500 }
+    AdminRoleRow:
+      type: object
+      additionalProperties: false
+      required: [principal, role, state, revision, requestedAt, decidedAt, decidedBy, note, requestEmail]
+      properties:
+        principal: { type: string }
+        role: { type: string, enum: [player, photographer, admin] }
+        state: { $ref: "#/components/schemas/RoleState" }
+        revision: { type: integer, minimum: 1 }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: [string, "null"], format: date-time }
+        decidedBy: { type: [string, "null"], description: "The deciding admin's principal, `operator:<os user>` or `system:signup`. Null while pending." }
+        note: { type: [string, "null"], description: "The note of the latest decision (the audit rows keep the history)." }
+        requestEmail: { type: [string, "null"], description: "The verified email the account had when it asked for `photographer`; admins only, never used for authorisation. Null for other roles, and cleared by `DELETE /v1/me`." }
+    AdminRoleEnvelope:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role: { $ref: "#/components/schemas/AdminRoleRow" }
+    RoleRequestList:
+      type: object
+      additionalProperties: false
+      required: [requests, nextCursor]
+      properties:
+        requests: { type: array, items: { $ref: "#/components/schemas/AdminRoleRow" } }
+        nextCursor: { type: [string, "null"] }
     ContentItem:
       type: object
       additionalProperties: false

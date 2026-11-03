@@ -681,10 +681,10 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 29 guarded routes (incl. 15 admin, 3 trips, 2 content, the Logbook) plus two health routes.
-    expect(routes.length).toBe(31);
+    // Guard against the enumeration silently finding nothing: 36 guarded routes (incl. 20 admin, 3 trips, 2 content, the Logbook, 2 role routes) plus two health routes.
+    expect(routes.length).toBe(38);
     for (const { method, path } of routes) {
-      const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military").replace(":name", "field-awards").replace(":version", "1");
+      const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military").replace(":name", "field-awards").replace(":version", "1").replace(":principal", "firebase:demo-airplane-games:x").replace(":role", "admin");
       const response = await send(method, concrete, {});
       const expected = path.startsWith("/v1/health") ? 200 : 401;
       expect(response.status, `${method} ${path}`).toBe(expected);
