@@ -6,6 +6,9 @@ import {
   CONTENT_DOCUMENT_NAMES,
   CONTENT_SOURCES,
   CONTENT_STATUSES,
+  MEDIA_CONTENT_TYPES,
+  MEDIA_STATES,
+  MEDIA_UPLOAD_OPERATIONS,
   ROLE_STATES,
   ROUND_COMPLETIONS,
   ROUND_STATUSES,
@@ -46,13 +49,20 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "content_drafts.content_drafts_name_check": CONTENT_DOCUMENT_NAMES,
   "account_roles.account_roles_role_check": ACCOUNT_ROLES,
   "account_roles.account_roles_state_check": ROLE_STATES,
+  "media_items.media_items_state_check": MEDIA_STATES,
+  "media_versions.media_versions_content_type_check": MEDIA_CONTENT_TYPES,
+  "media_upload_keys.media_upload_keys_operation_check": MEDIA_UPLOAD_OPERATIONS,
 };
 
 /**
  * CHECKs that compare against a single literal but are rules, not enumerations of a TypeScript list (the live-database scan
- * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts.
+ * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts and media-schema.e2e.test.ts.
  */
-const RULE_CHECKS: ReadonlySet<string> = new Set(["account_roles.account_roles_decided_check", "account_roles.account_roles_pending_role_check"]);
+const RULE_CHECKS: ReadonlySet<string> = new Set([
+  "account_roles.account_roles_decided_check",
+  "account_roles.account_roles_pending_role_check",
+  "media_items.media_items_published_state_check",
+]);
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */
 export function extractLiterals(expression: string): string[] {

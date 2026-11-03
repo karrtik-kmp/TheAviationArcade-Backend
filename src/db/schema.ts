@@ -5,6 +5,7 @@ import {
   check,
   date,
   doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -22,6 +23,9 @@ import type {
   ContentDocumentName,
   ContentSource,
   ContentStatus,
+  MediaContentType,
+  MediaState,
+  MediaUploadOperation,
   RoleState,
   RoundCompletion,
   RoundStatus,
@@ -312,6 +316,133 @@ export const contentImports = pgTable(
 );
 
 /**
+ * Media pipeline (docs/plans/media-pipeline.md, ADR-0001). One row per image; the bytes live in Bunny Storage under a key
+ * derived from the version's sha256 and content type (not stored). `revision` is the optimistic fence for every write
+ * (licence, state, new version). `draft_version` is the latest upload; `published_version` is what players and releases see and
+ * stays live until an admin publishes a change (user 2026-11-03). `state = 'published'` exactly while `published_version` is set.
+ * No foreign key from here to media_versions (it would be circular): the service keeps both pointers on existing versions,
+ * and a test checks it. Media is never deleted. Timestamps come from the database clock (src/database/clock.ts): no default.
+ * Rendered `med-<id>` in the API.
+ */
+export const mediaItems = pgTable(
+  "media_items",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    // The uploader's principal (firebase:<projectId>:<uid>), from the verified token.
+    owner: text("owner").notNull(),
+    state: text("state").$type<MediaState>().notNull(),
+    revision: integer("revision").notNull().default(1),
+    draftVersion: integer("draft_version").notNull(),
+    publishedVersion: integer("published_version"),
+    createdBy: text("created_by").notNull(),
+    updatedBy: text("updated_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("media_items_owner_id").on(t.owner, t.id.desc()),
+    index("media_items_state_id").on(t.state, t.id.desc()),
+    check("media_items_owner_check", sql`length(${t.owner}) BETWEEN 1 AND 256`),
+    check("media_items_state_check", sql`${t.state} IN ('unverified', 'published', 'withdrawn')`),
+    check("media_items_revision_check", sql`${t.revision} >= 1`),
+    check("media_items_draft_version_check", sql`${t.draftVersion} >= 1`),
+    check(
+      "media_items_published_version_check",
+      sql`${t.publishedVersion} IS NULL OR ${t.publishedVersion} BETWEEN 1 AND ${t.draftVersion}`,
+    ),
+    check("media_items_published_state_check", sql`(${t.state} = 'published') = (${t.publishedVersion} IS NOT NULL)`),
+    check("media_items_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check("media_items_updated_by_check", sql`length(${t.updatedBy}) BETWEEN 1 AND 256`),
+  ],
+);
+
+/**
+ * One uploaded file of a media item, with the licence that applies to it (so a published credit is frozen with its file).
+ * `published_at` is stamped by the publish step on the version that goes live; the publishable CHECK makes the database
+ * refuse a published version without a licence name and, when credit is required, a credit name. Licence fields are
+ * nullable while the version is still a draft.
+ */
+export const mediaVersions = pgTable(
+  "media_versions",
+  {
+    mediaId: bigint("media_id", { mode: "number" })
+      .notNull()
+      .references(() => mediaItems.id),
+    version: integer("version").notNull(),
+    sha256: text("sha256").notNull(),
+    contentType: text("content_type").$type<MediaContentType>().notNull(),
+    byteSize: integer("byte_size").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    creditName: text("credit_name"),
+    creditRequired: boolean("credit_required").notNull(),
+    licenceName: text("licence_name"),
+    licenceUrl: text("licence_url"),
+    sourceUrl: text("source_url"),
+    attributionText: text("attribution_text"),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "media_versions_pk", columns: [t.mediaId, t.version] }),
+    index("media_versions_sha256").on(t.sha256),
+    check("media_versions_version_check", sql`${t.version} >= 1`),
+    check("media_versions_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+    check("media_versions_content_type_check", sql`${t.contentType} IN ('image/jpeg', 'image/png')`),
+    check("media_versions_byte_size_check", sql`${t.byteSize} BETWEEN 1 AND 5242880`),
+    check("media_versions_width_check", sql`${t.width} BETWEEN 1 AND 4096`),
+    check("media_versions_height_check", sql`${t.height} BETWEEN 1 AND 4096`),
+    check("media_versions_credit_name_check", sql`${t.creditName} IS NULL OR length(${t.creditName}) BETWEEN 1 AND 200`),
+    check("media_versions_licence_name_check", sql`${t.licenceName} IS NULL OR length(${t.licenceName}) BETWEEN 1 AND 200`),
+    check(
+      "media_versions_licence_url_check",
+      sql`${t.licenceUrl} IS NULL OR (${t.licenceUrl} ~ '^https?://' AND length(${t.licenceUrl}) <= 2048)`,
+    ),
+    check(
+      "media_versions_source_url_check",
+      sql`${t.sourceUrl} IS NULL OR (${t.sourceUrl} ~ '^https?://' AND length(${t.sourceUrl}) <= 2048)`,
+    ),
+    check("media_versions_attribution_check", sql`${t.attributionText} IS NULL OR length(${t.attributionText}) <= 1000`),
+    check("media_versions_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check(
+      "media_versions_publishable_check",
+      sql`${t.publishedAt} IS NULL OR (${t.licenceName} IS NOT NULL AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL))`,
+    ),
+  ],
+);
+
+/**
+ * Idempotency claims for media uploads: the same (principal, Idempotency-Key) replays the item/version it created. Claimed with
+ * INSERT ... ON CONFLICT DO NOTHING RETURNING after the item/version insert, in the same transaction. The key is scoped to the
+ * principal, so two accounts may use the same key. `sha256` is the uploaded bytes' digest (equal = replay, else 422).
+ */
+export const mediaUploadKeys = pgTable(
+  "media_upload_keys",
+  {
+    principal: text("principal").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    operation: text("operation").$type<MediaUploadOperation>().notNull(),
+    mediaId: bigint("media_id", { mode: "number" }).notNull(),
+    version: integer("version").notNull(),
+    sha256: text("sha256").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "media_upload_keys_pk", columns: [t.principal, t.idempotencyKey] }),
+    foreignKey({
+      name: "media_upload_keys_version_fk",
+      columns: [t.mediaId, t.version],
+      foreignColumns: [mediaVersions.mediaId, mediaVersions.version],
+    }),
+    check("media_upload_keys_principal_check", sql`length(${t.principal}) BETWEEN 1 AND 256`),
+    check("media_upload_keys_idempotency_key_check", sql`${t.idempotencyKey} ~ '^[A-Za-z0-9_-]{1,128}$'`),
+    check("media_upload_keys_operation_check", sql`${t.operation} IN ('create', 'version')`),
+    check("media_upload_keys_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+/**
  * Admin-curated question content: the source of truth for the website admin and, later, Unity. One row per
  * (module, id). `data` is the module payload, validated by that module's mapping before every write. No
  * email is stored: updated_by is the staff principal.
@@ -331,12 +462,15 @@ export const contentItems = pgTable(
     // Military only: the Clipper Card key (`mil:` + normalised answer), computed once and FROZEN here (design 3.5): set by
     // the importer on create, or by the first Round that uses an older row. Staff text edits never move it.
     cardKey: text("card_key"),
+    // The linked image, if any (PUT /v1/admin/content/.../media). Media is never deleted, so no ON DELETE action.
+    mediaId: bigint("media_id", { mode: "number" }).references(() => mediaItems.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     updatedBy: text("updated_by").notNull(),
   },
   (t) => [
     primaryKey({ name: "content_items_pk", columns: [t.module, t.id] }),
+    index("content_items_media_id").on(t.mediaId),
     check("content_items_module_check", sql`${t.module} IN ${MODULE_LIST}`),
     check("content_items_rank_check", sql`${t.rank} IN ${RANK_LIST}`),
     check("content_items_status_check", sql`${t.status} IN ('approved', 'retired')`),
@@ -359,7 +493,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link')`,
     ),
   ],
 );
@@ -385,6 +519,9 @@ export const accountRoles = pgTable(
     note: text("note"),
     // Optimistic fence for decisions: every transition bumps it, so a stale decision cannot overwrite a newer one.
     revision: integer("revision").notNull().default(1),
+    // A photographer request's verified token email, shown to admins only and never used for authorisation (user ruling
+    // 2026-11-03). NULL on every other row. DELETE /v1/me clears it; the role and audit rows stay (ADR-0002).
+    requestEmail: text("request_email"),
   },
   (t) => [
     primaryKey({ name: "account_roles_pk", columns: [t.principal, t.role] }),
@@ -400,6 +537,7 @@ export const accountRoles = pgTable(
     check("account_roles_principal_check", sql`length(${t.principal}) BETWEEN 1 AND 256`),
     check("account_roles_decided_by_check", sql`${t.decidedBy} IS NULL OR length(${t.decidedBy}) BETWEEN 1 AND 256`),
     check("account_roles_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
+    check("account_roles_request_email_check", sql`${t.requestEmail} IS NULL OR length(${t.requestEmail}) BETWEEN 3 AND 320`),
   ],
 );
 

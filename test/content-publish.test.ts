@@ -243,6 +243,12 @@ describe("codes and audit actions", () => {
       "role_reject",
       "role_grant",
       "role_revoke",
+      "media_upload",
+      "media_version",
+      "media_edit",
+      "media_publish",
+      "media_withdraw",
+      "content_media_link",
     ]);
   });
 });
