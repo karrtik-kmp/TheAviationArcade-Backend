@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { ApiError } from "../../common/errors.js";
-import { DatabaseService } from "../../database/database.module.js";
+import { DatabaseService, ExpectedRollback } from "../../database/database.module.js";
 import type { Tx } from "../../database/database.module.js";
 import type { ContentDocumentName } from "../../db/enums.js";
 import { adminAudit } from "../../db/schema.js";
@@ -112,6 +112,13 @@ const SAVE_CONFLICT = "The draft changed since you read it (another editor, or a
  * Everything for one name runs under `lockDraft(name)`, so concurrent edits and publishes serialise: a stale draft version is 409
  * and never overwrites another editor, and two publishes can never write one version twice or lose an edit.
  */
+/** An expected refusal of a Field Awards import raised inside its transaction (see awardsTransaction). */
+class AwardsRefusal extends ExpectedRollback {
+  constructor(readonly error: ApiError) {
+    super(error.message);
+  }
+}
+
 @Injectable()
 export class ContentAdminService {
   private readonly logger = new Logger("ContentAdmin");
@@ -257,7 +264,7 @@ export class ContentAdminService {
   /** Plans without writing or storing anything. A plan with any error is 422 import_invalid and carries the report. */
   async dryRunFieldAwardsImport(bytes: Uint8Array): Promise<FieldAwardsImportDryRun> {
     const sheet = await this.readAwardsSheet(bytes);
-    return this.database.withTransaction(async (tx) => {
+    return this.awardsTransaction(async (tx) => {
       const planned = await this.planAwardsImport(tx, sheet);
       return { dryRun: true, ...this.awardsImportView(planned) };
     }, READ_SNAPSHOT);
@@ -273,19 +280,21 @@ export class ContentAdminService {
   async applyFieldAwardsImport(bytes: Uint8Array, fileName: string, principal: string, confirm?: string): Promise<FieldAwardsImportApplied> {
     const sheet = await this.readAwardsSheet(bytes);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const early = await this.database.withTransaction(async (tx) => this.planAwardsImport(tx, sheet), READ_SNAPSHOT);
-    this.assertAwardsConfirmed(early, confirm); // fail before storing anything
+    const early = await this.awardsTransaction(async (tx) => this.planAwardsImport(tx, sheet), READ_SNAPSHOT);
+    const premature = this.awardsRefusal(early, confirm); // fail before storing anything
+    if (premature) throw premature;
     if (early.plan.awards.length === 0) return { applied: false, ...this.awardsImportView(early) };
 
     const blobKey = `imports/field-awards/${sha256}.xlsx`;
     await storeImportBlob(this.blobs, this.logger, blobKey, bytes);
 
-    const result = await this.database.withTransaction(async (tx) => {
+    const result = await this.awardsTransaction(async (tx) => {
       await lockDraft(tx, "field-awards");
       await lockSeed(tx);
       const { edits, draftVersion } = await this.loadEdits(tx, "field-awards");
       const locked = await this.planAwardsImport(tx, sheet, { edits, draftVersion });
-      this.assertAwardsConfirmed(locked, confirm);
+      const refusal = this.awardsRefusal(locked, confirm);
+      if (refusal) throw new AwardsRefusal(refusal);
       if (locked.plan.awards.length === 0) return { applied: false as const, ...this.awardsImportView(locked) };
       const merged = withHistory(locked.merged as DraftEdits, principal, "import", draftVersion + 1, new Date(), sha256);
       const saved = await saveDraft(tx, "field-awards", draftVersion, merged, principal);
@@ -293,6 +302,16 @@ export class ContentAdminService {
       return { applied: true as const, ...this.awardsImportView(locked), draftVersion: saved, file: { fileName, sha256, byteSize: bytes.length, blobKey } };
     });
     return result;
+  }
+
+  /** A refusal inside the transaction rolls it back as an ExpectedRollback (the connection stays pooled) and leaves as its ApiError. */
+  private async awardsTransaction<T>(fn: (tx: Tx) => Promise<T>, config?: Parameters<DatabaseService["withTransaction"]>[1]): Promise<T> {
+    try {
+      return await this.database.withTransaction(fn, config);
+    } catch (error) {
+      if (error instanceof AwardsRefusal) throw error.error;
+      throw error;
+    }
   }
 
   private async readAwardsSheet(bytes: Uint8Array): Promise<{ rows: SheetAward[]; issues: ImportIssue[] }> {
@@ -338,7 +357,7 @@ export class ContentAdminService {
       }
     }
     if (plan.issues.length > 0) {
-      throw new ApiError(422, "import_invalid", `The import has ${plan.issues.length} error(s); nothing was imported.`, {}, { report: plan.issues });
+      throw new AwardsRefusal(new ApiError(422, "import_invalid", `The import has ${plan.issues.length} error(s); nothing was imported.`, {}, { report: plan.issues }));
     }
     return { plan, merged, publishedVersion: preview.publishedVersion, draftVersion };
   }
@@ -354,22 +373,23 @@ export class ContentAdminService {
     };
   }
 
-  private assertAwardsConfirmed(planned: AwardsImportPlanned, confirm: string | undefined): void {
+  private awardsRefusal(planned: AwardsImportPlanned, confirm: string | undefined): ApiError | undefined {
     if (confirm === undefined) {
-      if (planned.plan.awards.length === 0) return;
-      throw new ApiError(
+      if (planned.plan.awards.length === 0) return undefined;
+      return new ApiError(
         422,
         "import_invalid",
         `This import would change ${planned.plan.awards.length} Field Award(s) in the draft. Run it with ?dryRun=true first, review the changes, then repeat it with ?confirm=<planHash> from that dry run. Nothing was imported.`,
       );
     }
     if (confirm !== fieldAwardsPlanHash(planned, planned.plan)) {
-      throw new ApiError(
+      return new ApiError(
         409,
         "plan_changed",
         "The draft or the version in force changed since the dry run, so the confirmed plan no longer applies. Run a new dry run and review it. Nothing was imported.",
       );
     }
+    return undefined;
   }
 
   private async view(db: Reader, name: ContentDocumentName): Promise<DraftView> {

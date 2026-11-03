@@ -115,9 +115,16 @@ const EXPECTED = [
     changes: [
       { field: "criteria", from: "Complete 100 Flights, counted across completed Trips. Correct answers are not required for every Flight.", to: "Complete 150 Flights, counted across completed Trips." },
       { field: "target", from: 100, to: 150 },
+      { field: "thresholdCell", from: "100 Flights", to: "150 Flights" },
     ],
   },
-  { id: "high-flyer", changes: [{ field: "target", from: 100000, to: 250000 }] },
+  {
+    id: "high-flyer",
+    changes: [
+      { field: "target", from: 100000, to: 250000 },
+      { field: "thresholdCell", from: "100,000 Miles", to: "250,000 Miles" },
+    ],
+  },
   { id: "regional", changes: [{ field: "title", from: "Regional", to: "REGIONAL" }] },
 ];
 
@@ -175,7 +182,7 @@ describe("a modified copy: plan, confirm, apply, publish", () => {
     const res = await dry(await modifiedSheet(EDITED));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.awards).toEqual(EXPECTED);
-    expect(res.body).toMatchObject({ requiresConfirm: true, counts: { rows: 28, awardsChanged: 3, awardsUnchanged: 25, fieldChanges: 4 } });
+    expect(res.body).toMatchObject({ requiresConfirm: true, counts: { rows: 28, awardsChanged: 3, awardsUnchanged: 25, fieldChanges: 6 } });
     // The same file again gives the same hash.
     expect((await dry(await modifiedSheet(EDITED))).body.planHash).toBe(res.body.planHash);
     await noWrites();
@@ -211,12 +218,12 @@ describe("a modified copy: plan, confirm, apply, publish", () => {
     const read = await draft();
     expect(read.body.draftVersion).toBe(1);
     expect(read.body.edits.awards).toEqual({
-      century: { criteria: "Complete 150 Flights, counted across completed Trips.", target: 150 },
-      "high-flyer": { target: 250000 },
+      century: { criteria: "Complete 150 Flights, counted across completed Trips.", target: 150, thresholdCell: "150 Flights" },
+      "high-flyer": { target: 250000, thresholdCell: "250,000 Miles" },
       regional: { title: "REGIONAL" },
     });
     expect(read.body.edits.history).toEqual([{ principal: STAFF_PRINCIPAL, action: "import", at: expect.any(String), draftVersion: 1, fileSha256: sha(bytes) }]);
-    expect(read.body.changeCount).toBe(4);
+    expect(read.body.changeCount).toBe(6);
     expect((await rows("SELECT updated_by FROM content_drafts WHERE name = 'field-awards'"))[0]).toEqual({ updated_by: STAFF_PRINCIPAL });
 
     // Nothing reached players.
@@ -244,7 +251,7 @@ describe("a modified copy: plan, confirm, apply, publish", () => {
     expect(applied.status).toBe(201);
     const published = await publish(applied.body.draftVersion);
     expect(published.status, JSON.stringify(published.body)).toBe(201);
-    expect(published.body).toMatchObject({ name: "field-awards", version: 2, previousVersion: 1, changeCount: 4 });
+    expect(published.body).toMatchObject({ name: "field-awards", version: 2, previousVersion: 1, changeCount: 6 });
 
     const entry = await manifestEntry();
     expect(entry.version).toBe(2);
@@ -252,7 +259,8 @@ describe("a modified copy: plan, confirm, apply, publish", () => {
     const served = await request(server).get("/v1/content/documents/field-awards/2").set(auth);
     const award = (id: string) => served.body.awards.find((a: { id: string }) => a.id === id);
     expect(award("century")).toMatchObject({ target: 150, criteria: "Complete 150 Flights, counted across completed Trips." });
-    expect(award("high-flyer").target).toBe(250000);
+    expect(award("high-flyer")).toMatchObject({ target: 250000, thresholdCell: "250,000 Miles" });
+    expect(award("century").thresholdCell).toBe("150 Flights");
     expect(award("regional").title).toBe("REGIONAL");
     expect(award("regional")).toMatchObject({ thresholdCell: "5 Regional Cards", target: 5 });
 
@@ -268,17 +276,44 @@ describe("a modified copy: plan, confirm, apply, publish", () => {
     expect((await dry(bytes)).body).toMatchObject({ awards: [], publishedVersion: 2, draftVersion: 2 });
   });
 
+  it("the cell moves forward with the publish: re-importing the same sheet changes nothing, and a later staff target ruling is not reverted", async () => {
+    const bytes = await modifiedSheet(EDITED);
+    const applied = await upload(bytes, `?confirm=${(await dry(bytes)).body.planHash}`);
+    expect(applied.status).toBe(201);
+    expect((await publish(applied.body.draftVersion)).status).toBe(201);
+    const served = await request(server).get("/v1/content/documents/field-awards/2").set(staff);
+    const century = served.body.awards.find((a: { id: string }) => a.id === "century");
+    expect(century).toMatchObject({ target: 150, thresholdCell: "150 Flights" });
+
+    expect((await dry(bytes)).body).toMatchObject({ awards: [], counts: { fieldChanges: 0 } });
+    // Staff rule the target differently; the same sheet (cell unchanged) must leave it alone.
+    const ruled = await editAward(2, { id: "century", target: 120 });
+    expect(ruled.status, JSON.stringify(ruled.body)).toBe(200);
+    expect((await dry(bytes)).body).toMatchObject({ awards: [], counts: { fieldChanges: 0 } });
+    expect((await upload(bytes)).body).toMatchObject({ applied: false });
+    expect((await draft()).body.edits.awards.century).toEqual({ target: 120 });
+  });
+
+  it("the staff PATCH does not accept thresholdCell: 400", async () => {
+    const res = await editAward(0, { id: "century", target: 120, thresholdCell: "120 Flights" });
+    expect(res.status).toBe(400);
+    await noWrites();
+  });
+
   it("a sheet applied on top of a staff draft edit shows the draft value as `from` and the sheet wins", async () => {
     expect((await editAward(0, { id: "high-flyer", target: 120000 })).status).toBe(200);
     const bytes = await modifiedSheet(EDITED);
     const planned = await dry(bytes);
-    expect(planned.body.awards.find((a: { id: string }) => a.id === "high-flyer").changes).toEqual([{ field: "target", from: 120000, to: 250000 }]);
+    expect(planned.body.awards.find((a: { id: string }) => a.id === "high-flyer").changes).toEqual([
+      { field: "target", from: 120000, to: 250000 },
+      { field: "thresholdCell", from: "100,000 Miles", to: "250,000 Miles" },
+    ]);
     expect(planned.body.draftVersion).toBe(1);
     const applied = await upload(bytes, `?confirm=${planned.body.planHash}`);
     expect(applied.status).toBe(201);
     const read = await draft();
     expect(read.body.draftVersion).toBe(2);
-    expect(read.body.edits.awards["high-flyer"]).toEqual({ target: 250000 });
+    expect(read.body.edits.awards["high-flyer"]).toEqual({ target: 250000, thresholdCell: "250,000 Miles" });
     expect(read.body.edits.history.map((h: { action: string }) => h.action)).toEqual(["edit", "import"]);
   });
 });
@@ -321,7 +356,7 @@ describe("a stale plan or a concurrent edit never loses work", () => {
       if (applied.status === 201) {
         expect(patched.status).toBe(409);
         expect(patched.body.error.code).toBe("version_conflict");
-        expect(read.body.edits.awards["high-flyer"]).toEqual({ target: 250000 });
+        expect(read.body.edits.awards["high-flyer"]).toEqual({ target: 250000, thresholdCell: "250,000 Miles" });
         expect(read.body.edits.awards["heavy-metal"]).toBeUndefined();
       } else {
         expect(applied.status).toBe(409);

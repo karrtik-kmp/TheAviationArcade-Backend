@@ -61,11 +61,10 @@ describe("targetFromThreshold", () => {
   it("reads the leading whole number, with thousands separators", () => {
     expect(targetFromThreshold("100,000 Miles")).toEqual({ target: 100000 });
     expect(targetFromThreshold("24901 miles")).toEqual({ target: 24901 });
-    expect(targetFromThreshold("10 Boeing + 10 Airbus")).toEqual({ target: 10 });
     expect(targetFromThreshold("7-day streak")).toEqual({ target: 7 });
   });
   it("refuses a fraction, no number, zero and absurd values; never guesses", () => {
-    for (const cell of ["2.5 Trips", "2,5 Trips", "Get a full green trip", "0 Trips", "-3 Trips", "99999999999999999999 Miles"]) {
+    for (const cell of ["2.5 Trips", "2,5 Trips", "10 Boeing + 10 Airbus", "Get a full green trip", "0 Trips", "-3 Trips", "99999999999999999999 Miles"]) {
       expect(targetFromThreshold(cell), cell).toHaveProperty("error");
     }
   });
@@ -100,6 +99,7 @@ describe("planFieldAwardsImport", () => {
         changes: [
           { field: "criteria", from: FIELD_AWARD_CATALOG.find((d) => d.id === "century")!.criteria, to: "Complete 150 Flights." },
           { field: "target", from: 100, to: 150 },
+          { field: "thresholdCell", from: "100 Flights", to: "150 Flights" },
         ],
       },
     ]);
@@ -111,10 +111,24 @@ describe("planFieldAwardsImport", () => {
     expect(goAround.thresholdCell).toMatch(/^Get a full green/);
     expect(plan(sheetOf()).awards).toEqual([]);
     const changed = plan(withRow(sheetOf(), goAround.title, { threshold: "2 full green trips" }));
-    expect(changed.awards).toEqual([{ id: "go-around", changes: [{ field: "target", from: 1, to: 2 }] }]);
+    expect(changed.awards).toEqual([{ id: "go-around", changes: [{ field: "target", from: 1, to: 2 }, { field: "thresholdCell", from: goAround.thresholdCell, to: "2 full green trips" }] }]);
+    // The cell wording alone moves the cell, not the target.
+    expect(plan(withRow(sheetOf(), "Frequent Flyer", { threshold: "25 Trips in all" })).awards).toEqual([
+      { id: "frequent-flyer", changes: [{ field: "thresholdCell", from: "25 Trips", to: "25 Trips in all" }] },
+    ]);
     const broken = plan(withRow(sheetOf(), goAround.title, { threshold: "A full green trip, twice" }));
     expect(broken.issues).toHaveLength(1);
     expect(broken.issues[0]).toMatchObject({ id: "go-around", level: "error" });
+  });
+
+  it("a changed cell with more than one number is a row error, never a guess; a boolean or date cell is 'not text'", () => {
+    const issues = plan(withRow(sheetOf(), "The Great Rivalry", { threshold: "15 Boeing + 20 Airbus" })).issues;
+    expect(issues).toEqual([expect.objectContaining({ id: "the-great-rivalry", level: "error", message: expect.stringContaining("more than one number") })]);
+    expect(targetFromThreshold("15 Boeing + 20 Airbus")).toHaveProperty("error");
+    expect(targetFromThreshold("1,000 Miles")).toEqual({ target: 1000 });
+    expect(parseFieldAwardsSheet([["Field Award", "Current criteria", "Threshold"], ["X", "c", true]]).issues).toEqual([
+      expect.objectContaining({ row: 2, message: "X: the threshold is not text." }),
+    ]);
   });
 
   it("errors: unknown award, missing award, duplicate row, non-integer, zero target and over-long text", () => {

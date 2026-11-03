@@ -108,6 +108,8 @@ export const STORED_AWARD = z.strictObject({
   criteria: text(2000).optional(),
   target: z.number().int().min(1).max(MAX_TARGET).optional(),
   hidden: z.boolean().optional(),
+  // Written by the sheet import only (never by the PATCH request schema): the Threshold cell the target was last read against.
+  thresholdCell: text(200).optional(),
 });
 export const STORED_EDITS = {
   "field-awards": z.strictObject({ awards: z.partialRecord(z.enum(FIELD_AWARD_IDS), STORED_AWARD).optional(), history }),
@@ -116,7 +118,7 @@ export const STORED_EDITS = {
 } as const;
 
 export type DraftEdits = {
-  awards?: Record<string, { title?: string; criteria?: string; target?: number; hidden?: boolean }>;
+  awards?: Record<string, { title?: string; criteria?: string; target?: number; hidden?: boolean; thresholdCell?: string }>;
   names?: Record<string, string>;
   tags?: Record<string, AircraftTag[]>;
   /** aircraft-tags: Card keys whose edit was acknowledged to remove a client-supplied tag. */
@@ -207,7 +209,7 @@ export function applyFieldAwardEdits(base: unknown, edits: DraftEdits): Body {
   for (const award of body["awards"] as Body[]) {
     const edit = edits.awards?.[award["id"]];
     if (!edit) continue;
-    for (const field of ["title", "criteria", "target", "hidden"] as const) {
+    for (const field of ["title", "criteria", "target", "hidden", "thresholdCell"] as const) {
       if (edit[field] !== undefined) award[field] = edit[field];
     }
   }
@@ -267,7 +269,7 @@ export function describeChanges(name: ContentDocumentName, before: unknown, afte
     case "field-awards": {
       const old = new Map<string, Body>(((a?.["awards"] as Body[] | undefined) ?? []).map((x) => [x["id"], x]));
       for (const award of b["awards"] as Body[]) {
-        for (const field of ["title", "criteria", "target", "hidden"] as const) {
+        for (const field of ["title", "criteria", "target", "hidden", "thresholdCell"] as const) {
           const was = old.get(award["id"])?.[field];
           if (canonicalJson({ v: was ?? null }) !== canonicalJson({ v: award[field] })) {
             out.push({ kind: "award", key: award["id"], field, from: was ?? null, to: award[field] });

@@ -16,13 +16,13 @@ import { STORED_AWARD } from "./drafts.js";
  *    sheet's own naming for 10 of the 28 awards, which is exactly why the catalog keeps title + id side by side). The titles of the
  *    version in force and of the draft count too, so a renamed award is still found by its current name.
  *  - title and criteria are the cells, trimmed and otherwise verbatim.
- *  - the target is read from the Threshold cell ONLY when that cell differs from the one the version in force carries (`thresholdCell`);
+ *  - the target is read from the Threshold cell ONLY when that cell differs from the one the preview carries (`thresholdCell`); the import writes the new cell into the draft with it, so the next import compares against it;
  *    an unchanged cell keeps the target as it is (rulings such as Go Around = 1 live there). A changed cell must start with a whole
  *    number ("1,000 Miles" = 1000); anything else is a row error, never a guess.
  *  - the sheet has no `hidden` column, so `hidden` is never touched.
  */
 
-export const AWARD_IMPORT_FIELDS = ["title", "criteria", "target"] as const;
+export const AWARD_IMPORT_FIELDS = ["title", "criteria", "target", "thresholdCell"] as const;
 export type AwardImportField = (typeof AWARD_IMPORT_FIELDS)[number];
 
 export type SheetAward = { row: number; name: string; criteria: string; threshold: string };
@@ -61,7 +61,7 @@ const cellText = (cell: unknown): string | undefined => {
   if (cell === null || cell === undefined) return "";
   if (typeof cell === "string") return cell.trim();
   if (typeof cell === "number" && Number.isFinite(cell)) return String(cell);
-  return undefined; // boolean, date, anything else
+  return undefined; // boolean, date, anything else: not text
 };
 
 /** Reads the client's sheet. A missing header is a file-level problem (SpreadsheetError, 400); bad cells are row issues. */
@@ -84,11 +84,11 @@ export function parseFieldAwardsSheet(rows: readonly SheetRow[]): { rows: SheetA
     const threshold = cellText(cells[thresholdAt]);
     const problem = (message: string) => issues.push({ row, level: "error", message });
     if (name === undefined || name === "") {
-      problem("The Field Award name is missing.");
+      problem(name === undefined ? "The Field Award name is not text." : "The Field Award name is missing.");
     } else if (criteria === undefined || criteria === "") {
-      issues.push({ row, level: "error", message: `${name}: the criteria are missing.` });
+      issues.push({ row, level: "error", message: `${name}: the criteria are ${criteria === undefined ? "not text" : "missing"}.` });
     } else if (threshold === undefined || threshold === "") {
-      issues.push({ row, level: "error", message: `${name}: the threshold is missing.` });
+      issues.push({ row, level: "error", message: `${name}: the threshold is ${threshold === undefined ? "not text" : "missing"}.` });
     } else {
       out.push({ row, name, criteria, threshold });
     }
@@ -102,6 +102,7 @@ export function targetFromThreshold(cell: string): { target: number } | { error:
   if (!match) return { error: `the threshold "${cell}" does not start with a whole number, so no target can be read from it.` };
   const rest = cell.trim().slice(match[0].length);
   if (/^[.,]\d/.test(rest)) return { error: `the threshold "${cell}" starts with a number that is not a whole number.` };
+  if (/\d/.test(rest)) return { error: `the threshold "${cell}" contains more than one number, so no single target can be read from it; set the target by hand.` };
   const target = Number((match[1] ?? "").replace(/,/g, ""));
   if (!Number.isSafeInteger(target) || target <= 0) return { error: `the target ${match[1]} is not a whole number of at least 1.` };
   return { target };
@@ -147,6 +148,8 @@ export function planFieldAwardsImport(sheet: readonly SheetAward[], parseIssues:
       else target = read.target;
     }
     if (target !== award.target) changes.push({ field: "target", from: award.target, to: target });
+    // The cell moves with the target (and alone when only the wording changed), so "an unchanged cell keeps the target" holds after a publish.
+    if (entry.threshold !== award.thresholdCell.trim()) changes.push({ field: "thresholdCell", from: award.thresholdCell, to: entry.threshold });
 
     // The same limits a PATCH of the draft enforces.
     const wanted = Object.fromEntries(changes.map((c) => [c.field, c.to]));
