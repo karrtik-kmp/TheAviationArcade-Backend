@@ -16,13 +16,18 @@ import {
 import type { UgsBudget } from "./budget.js";
 import { UgsClient } from "./ugs-client.js";
 import { CopyDeletionQueue, ProgressWriteQueue } from "./mirror-queue.js";
-import type { Claimed, MirrorQueue } from "./mirror-queue.js";
+import type { Claimed, MirrorQueue, QueueTime } from "./mirror-queue.js";
 import { UGS_BUDGET, UGS_CLIENT, UGS_MIRROR_QUEUES, UGS_WORKER_OPTIONS } from "./ugs.tokens.js";
 import type { UgsWorkerOptions } from "./ugs.tokens.js";
 
 /** The production queues in priority order: deletions first (privacy-relevant), then writes. */
-export function defaultMirrorQueues(database: DatabaseService, client: UgsClient, minIntervalSec = 0): readonly MirrorQueue[] {
-  return [new CopyDeletionQueue(database, client), new ProgressWriteQueue(database, client, minIntervalSec)];
+export function defaultMirrorQueues(
+  database: DatabaseService,
+  client: UgsClient,
+  minIntervalSec = 0,
+  time: QueueTime = "database",
+): readonly MirrorQueue[] {
+  return [new CopyDeletionQueue(database, client, time), new ProgressWriteQueue(database, client, minIntervalSec, time)];
 }
 
 export type TickSummary = {
@@ -78,7 +83,7 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
     /** Tests inject in-memory queues; production builds the two Postgres adapters. Priority order: deletions, writes. */
     @Optional() @Inject(UGS_MIRROR_QUEUES) queues?: readonly MirrorQueue[],
   ) {
-    this.queues = queues ?? (client ? defaultMirrorQueues(database, client, config.ugs?.mirrorMinIntervalSec ?? 0) : undefined);
+    this.queues = queues ?? (client ? defaultMirrorQueues(database, client, config.ugs?.mirrorMinIntervalSec ?? 0, options.queueTime) : undefined);
   }
 
   onModuleInit(): void {
@@ -146,7 +151,7 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
       let haltUntil: number | undefined;
       for (const { queue, claimed } of pending) {
         if (this.stopped || haltUntil !== undefined) {
-          await queue.release(claimed, new Date(haltUntil ?? nowMs));
+          await queue.release(claimed, new Date(haltUntil ?? nowMs), now);
           continue;
         }
         spent += 1;
@@ -159,21 +164,21 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
           summary.rateLimited = true;
           haltUntil = nowMs + result.retryAfterMs;
           await this.budget.pause(haltUntil, nowMs);
-          await queue.release(claimed, new Date(haltUntil));
+          await queue.release(claimed, new Date(haltUntil), now);
         } else if (result.kind === "auth_failed") {
           // Our own credentials: every row would fail the same way, so stop calling UGS and say so once.
           summary.credentialsRejected = true;
           haltUntil = nowMs + CREDENTIALS_PAUSE_MS;
           await this.budget.pause(haltUntil, nowMs);
           this.logger.error({ event: "ugs_mirror_credentials_rejected", status: result.status, pausedMs: CREDENTIALS_PAUSE_MS });
-          await queue.release(claimed, new Date(haltUntil));
+          await queue.release(claimed, new Date(haltUntil), now);
         } else if (result.kind === "rejected") {
           summary.rejected += 1;
-          await this.reject(queue, claimed, result.status, nowMs);
+          await this.reject(queue, claimed, result.status, now);
         } else {
           summary.retried += 1;
           const delay = Math.min(BACKOFF_CAP_MS, backoffMs(claimed.attempts + 1));
-          await queue.fail(claimed, new Date(nowMs + delay), `http ${result.status}`);
+          await queue.fail(claimed, new Date(nowMs + delay), `http ${result.status}`, now);
         }
       }
     } finally {
@@ -202,17 +207,18 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
   /** Rows due right now across both queues, and how long the oldest has been due. */
   private async backlog(now: Date): Promise<{ backlog: number; lagMs: number }> {
     let backlog = 0;
-    let oldest: Date | null = null;
+    let lagMs = 0;
     for (const queue of this.queues ?? []) {
       const due = await queue.backlog(now);
       backlog += due.count;
-      if (due.oldest && (!oldest || due.oldest < oldest)) oldest = due.oldest;
+      lagMs = Math.max(lagMs, due.lagMs);
     }
-    return { backlog, lagMs: oldest ? Math.max(0, now.getTime() - oldest.getTime()) : 0 };
+    return { backlog, lagMs };
   }
 
   /** A 4xx other than 429/401/403: back off, log once, and cap the retries. */
-  private async reject(queue: MirrorQueue, claimed: Claimed, status: number, nowMs: number): Promise<void> {
+  private async reject(queue: MirrorQueue, claimed: Claimed, status: number, now: Date): Promise<void> {
+    const nowMs = now.getTime();
     const attempts = claimed.attempts + 1;
     const dead = attempts >= MAX_REJECTED_ATTEMPTS;
     const logKey = `${queue.op}:${claimed.key}`;
@@ -224,7 +230,7 @@ export class MirrorWorker implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const delay = queue.op === "delete" && dead ? DEAD_DELETION_BACKOFF_MS : REJECTED_BACKOFF_MS;
-    await queue.fail(claimed, new Date(nowMs + delay), `http ${status}`);
+    await queue.fail(claimed, new Date(nowMs + delay), `http ${status}`, now);
     // One log line per row until it succeeds: the long backoff makes repeats rare.
     if (!this.rejectedLogged.has(logKey)) {
       this.rejectedLogged.add(logKey);

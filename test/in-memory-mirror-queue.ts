@@ -144,10 +144,10 @@ export class InMemoryMirrorQueue implements MirrorQueue {
     if (this.mine(claimed)) this.rows.delete(claimed.key);
   }
 
-  async backlog(now: Date): Promise<{ count: number; oldest: Date | null }> {
+  async backlog(now: Date): Promise<{ count: number; lagMs: number }> {
     const due = [...this.rows.values()].filter((row) => row.dueAt <= now);
     const oldest = due.reduce<Date | null>((min, row) => (min && min <= row.dueAt ? min : row.dueAt), null);
-    return { count: due.length, oldest };
+    return { count: due.length, lagMs: oldest ? Math.max(0, now.getTime() - oldest.getTime()) : 0 };
   }
 
   /** The row, only if it is still under this claim (the delete-only-if-own-claim rule). */

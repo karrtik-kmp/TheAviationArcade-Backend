@@ -15,6 +15,7 @@ import { DatabaseService } from "../src/database/database.module.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { InMemoryUgsBudget } from "../src/ugs/budget.js";
 import { LEASE_MS } from "../src/ugs/mirror-policy.js";
+import { CopyDeletionQueue, ProgressWriteQueue } from "../src/ugs/mirror-queue.js";
 import { MirrorWorker } from "../src/ugs/mirror-worker.js";
 import { REQUEST_TIMEOUT_MS } from "../src/ugs/ugs-client.js";
 import { UGS_ISSUER } from "../src/ugs/ugs-token.js";
@@ -93,7 +94,7 @@ beforeAll(async () => {
     .overrideProvider(UGS_PROOF_BUDGET)
     .useValue(proofBucket)
     .overrideProvider(UGS_WORKER_OPTIONS)
-    .useValue({ autoStart: false, intervalMs: 1000, clock: () => Date.now(), budgetTime: "caller" })
+    .useValue({ autoStart: false, intervalMs: 1000, clock: () => Date.now(), budgetTime: "caller", queueTime: "caller" })
     .compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
   configureApp(app);
@@ -916,4 +917,46 @@ describe("mirror disabled", () => {
       Object.assign(process.env, saved);
     }
   });
+});
+
+// A3 review: the Postgres queue adapters run on the DATABASE clock (the one enqueueMirror stamps due_at with). The
+// `now` a worker passes in is its process clock; in "database" mode it must not change what is claimed, when the lease
+// ends, or when a backed-off row is due again.
+describe("mirror queues on the database clock", () => {
+  const DAY = 24 * 3_600_000;
+  const dbDueAt = async (principal: string) =>
+    (await sql.query<{ ms: string }>("SELECT (extract(epoch FROM due_at) * 1000)::bigint AS ms FROM ugs_mirror_outbox WHERE player_id = $1", [principal])).rows[0];
+  const dbNow = async () => Number((await sql.query<{ ms: string }>("SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint AS ms")).rows[0]!.ms);
+
+  for (const [name, skew] of [["a process clock a day behind", -DAY], ["a process clock a day ahead", DAY]] as const) {
+    it(`claims, leases and backs off by database time with ${name}`, async () => {
+      const database = app.get(DatabaseService);
+      const writes = new ProgressWriteQueue(database, app.get(UGS_CLIENT), 0, "database");
+      const deletions = new CopyDeletionQueue(database, app.get(UGS_CLIENT), "database");
+      const processNow = new Date(Date.now() + skew);
+
+      const due = await newPlayer({ link: true }); // linked: an outbox row due at the database's now
+      const laterUgsId = `ugs-later-${randomUUID()}`;
+      await sql.query("INSERT INTO ugs_mirror_deletions (ugs_player_id, due_at, created_at) VALUES ($1, now() + interval '1 hour', now())", [laterUgsId]);
+
+      // Only the row that is due by database time is counted and claimed, whatever the process clock says.
+      expect((await writes.backlog(processNow)).count).toBe(1);
+      expect((await deletions.backlog(processNow)).count).toBe(0);
+      expect(await deletions.claim(20, processNow)).toHaveLength(0);
+      const [claimed] = await writes.claim(20, processNow);
+      expect(claimed?.key).toBe(due.principal);
+
+      // The lease is database now + LEASE_MS, not process now + LEASE_MS.
+      const leased = Number((await dbDueAt(due.principal))!.ms);
+      expect(Math.abs(leased - (await dbNow() + LEASE_MS))).toBeLessThan(10_000);
+
+      // A back-off computed by the worker as processNow + 5 s lands 5 s after database time.
+      await writes.fail(claimed!, new Date(processNow.getTime() + 5_000), "http 503", processNow);
+      const backed = Number((await dbDueAt(due.principal))!.ms);
+      expect(Math.abs(backed - (await dbNow() + 5_000))).toBeLessThan(10_000);
+
+      // The deletion that is an hour away in database time stays unclaimed even when the process clock is a day ahead.
+      await sql.query("DELETE FROM ugs_mirror_deletions WHERE ugs_player_id = $1", [laterUgsId]);
+    });
+  }
 });

@@ -25,6 +25,8 @@ export type UgsWorkerOptions = {
    * instance). Tests that drive ticks with explicit clocks set "caller".
    */
   budgetTime?: "database" | "caller";
+  /** Same choice for the Postgres mirror queues (claim, lease, back-off, backlog). Default "database"; tests with explicit clocks set "caller". */
+  queueTime?: "database" | "caller";
 };
 
 export const DEFAULT_WORKER_OPTIONS: UgsWorkerOptions = { autoStart: true, intervalMs: 2000, clock: () => Date.now() };

@@ -78,7 +78,7 @@ beforeAll(async () => {
     .overrideProvider(UGS_KEYS)
     .useValue(((header: any, token: any) => keysImpl(header, token)) as JWTVerifyGetKey)
     .overrideProvider(UGS_WORKER_OPTIONS)
-    .useValue({ autoStart: false, intervalMs: 1000, clock: () => Date.now(), budgetTime: "caller" })
+    .useValue({ autoStart: false, intervalMs: 1000, clock: () => Date.now(), budgetTime: "caller", queueTime: "caller" })
     .compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
   configureApp(app);

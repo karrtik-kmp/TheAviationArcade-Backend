@@ -17,6 +17,28 @@ import type { UgsClient, WriteResult } from "./ugs-client.js";
 // that PlayerBalance inserted (test/balance-guard.test.ts allows exactly that, per file, in READ_ONLY_IMPORTERS).
 // Nothing here inserts into a queue table or calls an enqueue helper; those stay private to src/balance.
 
+/**
+ * Whose clock the Postgres queue adapters use for every time they compare or store (A3 review; same rule as the shared
+ * budget, src/ugs/budget.ts). "database" (production): `clock_timestamp()` computed in SQL, so claim, lease, release,
+ * back-off, the pace record and the backlog all use the clock that `enqueueMirror` and `mirrorDeletionDueAt` stamp `due_at`
+ * with (the database's, since A3). The `now` arguments are then ignored, except that `release`/`fail` take the DELAY
+ * (`dueAt - now`) from them and apply it to database time. "caller": the `now` passed in; only for tests that drive
+ * ticks with explicit clocks.
+ */
+export type QueueTime = "database" | "caller";
+
+/** SQL for "now" in the chosen mode. */
+function nowSql(time: QueueTime, now: Date): SQL {
+  return time === "database" ? sql`clock_timestamp()` : sql`${now.toISOString()}::timestamptz`;
+}
+
+/** SQL for the instant `dueAt` that the worker computed as `now + delay`: the same delay after database time, or `dueAt` itself. */
+function dueSql(time: QueueTime, dueAt: Date, now: Date): SQL {
+  if (time === "caller") return sql`${dueAt.toISOString()}::timestamptz`;
+  const delayMs = Math.max(0, dueAt.getTime() - now.getTime());
+  return sql`clock_timestamp() + ${delayMs}::double precision * interval '1 millisecond'`;
+}
+
 /** A row this worker has leased. `key` is the player id (writes) or the UGS player id (deletions). */
 export type Claimed = { key: string; generation: number; claimId: string; attempts: number };
 
@@ -34,14 +56,17 @@ export interface MirrorQueue {
    * a throw; a database error still throws and rejects the whole tick (there is no per-row isolation).
    */
   process(claimed: Claimed, now: Date, signal: AbortSignal): Promise<ProcessResult>;
-  /** Give a claimed row back (budget spent, paused or stopping) without counting an attempt. Only our own claim. */
-  release(claimed: Claimed, dueAt: Date): Promise<void>;
-  /** Back a claimed row off: due again at `dueAt`, one more attempt, short error label. Only our own claim. */
-  fail(claimed: Claimed, dueAt: Date, label: string): Promise<void>;
+  /**
+   * Give a claimed row back (budget spent, paused or stopping) without counting an attempt. Only our own claim.
+   * `dueAt` is `now + delay` on the caller's clock; a database-clock adapter applies the delay to database time.
+   */
+  release(claimed: Claimed, dueAt: Date, now: Date): Promise<void>;
+  /** Back a claimed row off: due again at `dueAt` (as for `release`), one more attempt, short error label. Only our own claim. */
+  fail(claimed: Claimed, dueAt: Date, label: string, now: Date): Promise<void>;
   /** Give up on a claimed row for good (a write rejected too often; the next progress change queues afresh). */
   drop(claimed: Claimed): Promise<void>;
-  /** Rows due at `now` and the earliest due time among them. */
-  backlog(now: Date): Promise<{ count: number; oldest: Date | null }>;
+  /** Rows due at `now` and how long the oldest has been due (0 when none), measured on the queue's own clock. */
+  backlog(now: Date): Promise<{ count: number; lagMs: number }>;
 }
 
 type QueueTable = {
@@ -59,19 +84,19 @@ type QueueTable = {
  * claim_id a fresh uuid, so several instances never share a row and no lock is held across a network call.
  * Both queue tables name their lease columns `due_at` and `claim_id`; the rest comes from the typed handles.
  */
-async function leaseDue(database: DatabaseService, q: QueueTable, limit: number, now: Date): Promise<Claimed[]> {
-  const lease = new Date(now.getTime() + LEASE_MS);
+async function leaseDue(database: DatabaseService, q: QueueTable, limit: number, now: Date, time: QueueTime): Promise<Claimed[]> {
+  const at = nowSql(time, now);
   const result = await database.db.execute(sql`
     WITH picked AS (
       SELECT ${q.key} AS k
       FROM ${q.table}
-      WHERE due_at <= ${now.toISOString()}::timestamptz
+      WHERE due_at <= ${at}
       ORDER BY due_at
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     )
     UPDATE ${q.table}
-    SET due_at = ${lease.toISOString()}::timestamptz, claim_id = gen_random_uuid()
+    SET due_at = ${at} + ${LEASE_MS}::double precision * interval '1 millisecond', claim_id = gen_random_uuid()
     FROM picked
     WHERE ${q.key} = picked.k
     RETURNING ${q.key} AS key, ${q.generation} AS generation, ${q.claimId} AS claim_id, ${q.attempts} AS attempts
@@ -84,12 +109,14 @@ async function leaseDue(database: DatabaseService, q: QueueTable, limit: number,
   }));
 }
 
-async function countDue(database: DatabaseService, table: PgTable, now: Date): Promise<{ count: number; oldest: Date | null }> {
+async function countDue(database: DatabaseService, table: PgTable, now: Date, time: QueueTime): Promise<{ count: number; lagMs: number }> {
+  const at = nowSql(time, now);
   const result = await database.db.execute(sql`
-    SELECT count(*)::int AS n, min(due_at) AS oldest FROM ${table} WHERE due_at <= ${now.toISOString()}::timestamptz
+    SELECT count(*)::int AS n, coalesce(extract(epoch FROM (${at} - min(due_at))) * 1000, 0)::double precision AS lag_ms
+    FROM ${table} WHERE due_at <= ${at}
   `);
-  const row = result.rows[0] as { n: number; oldest: Date | string | null } | undefined;
-  return { count: Number(row?.n ?? 0), oldest: row?.oldest ? new Date(row.oldest) : null };
+  const row = result.rows[0] as { n: number; lag_ms: number | string } | undefined;
+  return { count: Number(row?.n ?? 0), lagMs: Math.max(0, Math.round(Number(row?.lag_ms ?? 0))) };
 }
 
 /**
@@ -106,6 +133,7 @@ export class ProgressWriteQueue implements MirrorQueue {
     private readonly database: DatabaseService,
     private readonly client: UgsClient,
     private readonly minIntervalSec = 0,
+    private readonly time: QueueTime = "database",
   ) {}
 
   claim(limit: number, now: Date): Promise<Claimed[]> {
@@ -120,6 +148,7 @@ export class ProgressWriteQueue implements MirrorQueue {
       },
       limit,
       now,
+      this.time,
     );
   }
 
@@ -157,16 +186,16 @@ export class ProgressWriteQueue implements MirrorQueue {
    * lost (lease expired) matches nothing. Clears `urgent`.
    */
   private async resetChanged(claimed: Claimed, now: Date): Promise<void> {
-    const nowIso = now.toISOString();
+    const at = nowSql(this.time, now);
     await this.database.db.execute(sql`
       UPDATE ugs_mirror_outbox o
       SET due_at = CASE
-            WHEN o.urgent OR ${this.minIntervalSec}::int <= 0 THEN ${nowIso}::timestamptz
+            WHEN o.urgent OR ${this.minIntervalSec}::int <= 0 THEN ${at}
             ELSE coalesce(
-              (SELECT GREATEST(${nowIso}::timestamptz, p.last_mirrored_at + ${this.minIntervalSec}::int * interval '1 second')
+              (SELECT GREATEST(${at}, p.last_mirrored_at + ${this.minIntervalSec}::int * interval '1 second')
                FROM ugs_links l JOIN ugs_mirror_pace p ON p.player_id = l.player_id AND p.ugs_player_id = l.ugs_player_id
                WHERE l.player_id = o.player_id),
-              ${nowIso}::timestamptz)
+              ${at})
           END,
           attempts = 0, last_error = NULL, claim_id = NULL, urgent = false
       WHERE o.player_id = ${claimed.key} AND o.claim_id = ${claimed.claimId}::uuid
@@ -177,11 +206,11 @@ export class ProgressWriteQueue implements MirrorQueue {
    * Remember when this UGS player's copy was last written. Only while the player still has this very link: a player
    * deleted or re-linked while the write was in flight (the FK or the link check) simply records nothing.
    */
-  private async recordWrite(playerId: string, ugsPlayerId: string, at: Date): Promise<void> {
+  private async recordWrite(playerId: string, ugsPlayerId: string, now: Date): Promise<void> {
     try {
       await this.database.db.execute(sql`
         INSERT INTO ugs_mirror_pace (player_id, ugs_player_id, last_mirrored_at)
-        SELECT player_id, ugs_player_id, ${at.toISOString()}::timestamptz
+        SELECT player_id, ugs_player_id, ${nowSql(this.time, now)}
         FROM ugs_links WHERE player_id = ${playerId} AND ugs_player_id = ${ugsPlayerId}
         ON CONFLICT (player_id) DO UPDATE SET ugs_player_id = EXCLUDED.ugs_player_id, last_mirrored_at = EXCLUDED.last_mirrored_at
       `);
@@ -190,14 +219,17 @@ export class ProgressWriteQueue implements MirrorQueue {
     }
   }
 
-  async release(claimed: Claimed, dueAt: Date): Promise<void> {
-    await this.database.db.update(ugsMirrorOutbox).set({ dueAt, claimId: null, urgent: false }).where(this.mine(claimed));
-  }
-
-  async fail(claimed: Claimed, dueAt: Date, label: string): Promise<void> {
+  async release(claimed: Claimed, dueAt: Date, now: Date): Promise<void> {
     await this.database.db
       .update(ugsMirrorOutbox)
-      .set({ dueAt, attempts: sql`${ugsMirrorOutbox.attempts} + 1`, lastError: label, claimId: null, urgent: false })
+      .set({ dueAt: dueSql(this.time, dueAt, now), claimId: null, urgent: false })
+      .where(this.mine(claimed));
+  }
+
+  async fail(claimed: Claimed, dueAt: Date, label: string, now: Date): Promise<void> {
+    await this.database.db
+      .update(ugsMirrorOutbox)
+      .set({ dueAt: dueSql(this.time, dueAt, now), attempts: sql`${ugsMirrorOutbox.attempts} + 1`, lastError: label, claimId: null, urgent: false })
       .where(this.mine(claimed));
   }
 
@@ -205,8 +237,8 @@ export class ProgressWriteQueue implements MirrorQueue {
     await this.database.db.delete(ugsMirrorOutbox).where(this.mine(claimed));
   }
 
-  backlog(now: Date): Promise<{ count: number; oldest: Date | null }> {
-    return countDue(this.database, ugsMirrorOutbox, now);
+  backlog(now: Date): Promise<{ count: number; lagMs: number }> {
+    return countDue(this.database, ugsMirrorOutbox, now, this.time);
   }
 
   private mine(claimed: Claimed) {
@@ -221,6 +253,7 @@ export class CopyDeletionQueue implements MirrorQueue {
   constructor(
     private readonly database: DatabaseService,
     private readonly client: UgsClient,
+    private readonly time: QueueTime = "database",
   ) {}
 
   claim(limit: number, now: Date): Promise<Claimed[]> {
@@ -235,6 +268,7 @@ export class CopyDeletionQueue implements MirrorQueue {
       },
       limit,
       now,
+      this.time,
     );
   }
 
@@ -249,14 +283,17 @@ export class CopyDeletionQueue implements MirrorQueue {
     return "done";
   }
 
-  async release(claimed: Claimed, dueAt: Date): Promise<void> {
-    await this.database.db.update(ugsMirrorDeletions).set({ dueAt, claimId: null }).where(this.mine(claimed));
-  }
-
-  async fail(claimed: Claimed, dueAt: Date, label: string): Promise<void> {
+  async release(claimed: Claimed, dueAt: Date, now: Date): Promise<void> {
     await this.database.db
       .update(ugsMirrorDeletions)
-      .set({ dueAt, attempts: sql`${ugsMirrorDeletions.attempts} + 1`, lastError: label, claimId: null })
+      .set({ dueAt: dueSql(this.time, dueAt, now), claimId: null })
+      .where(this.mine(claimed));
+  }
+
+  async fail(claimed: Claimed, dueAt: Date, label: string, now: Date): Promise<void> {
+    await this.database.db
+      .update(ugsMirrorDeletions)
+      .set({ dueAt: dueSql(this.time, dueAt, now), attempts: sql`${ugsMirrorDeletions.attempts} + 1`, lastError: label, claimId: null })
       .where(this.mine(claimed));
   }
 
@@ -264,8 +301,8 @@ export class CopyDeletionQueue implements MirrorQueue {
     await this.database.db.delete(ugsMirrorDeletions).where(this.mine(claimed));
   }
 
-  backlog(now: Date): Promise<{ count: number; oldest: Date | null }> {
-    return countDue(this.database, ugsMirrorDeletions, now);
+  backlog(now: Date): Promise<{ count: number; lagMs: number }> {
+    return countDue(this.database, ugsMirrorDeletions, now, this.time);
   }
 
   private mine(claimed: Claimed) {
