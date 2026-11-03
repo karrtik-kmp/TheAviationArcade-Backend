@@ -1,10 +1,15 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.13.0
+  version: 0.14.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.14.0 (media plan T3, Backend ADR-0001; staff-only, no change for the game).** `POST /v1/admin/media` is built
+    (it was `x-planned`): a photographer or admin uploads one JPEG or PNG (raw body, at most 5 MB) with a required
+    `Idempotency-Key`; the server checks the image, stores it under its hash and creates an `unverified` item with version 1.
+    The error code `media_invalid` is now served. No response carries a storage path or URL.
 
     **Changelog 0.13.0 (plan R-b, Backend ADR-0002; no change for the game's own calls except one extra database write).** Role
     registration and admin decisions are built. `PUT /v1/me` now also issues the informational `player` role on every call (an
@@ -91,8 +96,8 @@ info:
 
     **Planned contract.** The media contract is planned (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002): the staff
     routes under `/v1/admin/media`, `PUT /v1/admin/content/{module}/items/{id}/media` and `GET /v1/media?ids=`, with the schemas
-    `MediaItem`, `MediaVersion`, `MediaLicence`, `ImageRef` and the error code `media_invalid`. None of it is served, so `info.version`
-    does not change; each route moves to built, with a changelog entry, when its slice lands. Before it, the Logbook was the last
+    `MediaItem`, `MediaVersion`, `MediaLicence`, `ImageRef` and the error code `media_invalid`. Each route moves to built, with a changelog entry,
+    when its slice lands; `POST /v1/admin/media` and `media_invalid` are built (0.14.0), the rest is not served yet. Before it, the Logbook was the last
     planned operation (0.10.0), and 0.11.0 to 0.13.0 added only built routes. An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
     against it. It is NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
     changes to built operations are described under `x-planned-change` and planned fields under
@@ -2155,25 +2160,24 @@ paths:
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   # ---------------------------------------------------------------------------------------------------------
-  # Media pipeline (plan T0). PLANNED: every operation below is x-planned and answers 404 `not_found` until its slice is built.
+  # Media pipeline (plan docs/plans/media-pipeline.md). Built from 0.14.0: POST /v1/admin/media. Every other operation below is
+  # x-planned and answers 404 `not_found` until its slice is built.
   # ---------------------------------------------------------------------------------------------------------
 
   /v1/admin/media:
     post:
       tags: [media, admin]
-      x-planned: true
-      x-planned-note: Media plan T3 (docs/plans/media-pipeline.md). Not built; answers 404 not_found today.
       operationId: uploadMedia
       summary: Upload a new image
       description: |
-        PLANNED. Needs an ACTIVE `photographer` role (an `admin` also qualifies) and a verified email; 403 `forbidden` otherwise. The
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies) and a verified email; 403 `forbidden` otherwise. The
         body is the raw image (Content-Type `image/jpeg` or `image/png`, at most 5 MB), not JSON. The 5 MB limit applies only after the
         token and the role are verified; another Content-Type is 415, a larger body 413 (both `invalid_request`).
 
         The server sniffs the bytes itself (JPEG or PNG signature and dimensions, at most 4096 px a side), hashes them, stores the file
         under its digest, reads it back and compares, then in one transaction records the item (`unverified`, `revision` 1, version 1,
         owner = the verified caller) and one audit row. A bad image is 422 `media_invalid`. The licence starts empty (fill it with
-        `PATCH`); nothing reaches players until an admin publishes.
+        `PATCH`), with `creditRequired` `true` until staff change it; nothing reaches players until an admin publishes.
 
         Requires an `Idempotency-Key`, looked up FIRST (this route has no `revision` fence). A replay needs the same operation (create,
         not a version upload) and the same sha256: it answers 200 with the item as stored now (current state; nothing new is written).
@@ -2647,7 +2651,6 @@ components:
       schema: { $ref: "#/components/schemas/MediaId" }
 
     MediaIdempotencyKey:
-      x-planned: true
       name: Idempotency-Key
       in: header
       required: true
@@ -2790,7 +2793,6 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     MediaBodyTooLarge:
-      x-planned: true
       description: |
         Image body over 5 MB (`invalid_request`). This route's limit applies only to a caller whose Bearer token is verified and who
         holds the required role; the larger body is read after that check. Anything else is read under the global 16 KB limit.
@@ -2802,7 +2804,6 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     MediaUnsupportedType:
-      x-planned: true
       description: A Content-Type other than `image/jpeg` or `image/png` (`invalid_request`). The bytes are also sniffed; a mismatch is 422 `media_invalid`.
       headers:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
@@ -2836,7 +2837,6 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     MediaUploadRefused:
-      x-planned: true
       description: |
         `media_invalid`: the bytes are not a JPEG or PNG the server accepts (truncated, content that does not match the type, or a side
         over 4096 px). `idempotency_key_reused`: the key already stored a different file for this caller. Nothing was written.
@@ -2848,11 +2848,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     MediaStorageUnavailable:
-      x-planned: true
       description: |
         `storage_unavailable`: file storage could not be written or read back (nothing was written to the database). Also
-        `auth_unavailable` and `service_unavailable` as on every route. All carry `Retry-After`; retry the same request, with the same
-        `Idempotency-Key` for an upload.
+        `auth_unavailable` and `service_unavailable` as on every route. All carry `Retry-After` except a storage refusal that a retry will
+        not fix (bad credentials), which has none. Otherwise retry the same request, with the same `Idempotency-Key` for an upload.
       headers:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -3002,6 +3001,7 @@ components:
                 - content_invalid
                 - ugs_link_conflict
                 - storage_unavailable
+                - media_invalid
                 - service_unavailable
                 - internal_error
                 - trip_not_found
@@ -3011,8 +3011,6 @@ components:
                 - local_date_mismatch
                 - idempotency_key_reused
                 - trip_incomplete
-              x-planned-enum:
-                - media_invalid
             message:
               type: string
               description: For logs, not for display or logic.
@@ -4374,8 +4372,8 @@ components:
           items: { $ref: "#/components/schemas/AircraftTagEntry" }
 
     # ---------------------------------------------------------------------------------------------------------
-    # Media pipeline schemas (plan T0, docs/plans/media-pipeline.md, ADR-0001, ADR-0002). PLANNED, not served yet: every
-    # operation that uses them is x-planned. Shapes follow the committed media tables (migration 0017).
+    # Media pipeline schemas (plan T0, docs/plans/media-pipeline.md, ADR-0001, ADR-0002). Served from 0.14.0: MediaItem,
+    # MediaVersion and MediaLicence (returned by POST /v1/admin/media). The rest are used only by x-planned operations. Shapes follow the committed media tables (migration 0017).
     # ---------------------------------------------------------------------------------------------------------
 
     MediaId:

@@ -9,6 +9,7 @@ import { APP_CONFIG } from "./config/config.module.js";
 import type { AppConfig } from "./config/config.module.js";
 import { requestContext } from "./common/request-context.js";
 import { MAX_UPLOAD_BYTES, XLSX_MIME } from "./content/xlsx.js";
+import { MAX_MEDIA_BYTES } from "./content/media/media.service.js";
 import { DrainState } from "./platform/drain-state.js";
 import { countAuthenticatedRequest } from "./platform/rate-limit.js";
 import { ThrottlerStorage } from "@nestjs/throttler";
@@ -20,6 +21,7 @@ function noStore(req: Request, res: Response, next: NextFunction): void {
 }
 
 const readXlsx = express.raw({ type: XLSX_MIME, limit: MAX_UPLOAD_BYTES });
+const readImage = express.raw({ type: ["image/jpeg", "image/png"], limit: MAX_MEDIA_BYTES });
 const UNAUTHORIZED = () => new ApiError(401, "unauthorized", "Sign in required.", { "WWW-Authenticate": "Bearer" });
 
 // Up to 2000 item ids of at most 64 characters each is about 134 KB of JSON.
@@ -97,6 +99,11 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   app.use("/v1/admin/content/:module/imports", roleBodyReader(app, ["admin"], readXlsx));
   app.use("/v1/admin/content/documents/field-awards/imports", roleBodyReader(app, ["admin"], readXlsx));
   app.use("/v1/admin/content/:module/trip-coverage", roleBodyReader(app, ["admin"], readCoverageJson));
+  // Media upload: raw JPEG/PNG, 5 MB, photographer (admins pass). Only the exact path (mounted at "/", never a sub-route).
+  const readMediaUpload = roleBodyReader(app, ["photographer"], readImage);
+  app.use("/v1/admin/media", (req: Request, res: Response, next: NextFunction) =>
+    req.path === "/" ? readMediaUpload(req, res, next) : next(),
+  );
   // JSON only (no urlencoded). Round results are a few hundred bytes; 16 KB is generous.
   app.useBodyParser("json", { limit: "16kb" });
   app.use(noStore);

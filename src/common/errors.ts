@@ -31,6 +31,7 @@ export const ERROR_CODES = [
   "nothing_to_publish",
   "ugs_link_conflict",
   "storage_unavailable",
+  "media_invalid",
   "service_unavailable",
   "internal_error",
 ] as const;
