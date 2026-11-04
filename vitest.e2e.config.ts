@@ -9,6 +9,12 @@ try {
 
 // Tests never reach real UGS: the UGS suites set their own fake values, so nothing real from .env may stay.
 for (const name of Object.keys(process.env)) if (name.startsWith("UGS_")) delete process.env[name];
+// Tests never reach real Bunny either: a developer's .env may hold the live storage password and CDN key (plan T10). Tests
+// use the in-memory store and set any CDN values they need themselves. TRUST_PROXY is dropped so rate-limit tests key on
+// the socket address as they expect.
+for (const name of Object.keys(process.env)) if (name.startsWith("BUNNY_")) delete process.env[name];
+delete process.env.BLOB_STORE;
+delete process.env.TRUST_PROXY;
 
 // Local throwaway default (matches docker-compose.yml). Never the dev database.
 const DEFAULT_TEST_DATABASE_URL =
@@ -34,6 +40,7 @@ export default defineConfig({
       FIREBASE_PROJECT_ID: "demo-airplane-games",
       ALLOW_EMULATOR_TOKENS: "true",
       APP_ENV: "test",
+      BLOB_STORE: "memory",
       // test/api.test.ts sends far more than the default per-minute limits from one IP and one principal.
       // The rate limit tests build their own app with low limits.
       RATE_LIMIT_AUTH_PER_MIN: "100000",

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { userInfo } from "node:os";
+import { tmpdir, userInfo } from "node:os";
+import path from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RoleStore } from "../src/accounts/role-store.js";
@@ -46,10 +47,12 @@ async function withNoActiveAdmin(fn: () => Promise<void>): Promise<void> {
 }
 
 function run(args: string[], env: Record<string, string> = {}) {
-  const result = spawnSync(process.execPath, ["scripts/roles-grant.mjs", ...args], {
+  // Run from the system temp directory: the script reads ".env" from its cwd, and a developer's real one (live Bunny or
+  // cloud settings) must never reach a test. The script resolves dist/ and its packages from its own path.
+  const result = spawnSync(process.execPath, [path.resolve("scripts/roles-grant.mjs"), ...args], {
     encoding: "utf8",
     env: { ...process.env, ...env },
-    cwd: process.cwd(),
+    cwd: tmpdir(),
     timeout: 20_000,
   });
   return { status: result.status, out: result.stdout, err: result.stderr };
