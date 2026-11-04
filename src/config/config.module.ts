@@ -1,6 +1,7 @@
 import { Global, Module } from "@nestjs/common";
 import { parse as parseConnectionString } from "pg-connection-string";
 import { z } from "zod";
+import { accountPrincipalFor } from "../accounts/account-principal.js";
 import { emulatorTokensAllowed } from "../auth/firebase.js";
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
@@ -45,6 +46,12 @@ export type AppConfig = {
   cdn: CdnConfig | undefined;
   /** Present only when every UGS_* setting is given: the one-way progress mirror to Unity Gaming Services. */
   ugs: UgsConfig | undefined;
+  /**
+   * `firebase:<FIREBASE_PROJECT_ID>:<DEMO_ACCOUNT_UID>` of the shared demo account (a password handed to testers), or undefined
+   * when none is configured. It can never hold `photographer` or `admin` (ADR-0002 follow-up, incident 2026-11-04). Not a secret,
+   * but nothing needs it in logs.
+   */
+  demoPrincipal?: string | undefined;
 };
 
 export type UgsConfig = {
@@ -182,6 +189,8 @@ const envSchema = z.object({
   UGS_OIDC_PROVIDER: optionalText,
   UGS_MIRROR_MAX_PER_MIN: optionalInt(1, 33),
   UGS_MIRROR_MIN_INTERVAL_SEC: optionalInt(0, 3600),
+  /** Firebase uid of the website's shared demo account. Optional; when set, that account can never hold photographer/admin. */
+  DEMO_ACCOUNT_UID: optionalText,
 });
 
 /** Parse the environment once. Fails fast, naming the bad variables but never their values. */
@@ -221,6 +230,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_OIDC_PROVIDER,
     UGS_MIRROR_MAX_PER_MIN,
     UGS_MIRROR_MIN_INTERVAL_SEC,
+    DEMO_ACCOUNT_UID,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -328,6 +338,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (ugs !== undefined && APP_ENV !== "test" && FIREBASE_PROJECT_ID.startsWith("demo-")) {
     throw new Error("Invalid environment configuration: UGS_* settings are not allowed with a demo- FIREBASE_PROJECT_ID");
   }
+  // Same uid rules as every principal (1-128 characters, no ':' or '/', no control characters). Name only, never the value.
+  let demoPrincipal: string | undefined;
+  if (DEMO_ACCOUNT_UID !== undefined) {
+    demoPrincipal = accountPrincipalFor(DEMO_ACCOUNT_UID, FIREBASE_PROJECT_ID);
+    if (demoPrincipal === undefined) throw new Error("Invalid environment configuration: DEMO_ACCOUNT_UID");
+  }
   return {
     appEnv: APP_ENV,
     databaseUrl: DATABASE_URL,
@@ -350,6 +366,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     bunny,
     cdn,
     ugs,
+    demoPrincipal,
   };
 }
 

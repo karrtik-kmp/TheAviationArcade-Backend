@@ -59,6 +59,27 @@ describe("loadConfig", () => {
     });
   });
 
+  describe("DEMO_ACCOUNT_UID", () => {
+    it("is unset by default and when blank", () => {
+      expect(loadConfig(local).demoPrincipal).toBeUndefined();
+      expect(loadConfig({ ...local, DEMO_ACCOUNT_UID: "  " }).demoPrincipal).toBeUndefined();
+    });
+
+    it("derives firebase:<project>:<uid>, trimming the uid", () => {
+      expect(loadConfig({ ...local, DEMO_ACCOUNT_UID: " demo-shared-uid " }).demoPrincipal).toBe("firebase:demo-airplane-games:demo-shared-uid");
+      expect(loadConfig({ ...production, DEMO_ACCOUNT_UID: "AbC123" }).demoPrincipal).toBe("firebase:airplane-games-auth-20261022:AbC123");
+      expect(loadConfig({ ...local, DEMO_ACCOUNT_UID: "x".repeat(128) }).demoPrincipal).toBe(`firebase:demo-airplane-games:${"x".repeat(128)}`);
+    });
+
+    it("refuses a uid the principal rules refuse, naming the variable and never the value", () => {
+      for (const bad of ["a:b", "a/b", "x".repeat(129), "a\u0000b", "a\tb", "firebase:demo-airplane-games:abc"]) {
+        const text = message({ ...local, DEMO_ACCOUNT_UID: bad });
+        expect(text, JSON.stringify(bad)).toContain("DEMO_ACCOUNT_UID");
+      }
+      expect(message({ ...local, DEMO_ACCOUNT_UID: "secret:uid" })).not.toContain("secret");
+    });
+  });
+
   it("accepts production with the real project and no emulator tokens", () => {
     expect(loadConfig(production)).toMatchObject({ appEnv: "production", emulatorTokens: false });
   });

@@ -27,7 +27,7 @@ beforeAll(async () => {
   const build = spawnSync(process.execPath, ["node_modules/@nestjs/cli/bin/nest.js", "build"], { encoding: "utf8" });
   expect(build.status, build.stdout + build.stderr).toBe(0);
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-  store = new RoleStore(new DatabaseService(sql));
+  store = new RoleStore(new DatabaseService(sql), { demoPrincipal: undefined });
 });
 
 afterAll(async () => {

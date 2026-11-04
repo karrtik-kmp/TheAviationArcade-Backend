@@ -58,7 +58,7 @@ describe("a pending, rejected or revoked role grants nothing", () => {
     const database = {
       db: { select: () => ({ from: () => ({ where: (condition: SQL) => { captured = condition; return Promise.resolve([]); } }) }) },
     } as unknown as DatabaseService;
-    expect(await new RolesService(database).activeRoles(principal("abc"))).toEqual([]);
+    expect(await new RolesService(database, { demoPrincipal: undefined }).activeRoles(principal("abc"))).toEqual([]);
     const query = new PgDialect().sqlToQuery(captured as SQL);
     expect(query.sql).toContain('"state" = $');
     expect(query.params).toEqual([principal("abc"), "active"]);

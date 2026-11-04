@@ -3,7 +3,7 @@ import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
-import { uidOfAccountPrincipal } from "../../accounts/account-principal.js";
+import { isDemoPrincipal, uidOfAccountPrincipal } from "../../accounts/account-principal.js";
 import { ApiError } from "../../common/errors.js";
 import type { AppConfig } from "../../config/config.module.js";
 import { databaseNow } from "../../database/clock.js";
@@ -269,6 +269,7 @@ export type RefusalCode =
   | "rejected"
   | "conflict"
   | "wrong_project"
+  | "demo_account"
   | "no_photographer_role"
   | "bad_path"
   | "file_missing"
@@ -337,6 +338,7 @@ type Prepared = {
 class ClaimLost extends ExpectedRollback {}
 
 const refuse = (code: RefusalCode, detail: string): Refusal => ({ ok: false, code, detail });
+const DEMO_OWNER_DETAIL = "the owner is the shared demo account, which cannot own imported photos (it never holds the photographer role).";
 const operatorName = (operator: string): string => `operator:${operator}`.slice(0, 256);
 
 /**
@@ -394,6 +396,7 @@ async function prepare(entry: ImportEntry, dir: string, ctx: ImportContext, serv
   if (uidOfAccountPrincipal(entry.owner, ctx.config.firebaseProjectId) === undefined) {
     return refuse("wrong_project", `owner is not firebase:${ctx.config.firebaseProjectId}:<uid> (another project, or not a principal).`);
   }
+  if (isDemoPrincipal(ctx.config, entry.owner)) return refuse("demo_account", DEMO_OWNER_DETAIL);
   if (!(await holdsPhotographer(ctx.database.db, entry.owner))) {
     return refuse("no_photographer_role", "the owner has no active photographer role (revoked, blocked, pending, rejected or no row).");
   }
@@ -431,6 +434,7 @@ async function writeEntry(entry: ImportEntry, prepared: Prepared, ctx: ImportCon
   try {
     const outcome = await ctx.database.withTransaction(async (tx: Tx): Promise<{ mediaId: number } | Refusal> => {
       // Re-checked in the transaction: a role revoked since the plan check must not receive an item.
+      if (isDemoPrincipal(ctx.config, entry.owner)) return refuse("demo_account", DEMO_OWNER_DETAIL);
       if (!(await holdsPhotographer(tx, entry.owner))) return refuse("no_photographer_role", "the owner has no active photographer role.");
       const now = await databaseNow(tx);
       const [item] = await tx

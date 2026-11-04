@@ -78,6 +78,20 @@ Fixed constraints:
   an admin who owns an item can upload and state rights for it like any photographer.
 - Details: `docs/plans/media-rights-and-public.md` (Wave R), migration 0019, API 0.19.0.
 
+## Follow-up (2026-11-04, the demo account never holds staff roles; incident 2026-11-04)
+
+- An operator ran `roles:grant` on the website's shared demo account (one password handed to testers), making it admin; it was
+  revoked by hand. The website's rule is "staff and photographer are never the demo account"; the backend now enforces it.
+- Optional env `DEMO_ACCOUNT_UID` (validated like any uid) gives `config.demoPrincipal = firebase:<FIREBASE_PROJECT_ID>:<uid>`.
+  That principal can never hold `photographer` or `admin`, in depth: `RolesGuard` treats it as holding no privileged role (403
+  `forbidden` on every `@Roles` route) even if an active row exists; `grantAdmin` (API and operator command), approving a
+  photographer request, and `requestPhotographer` refuse it with 403 `forbidden` and write nothing; `scripts/roles-grant.mjs`
+  refuses it before connecting (exit 2); `media:import` refuses it as an owner (code `demo_account`).
+- The demo account's admin row never counts toward "an active admin exists": the last-admin revoke guard and the `roles:grant`
+  recovery check both ignore it, so a stray row can neither keep the last real admin revocable nor block recovery.
+- Revoke, reject and block stay allowed so a stray row can be cleaned up. Rows are not hidden: `GET /v1/me/roles` and the admin
+  views still show them. No API or contract change. Unset `DEMO_ACCOUNT_UID` = no demo account, no check.
+
 ## Options considered
 
 | Option | Verdict |

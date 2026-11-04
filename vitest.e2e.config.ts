@@ -15,6 +15,8 @@ for (const name of Object.keys(process.env)) if (name.startsWith("UGS_")) delete
 for (const name of Object.keys(process.env)) if (name.startsWith("BUNNY_")) delete process.env[name];
 delete process.env.BLOB_STORE;
 delete process.env.TRUST_PROXY;
+// The demo-account rule is set per test (test/demo-account.e2e.test.ts); a developer's value must not switch it on elsewhere.
+delete process.env.DEMO_ACCOUNT_UID;
 
 // Local throwaway default (matches docker-compose.yml). Never the dev database.
 const DEFAULT_TEST_DATABASE_URL =

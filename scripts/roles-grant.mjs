@@ -75,6 +75,14 @@ if (target.startsWith("firebase:")) {
   if (principal === undefined) refuse("That is not a valid uid (1-128 characters, no surrounding whitespace, no ':' or '/', no control characters).");
 }
 
+if (config.demoPrincipal === undefined) {
+  console.log("Note: DEMO_ACCOUNT_UID is not set, so the shared demo account is not recognised here.");
+}
+// The shared demo account (DEMO_ACCOUNT_UID) never holds a staff role (incident 2026-11-04); the store refuses it as well.
+if (config.demoPrincipal !== undefined && principal === config.demoPrincipal) {
+  refuse("That is the shared demo account (DEMO_ACCOUNT_UID); it can never hold the admin role.");
+}
+
 let host;
 let port;
 let database;
@@ -88,7 +96,8 @@ try {
   refuse("DATABASE_URL could not be parsed.");
 }
 console.log(`Target database: host ${host}, port ${port}, database ${database} (APP_ENV=${appEnv}).`);
-console.log(`Grant admin to ${principal}.`);
+console.log(`Principal about to be granted admin: ${principal}`);
+console.log("Check this is the right person's uid before confirming with --yes.");
 if (!confirmed) refuse("Add --yes to confirm this is the right database and account.");
 
 const { default: pg } = await import("pg");
@@ -106,7 +115,7 @@ try {
 }
 
 try {
-  const store = new RoleStore(new DatabaseService(pool));
+  const store = new RoleStore(new DatabaseService(pool), config);
   // actorName in the store cuts `operator:<id>` to 256 characters.
   const outcome = await store.grantAdmin({ kind: "operator", id: osUser }, principal, null, { onlyIfNoActiveAdmin: true, email });
   if (!outcome.ok) {

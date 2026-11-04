@@ -1,6 +1,9 @@
-import { Injectable } from "@nestjs/common";
-import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { Inject, Injectable } from "@nestjs/common";
+import { and, asc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { ApiError } from "../common/errors.js";
+import { APP_CONFIG } from "../config/config.module.js";
+import type { AppConfig } from "../config/config.module.js";
+import { demoAccountError, isDemoPrincipal } from "./account-principal.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Database, Tx } from "../database/database.module.js";
 import { databaseNow } from "../database/clock.js";
@@ -98,11 +101,18 @@ async function readRow(tx: Database | Tx, principal: string, role: AccountRole):
   return row;
 }
 
-async function activeAdminCount(tx: Tx): Promise<number> {
+/** Active admins, not counting the shared demo account's row: it holds no real privilege, so it never keeps "an admin" alive. */
+async function activeAdminCount(tx: Tx, demoPrincipal?: string): Promise<number> {
   const [row] = await tx
     .select({ n: sql<number>`count(*)::int` })
     .from(accountRoles)
-    .where(and(eq(accountRoles.role, "admin"), eq(accountRoles.state, "active")));
+    .where(
+      and(
+        eq(accountRoles.role, "admin"),
+        eq(accountRoles.state, "active"),
+        demoPrincipal === undefined ? undefined : ne(accountRoles.principal, demoPrincipal),
+      ),
+    );
   return row?.n ?? 0;
 }
 
@@ -117,7 +127,10 @@ export type RoleQueuePage = { rows: (RoleRow & { requestedKey: string })[]; hasM
 
 @Injectable()
 export class RoleStore {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: Pick<AppConfig, "demoPrincipal">,
+  ) {}
 
   /** The caller's own rows, in ACCOUNT_ROLES order. */
   async rolesOf(principal: string): Promise<RoleRow[]> {
@@ -163,6 +176,8 @@ export class RoleStore {
    * returning the current row. Audit `role_request` (actor = the account) only when a row changed.
    */
   async requestPhotographer(principal: string, email: string): Promise<RequestOutcome> {
+    // The shared demo account never holds a staff role: refused before any read or write.
+    if (isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
     // Unlocked pre-read, as in issuePlayer: pending and active rows only leave under an admin decision, so a stale read of
     // either is harmless and a repeat request never takes the global lock.
     // A `blocked` row is deliberately NOT short-circuited: it is refused under the lock, where a block landing between this
@@ -221,6 +236,8 @@ export class RoleStore {
     if (!DECIDABLE[decision].includes(role)) {
       return { ok: false, error: new ApiError(404, "not_found", "No such endpoint.") };
     }
+    // Approving would make the shared demo account a photographer. Reject, revoke and (via setBlocked) block stay allowed for cleanup.
+    if (decision === "approve" && isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
     return this.database.withTransaction(async (tx): Promise<DecisionOutcome> => {
       await lockAccountRoles(tx);
       if (!(await actorStillAdmin(tx, actor))) {
@@ -233,7 +250,7 @@ export class RoleStore {
       if (current.state !== transition.from || current.revision !== revision) {
         return { ok: false, error: conflict(role, current, wanted) };
       }
-      if (role === "admin" && decision === "revoke" && (await activeAdminCount(tx)) < 2) {
+      if (role === "admin" && decision === "revoke" && (await activeAdminCount(tx, this.config.demoPrincipal)) < 2) {
         return {
           ok: false,
           error: new ApiError(
@@ -273,13 +290,15 @@ export class RoleStore {
     note: string | null,
     options?: { onlyIfNoActiveAdmin?: boolean; email?: string | null },
   ): Promise<DecisionOutcome> {
+    // The shared demo account never becomes admin, whoever asks (API admin or operator command): refused before any write.
+    if (isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
     return this.database.withTransaction(async (tx): Promise<DecisionOutcome> => {
       await lockAccountRoles(tx);
       if (!(await actorStillAdmin(tx, actor))) {
         return { ok: false, error: new ApiError(403, "forbidden", "Requires the admin role.") };
       }
       // The operator command (first admin / recovery) passes this: checked under the same lock as the write.
-      if (options?.onlyIfNoActiveAdmin && (await activeAdminCount(tx)) > 0) {
+      if (options?.onlyIfNoActiveAdmin && (await activeAdminCount(tx, this.config.demoPrincipal)) > 0) {
         return {
           ok: false,
           error: new ApiError(409, "version_conflict", "An active admin already exists; grant admin through the admin API. Nothing was changed."),

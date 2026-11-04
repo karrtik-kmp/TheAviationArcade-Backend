@@ -189,7 +189,9 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   ownership checks. A client-chosen role, header, query or email never grants anything; no environment list exists. An
   admin needs no player row. No email is stored anywhere: rows carry the principal only. The table's CHECKs tie the fields to the
   state: pending exactly while `decided_at` and `decided_by` are both NULL, only a photographer request can be pending, and
-  `revision >= 1` is the optimistic fence for decisions (R-b bumps it on every transition).
+  `revision >= 1` is the optimistic fence for decisions (R-b bumps it on every transition). The configured shared demo account
+  (`DEMO_ACCOUNT_UID`) can never hold `photographer` or `admin`: the guard ignores such rows and the role store, `roles:grant`
+  and `media:import` refuse it (incident 2026-11-04).
 - **Import (`POST /v1/admin/content/:module/imports`).** Raw xlsx, 5 MB. Unzip-bomb guard before parsing
   (`fflate` streaming count of real output: 25 MB / 100 entries; the xlsx libraries have none), plus 5,000 rows
   and 50 columns checked on the cell references in every worksheet's XML before `read-excel-file` runs (it

@@ -90,8 +90,11 @@ function context(target: { prototype: { handler(): void } }, req: object): Execu
 /** A RolesService whose database read is a fixed table, counting lookups. */
 class StubRoles extends RolesService {
   lookups: string[] = [];
-  constructor(private readonly table: Record<string, AccountRole[]>) {
-    super({} as DatabaseService);
+  constructor(
+    private readonly table: Record<string, AccountRole[]>,
+    demoPrincipal?: string,
+  ) {
+    super({} as DatabaseService, { demoPrincipal });
   }
   override async activeRoles(principal: string): Promise<AccountRole[]> {
     this.lookups.push(principal);
@@ -151,6 +154,20 @@ describe("RolesGuard", () => {
     const req = { ...verified("firebase:demo-airplane-games:nobody"), roles: ["admin"], headers: { "x-role": "admin" } };
     await forbidden(guard.canActivate(context(AdminOnly, req)));
     expect(req.roles).toEqual([]);
+  });
+
+  it("the configured demo account holds no privileged role even with active rows; others and the unset case are unaffected", async () => {
+    const demo = "firebase:demo-airplane-games:demo-shared";
+    const table = { [demo]: ["player", "photographer", "admin"] as AccountRole[], [admin]: ["admin"] as AccountRole[] };
+    const guard = new RolesGuard(new StubRoles(table, demo), new Reflector());
+    const req: Record<string, unknown> = { principal: demo, email: "x@sites.test", emailVerified: true };
+    await forbidden(guard.canActivate(context(AdminOnly, req)));
+    await forbidden(guard.canActivate(context(MethodLevel, { ...req })));
+    expect(req["roles"]).toEqual(["player"]);
+    expect(await guard.canActivate(context(AdminOnly, verified(admin)))).toBe(true);
+    // Without DEMO_ACCOUNT_UID configured nothing changes.
+    const open = new RolesGuard(new StubRoles(table), new Reflector());
+    expect(await open.canActivate(context(AdminOnly, verified(demo)))).toBe(true);
   });
 });
 

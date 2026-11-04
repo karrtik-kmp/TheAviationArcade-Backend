@@ -1,9 +1,12 @@
-import { Injectable, SetMetadata, createParamDecorator } from "@nestjs/common";
+import { Inject, Injectable, SetMetadata, createParamDecorator } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import type { CanActivate, ExecutionContext } from "@nestjs/common";
 import { and, eq } from "drizzle-orm";
 import type { Request } from "express";
+import { isDemoPrincipal } from "../accounts/account-principal.js";
 import { ApiError } from "../common/errors.js";
+import { APP_CONFIG } from "../config/config.module.js";
+import type { AppConfig } from "../config/config.module.js";
 import { DatabaseService } from "../database/database.module.js";
 import { ACCOUNT_ROLES } from "../db/enums.js";
 import type { AccountRole } from "../db/enums.js";
@@ -60,7 +63,10 @@ export function forbidden(required: readonly AccountRole[]): ApiError {
 /** Reads the caller's roles. One indexed query (the primary key starts with principal); never cached. */
 @Injectable()
 export class RolesService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: Pick<AppConfig, "demoPrincipal">,
+  ) {}
 
   /** ACTIVE roles of exactly this principal, in ACCOUNT_ROLES order. An unknown value (impossible under the CHECK) is dropped. */
   async activeRoles(principal: string): Promise<AccountRole[]> {
@@ -76,7 +82,9 @@ export class RolesService {
   async authorize(req: Request, required: readonly AccountRole[]): Promise<readonly AccountRole[]> {
     // A role route behind @Public() has no verified principal: refuse rather than guess.
     if (!req.principal) throw forbidden(required);
-    const active = await this.activeRoles(req.principal);
+    const rows = await this.activeRoles(req.principal);
+    // The shared demo account holds no privileged role whatever the table says (ADR-0002 follow-up, incident 2026-11-04).
+    const active = isDemoPrincipal(this.config, req.principal) ? rows.filter((role) => !VERIFIED_EMAIL_ROLES.has(role)) : rows;
     req.roles = active;
     if (!satisfiesRoles(required, active, { emailVerified: req.emailVerified, email: req.email })) throw forbidden(required);
     return active;
