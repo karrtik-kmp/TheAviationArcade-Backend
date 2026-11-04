@@ -34,7 +34,10 @@ const CREDIT_MAX = 200;
 
 /** D1 `submissions.status` values. `rejected` is refused per entry (ruling 2026-11-04); the rest are imported. */
 export const D1_STATUSES = ["pending", "changes_requested", "approved", "rejected"] as const;
-/** D1 spelling of `payload.rightsBasis`. Audit only. */
+/**
+ * Manifest values of the rights basis. NOT the D1 spelling: D1 stores `payload.rightsBasis` as `owner | authorized`, and the
+ * website's export maps `owner` to `own`. Audit only.
+ */
 export const D1_RIGHTS_BASES = ["own", "authorized"] as const;
 
 const optionalText = z.string().optional();
@@ -56,6 +59,9 @@ const entrySchema = z.strictObject({
   location: optionalText,
   airportCode: optionalText,
   capturedOn: optionalText,
+  title: optionalText,
+  factualSource: optionalText,
+  rightsEvidence: optionalText,
 });
 
 const manifestSchema = z.strictObject({
@@ -177,32 +183,81 @@ const LABELLED = [
   ["capturedOn", "Captured on"],
 ] as const;
 
+export const TITLE_MAX = 160;
+export const FACTUAL_SOURCE_MAX = 600;
+export const RIGHTS_EVIDENCE_MAX = 2400;
+
+/**
+ * D1 allowed internal newlines in `title` and `factualSource`; rather than refuse the photo, every whitespace run (newlines and
+ * tabs included) becomes one space and the ends are trimmed. Another control character still refuses. null = empty after collapsing.
+ */
+function collapseLine(raw: string): { ok: true; value: string | null } | { ok: false } {
+  const value = raw.replace(/\s+/gu, " ").trim();
+  if (CONTROL.test(value)) return { ok: false };
+  return { ok: true, value: value === "" ? null : value };
+}
+
+/**
+ * `rightsEvidence` is kept verbatim (CRLF to LF, trimmed) in the audit detail, NOT in the description (it may exceed its cap).
+ * `\n` and `\t` are allowed; any other control character refuses (NUL cannot be stored in JSONB anyway). Empty = absent (null).
+ */
+export function normaliseRightsEvidence(raw: string | undefined): { ok: true; value: string | null } | { ok: false; reason: string } {
+  if (raw === undefined) return { ok: true, value: null };
+  const unified = raw.replace(/\r\n/g, "\n");
+  if (/[^\P{Cc}\n\t]/u.test(unified)) return { ok: false, reason: "rightsEvidence holds a control character other than a newline or tab." };
+  const text = unified.trim();
+  if (codePoints(text) > RIGHTS_EVIDENCE_MAX) return { ok: false, reason: `rightsEvidence is over ${RIGHTS_EVIDENCE_MAX} characters.` };
+  return { ok: true, value: text === "" ? null : text };
+}
+
+type ComposeResult = { ok: true; value: string | null } | { ok: false; code: "bad_description" | "bad_title" | "bad_factual_source"; reason: string };
+
 /**
  * The stored description of an imported photo: the free description (if any), then, after one blank line, one labelled line per
- * present field: "Aircraft: …", "Airline: …", "Registration: …", "Location: …", "Airport: …", "Captured on: …". A labelled value is
- * one line: a control character (a newline included) refuses it; a value that is only whitespace counts as absent. The free
- * description may hold newlines. The whole text goes through `normaliseMediaDescription` (1-2000 code points, `\n` the only control
- * character); anything else is refused, never truncated or stripped. `value: null` = nothing to store.
+ * present field: "Title: …", "Aircraft: …", "Airline: …", "Registration: …", "Location: …", "Airport: …", "Captured on: …",
+ * "Facts source: …" (title first, facts source last). A labelled value is one line: a control character (a newline included)
+ * refuses it, except `title` and `factualSource`, whose whitespace runs are collapsed to one space (max 160 / 600 code points after
+ * collapsing, else refused). A value that is only whitespace counts as absent. The free description may hold newlines. The whole text
+ * goes through `normaliseMediaDescription` (1-2000 code points, `\n` the only control character); anything else is refused, never
+ * truncated or stripped. `value: null` = nothing to store.
  */
-export function composeImportDescription(entry: ImportEntry): { ok: true; value: string | null } | { ok: false; reason: string } {
+export function composeImportDescription(entry: ImportEntry): ComposeResult {
   const lines: string[] = [];
+  if (entry.title !== undefined) {
+    const title = collapseLine(entry.title);
+    if (!title.ok) return { ok: false, code: "bad_title", reason: "title holds a control character." };
+    if (title.value !== null) {
+      if (codePoints(title.value) > TITLE_MAX) return { ok: false, code: "bad_title", reason: `title is over ${TITLE_MAX} characters.` };
+      lines.push(`Title: ${title.value}`);
+    }
+  }
   for (const [key, label] of LABELLED) {
     const raw = entry[key];
     if (raw === undefined || raw.trim() === "") continue;
-    if (CONTROL.test(raw)) return { ok: false, reason: `${key} holds a control character (labelled fields must be one line).` };
+    if (CONTROL.test(raw)) return { ok: false, code: "bad_description", reason: `${key} holds a control character (labelled fields must be one line).` };
     lines.push(`${label}: ${raw.trim()}`);
+  }
+  if (entry.factualSource !== undefined) {
+    const source = collapseLine(entry.factualSource);
+    if (!source.ok) return { ok: false, code: "bad_factual_source", reason: "factualSource holds a control character." };
+    if (source.value !== null) {
+      if (codePoints(source.value) > FACTUAL_SOURCE_MAX) {
+        return { ok: false, code: "bad_factual_source", reason: `factualSource is over ${FACTUAL_SOURCE_MAX} characters.` };
+      }
+      lines.push(`Facts source: ${source.value}`);
+    }
   }
   // A control character other than a newline is refused wherever it is, even at an edge that trimming would remove.
   if (entry.description !== undefined && /[^\P{Cc}\n]/u.test(entry.description.replace(/\r\n/g, "\n"))) {
-    return { ok: false, reason: "the description holds a control character other than a newline." };
+    return { ok: false, code: "bad_description", reason: "the description holds a control character other than a newline." };
   }
-  const free =entry.description !== undefined && entry.description.trim() !== "" ? entry.description.trim() : undefined;
+  const free = entry.description !== undefined && entry.description.trim() !== "" ? entry.description.trim() : undefined;
   const parts: string[] = [];
   if (free !== undefined) parts.push(free);
   if (lines.length > 0) parts.push(lines.join("\n"));
   if (parts.length === 0) return { ok: true, value: null };
   const normalised = normaliseMediaDescription(parts.join("\n\n"));
-  if (normalised === null) return { ok: false, reason: "the description has a control character other than a newline, or is over 2000 characters." };
+  if (normalised === null) return { ok: false, code: "bad_description", reason: "the description has a control character other than a newline, or is over 2000 characters." };
   return { ok: true, value: normalised };
 }
 
@@ -224,6 +279,9 @@ export type RefusalCode =
   | "bad_submitted_at"
   | "bad_description"
   | "bad_credit"
+  | "bad_title"
+  | "bad_factual_source"
+  | "bad_rights_evidence"
   | "storage";
 
 export type EntryReport = { sourceId: string; status: EntryStatus; code?: RefusalCode | "unexpected"; detail?: string; mediaId?: string };
@@ -273,6 +331,7 @@ type Prepared = {
   submittedAt: Date;
   description: string | null;
   credit: string | null;
+  rightsEvidence: string | null;
 };
 
 class ClaimLost extends ExpectedRollback {}
@@ -341,7 +400,9 @@ async function prepare(entry: ImportEntry, dir: string, ctx: ImportContext, serv
   const submitted = parseSubmittedAt(entry.submittedAt, (ctx.now ?? (() => new Date()))());
   if (!submitted.ok) return refuse("bad_submitted_at", submitted.reason);
   const description = composeImportDescription(entry);
-  if (!description.ok) return refuse("bad_description", description.reason);
+  if (!description.ok) return refuse(description.code, description.reason);
+  const evidence = normaliseRightsEvidence(entry.rightsEvidence);
+  if (!evidence.ok) return refuse("bad_rights_evidence", evidence.reason);
   // A credit that is empty after trimming counts as absent (like the labelled fields); otherwise it must be a clean one-liner.
   const credit = entry.credit === undefined || entry.credit.trim() === "" ? null : entry.credit;
   if (credit !== null && (credit.trim() !== credit || CONTROL.test(credit) || codePoints(credit) > CREDIT_MAX)) {
@@ -359,7 +420,7 @@ async function prepare(entry: ImportEntry, dir: string, ctx: ImportContext, serv
     throw error;
   }
   if (image.sha256 !== entry.sha256) return refuse("sha_mismatch", "the file's sha256 differs from the manifest's.");
-  return { ok: true, bytes, image, submittedAt: submitted.at, description: description.value, credit };
+  return { ok: true, bytes, image, submittedAt: submitted.at, description: description.value, credit, rightsEvidence: evidence.value };
 }
 
 /** Write one prepared entry: blob first (read back), then one transaction. Returns the media id, or a report for a lost race. */
@@ -413,6 +474,7 @@ async function writeEntry(entry: ImportEntry, prepared: Prepared, ctx: ImportCon
           rightsBasis: entry.rightsBasis,
           submittedAt: prepared.submittedAt.toISOString(),
           mediaId: mediaIdOf(item.id),
+          ...(prepared.rightsEvidence !== null ? { rightsEvidence: prepared.rightsEvidence } : {}),
           note: `Imported D1 proposal: submitted for private editorial review only; no publishing licence granted (rightsBasis: ${entry.rightsBasis}).`,
         },
         createdAt: now,

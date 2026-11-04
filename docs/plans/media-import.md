@@ -42,15 +42,23 @@ audits as `operator:<os user>`.
       "rightsBasis": "own | authorized",
       "submittedAt": "2026-10-01T12:00:00Z",
       "description": "optional free text",
-      "aircraft": "", "airline": "", "registration": "", "location": "", "airportCode": "", "capturedOn": ""
+      "aircraft": "", "airline": "", "registration": "", "location": "", "airportCode": "", "capturedOn": "",
+      "title": "", "factualSource": "", "rightsEvidence": ""
     }
   ]
 }
 ```
 
-Required: `sourceId` (1-128), `owner`, `status`, `file`, `contentType`, `sha256`, `rightsBasis` (D1 spelling `authorized`, not the
-wire spelling `authorised`), `submittedAt`. The rest are optional strings. A `sourceId` may appear once. Entries are checked
-one by one; a bad entry is reported as refused and never stops the others.
+Required: `sourceId` (1-128), `owner`, `status`, `file`, `contentType`, `sha256`, `rightsBasis` (`own` or `authorized`: D1
+stores `owner | authorized`, and the website's export maps `owner` to `own`; `authorized` keeps the D1 spelling, not the wire
+spelling `authorised`), `submittedAt`. The rest are optional strings.
+
+**Whole-run refusals (exit 2, nothing imported):** `manifest.json` missing, not a regular file, over 10 MB or not valid JSON; any
+schema violation in any entry (an unknown key, a missing required field, a `status` or `rightsBasis` outside its list, a non-string
+value, or a length cap: `sourceId` 1-128, `owner` 512, `file` 255, `contentType` 100, `sha256` 100, `submittedAt` 64); `version`
+other than 1 or `source` other than `d1`; more than 5000 entries; a `sourceId` listed twice. **Everything else is per entry**
+(owner project and role, rejected status, path, file, size, type, digest, date, credit, description): a bad entry is reported as
+refused and never stops the others.
 
 | Field | Backend use |
 |---|---|
@@ -62,13 +70,25 @@ one by one; a bad entry is reported as refused and never stops the others.
 | `credit` | `credit_name` (1-200 characters, one line, no surrounding whitespace; absent, empty or only spaces = none). `credit_required` starts true |
 | `rightsBasis` | Audit only |
 | `submittedAt` | ISO 8601 UTC with `Z`, a real date, not in the future; becomes `rights_stated_at` |
-| `description` + `aircraft`, `airline`, `registration`, `location`, `airportCode`, `capturedOn` | Composed into the staff-only description (below) |
+| `description` + `title`, `aircraft`, `airline`, `registration`, `location`, `airportCode`, `capturedOn`, `factualSource` | Composed into the staff-only description (below) |
+| `rightsEvidence` | Not in the description (it may exceed its 2000 cap): kept verbatim in the `media_import` audit detail (below) |
 
 **Description composition.** The free `description` (trimmed), then, after one blank line, one line per present labelled field in
-this order: `Aircraft: …`, `Airline: …`, `Registration: …`, `Location: …`, `Airport: …`, `Captured on: …`. A whitespace-only value
-counts as absent; nothing at all stores no description. The result goes through `normaliseMediaDescription` (CRLF to LF, 1-2000
-code points, `\n` the only control character). A control character anywhere (also at an edge), a labelled value with a newline, or a
-result over 2000 characters **refuses the entry**; nothing is truncated or stripped.
+this order: `Title: …`, `Aircraft: …`, `Airline: …`, `Registration: …`, `Location: …`, `Airport: …`, `Captured on: …`,
+`Facts source: …`. A whitespace-only value counts as absent; nothing at all stores no description. The result goes through
+`normaliseMediaDescription` (CRLF to LF, 1-2000 code points, `\n` the only control character). A control character anywhere (also at
+an edge), a labelled value with a newline (except `title` and `factualSource`, below), or a result over 2000 characters **refuses
+the entry**; nothing is truncated or stripped.
+
+**`title` and `factualSource` collapse instead of refusing newlines (user ruling 2026-11-04).** D1 allowed internal newlines in
+these two (D1 limits: `title` 160, `factualSource` 600, `rightsEvidence` 2400), so every whitespace run (newlines and tabs
+included) becomes one space and the ends are trimmed, which keeps the text without refusing the photo. Empty after that = absent.
+Over 160 (`title`, code `bad_title`) or 600 (`factualSource`, `bad_factual_source`) code points after collapsing, or any other
+control character: refused. The other labelled fields keep the stricter refuse-on-newline rule.
+
+**`rightsEvidence`.** CRLF to LF, trimmed; `\n` and `\t` allowed, any other control character (NUL included, which JSONB cannot
+hold) or more than 2400 code points refuses the entry (`bad_rights_evidence`). Empty = the audit key is omitted. Otherwise it is
+stored verbatim, newlines and all, as `rightsEvidence` in the audit detail. Staff-only; no migration and no API change.
 
 Not imported: contact `email` (not in the schema at all, never stored or audited), the photographer display name, editorial review
 state.
@@ -84,7 +104,7 @@ transaction is harmless):
 3. `media_imports` claim, `INSERT … ON CONFLICT DO NOTHING RETURNING`. Lost race: the transaction rolls back and the entry is
    re-read: same owner and sha256 = "already imported", otherwise "conflict" (refused).
 4. Audit `media_import` (actor `operator:<os user>`; detail: `sourceId`, `owner`, `status`, `rightsBasis`, `submittedAt`, `mediaId`,
-   and the ruling-1 `note`; never an email).
+   `rightsEvidence` when present, and the ruling-1 `note`; never an email).
 
 The role is checked again inside the transaction with `FOR SHARE`, which waits for a concurrent revoke or block. Files (and the
 manifest) are read through an open handle with `O_NOFOLLOW` where the platform has it, after an lstat check, with the size taken from

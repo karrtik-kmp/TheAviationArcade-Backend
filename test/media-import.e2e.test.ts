@@ -493,6 +493,91 @@ describe("refusals (dry run and apply agree, nothing is written)", () => {
   });
 });
 
+describe("title, factualSource and rightsEvidence", () => {
+  const descriptionOf = async (owner: string) =>
+    (await sql.query("SELECT description FROM media_versions WHERE media_id = (SELECT id FROM media_items WHERE owner = $1)", [owner])).rows[0]!.description as string | null;
+  const auditDetail = async (owner: string) =>
+    (await sql.query("SELECT detail FROM admin_audit WHERE action = 'media_import' AND detail->>'owner' = $1", [owner])).rows[0]!.detail as Record<string, unknown>;
+
+  it("title first and Facts source last in the description, whitespace runs collapsed; rightsEvidence verbatim in the audit only", async () => {
+    const owner = await account("photographer");
+    const evidence = "Line one\n\tindented line two\n\nLine four";
+    const m = made(owner.principal, {
+      title: "  A  title\nover\ttwo   lines \r\n",
+      description: "Free text.",
+      aircraft: "A320",
+      capturedOn: "2026-09-29",
+      factualSource: "https://example.test/a\n\nand a note\t here ",
+      rightsEvidence: `\r\n${evidence.replace(/\n/g, "\r\n")}  \n`,
+    });
+    const dry = await run([m.entry], m.files, "dry-run");
+    expect(only(dry).status).toBe("would_import");
+    expect(await itemsOf(owner.principal)).toBe(0);
+    expect(await auditOf(owner.principal)).toBe(0);
+
+    expect(only(await run([m.entry], m.files, "apply")).status).toBe("imported");
+    expect(await descriptionOf(owner.principal)).toBe(
+      "Free text.\n\nTitle: A title over two lines\nAircraft: A320\nCaptured on: 2026-09-29\nFacts source: https://example.test/a and a note here",
+    );
+    const detail = await auditDetail(owner.principal);
+    expect(detail.rightsEvidence).toBe(evidence);
+    expect(JSON.stringify(detail)).not.toContain("@");
+  });
+
+  it("each field absent, empty or only whitespace: no line, no audit key", async () => {
+    for (const value of [undefined, "", " \n\t "]) {
+      const owner = await account("photographer");
+      const m = made(owner.principal, { title: value, factualSource: value, rightsEvidence: value });
+      expect(only(await run([m.entry], m.files, "apply")).status, JSON.stringify(value)).toBe("imported");
+      expect(await descriptionOf(owner.principal)).toBeNull();
+      expect("rightsEvidence" in (await auditDetail(owner.principal))).toBe(false);
+    }
+  });
+
+  it("each field alone", async () => {
+    const owner = await account("photographer");
+    const a = made(owner.principal, { title: "Only title" });
+    const b = made(owner.principal, { factualSource: "Only source" });
+    const c = made(owner.principal, { rightsEvidence: "Only evidence" });
+    expect((await run([a.entry, b.entry, c.entry], { ...a.files, ...b.files, ...c.files }, "apply")).counts.imported).toBe(3);
+    const rows = (await sql.query("SELECT description, (SELECT detail->>'rightsEvidence' FROM admin_audit WHERE action = 'media_import' AND target = 'med-' || i.id) AS ev FROM media_items i JOIN media_versions v ON v.media_id = i.id WHERE i.owner = $1 ORDER BY i.id", [owner.principal])).rows;
+    expect(rows).toEqual([
+      { description: "Title: Only title", ev: null },
+      { description: "Facts source: Only source", ev: null },
+      { description: null, ev: "Only evidence" },
+    ]);
+  });
+
+  it("limits: 160 / 600 / 2400 code points are accepted, one more is refused with nothing written", async () => {
+    const owner = await account("photographer");
+    const ok = made(owner.principal, { title: "t".repeat(160), factualSource: "s".repeat(600), rightsEvidence: "e".repeat(2400) });
+    expect(only(await run([ok.entry], ok.files, "dry-run")).status).toBe("would_import");
+    const cases: [Record<string, unknown>, string][] = [
+      [{ title: "t".repeat(161) }, "bad_title"],
+      [{ title: `${"t ".repeat(80)}x` }, "bad_title"],
+      [{ factualSource: "s".repeat(601) }, "bad_factual_source"],
+      [{ rightsEvidence: "e".repeat(2401) }, "bad_rights_evidence"],
+      [{ title: "a\u0007b" }, "bad_title"],
+      [{ factualSource: "a\u0000b" }, "bad_factual_source"],
+      [{ rightsEvidence: "a\u0000b" }, "bad_rights_evidence"],
+      [{ rightsEvidence: "a\u0007b" }, "bad_rights_evidence"],
+      [{ rightsEvidence: "a\rb" }, "bad_rights_evidence"],
+      [{ title: "t".repeat(160), description: "d".repeat(1990) }, "bad_description"],
+    ];
+    for (const [over, code] of cases) {
+      const m = made(owner.principal, over);
+      for (const mode of ["dry-run", "apply"] as const) {
+        const blobs = new MemoryBlobStore();
+        expect(only(await run([m.entry], m.files, mode, blobs)), `${code} ${mode}`).toMatchObject({ status: "refused", code });
+        expect(blobs.size).toBe(0);
+      }
+    }
+    expect(await itemsOf(owner.principal)).toBe(0);
+    expect(await importsOf(owner.principal)).toBe(0);
+    expect(await auditOf(owner.principal)).toBe(0);
+  });
+});
+
 describe("manifest", () => {
   const base = { version: 1, source: "d1" };
   const owner = "firebase:demo-airplane-games:u1";
