@@ -63,7 +63,32 @@ reconcile them. Irrelevant while local-only; matters for the first hosted deploy
 
 Needs App Store Connect / Play Console access and credentials. First Class Pass subscriptions,
 consumables, Status Point boosts (refund reverses only an unused boost; confirm "used"), Apple ASSN v2 and
-Google RTDN. Design in ARCHITECTURE.md.
+Google RTDN. Design in ARCHITECTURE.md; port and slice in `../docs/briefs/backend.md` S8.
+
+Planned slices: P0 purchase contract in `openapi.yaml` (`x-planned`, incl. `store_unavailable`) → P1 migration
+(`store_transactions`, `store_subscriptions`, `store_notifications`, ledger-kind CHECKs) → P2 purchase route +
+Apple verifier (`@apple/app-store-server-library`) → P3 Google verifier + acknowledge → P4 ASSN v2 / RTDN
+subscription lifecycle → P5 Status Point boosts. P0–P1 need no outside input; P2 needs an Apple sandbox key and
+one sandbox product.
+
+**Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**
+
+- **IAP-1 product catalog.** For each product: store product id, price tier, and exactly what it grants.
+  Miles top-ups (how many packs, Miles each). Status Point boosts (how many, SP each). First Class Pass (monthly,
+  yearly, both; free trial or intro price; family sharing). Nothing is sold until this exists.
+- **IAP-2 "used" boost.** Refunds reverse only an unused boost (ruling 2026-10-27). Is a boost "used" when
+  bought, when the player applies it, or when its SP certify a new rank?
+- **IAP-3 bought SP.** Do purchased Status Points count toward rank promotion exactly like earned SP
+  (`points-progression.md` Q5)? Can a boost skip a rank?
+- **IAP-4 First Class multiplier.** Does +50% stack with the Perfect Streak Miles bonus (Q2), and does it apply
+  before or after the Pleasure Cruise 10 SP/Miles cap (Q4)?
+- **IAP-5 First Class daily hints.** "3 free daily hints": granted per local day, do unused ones carry over, and
+  do they stack with the bank or sit apart?
+- **IAP-6 lapse and refund.** On a First Class refund or lapse, are Miles already earned under +50% kept? (Design
+  assumption: kept; only future Rounds lose the multiplier.)
+- **Owner (user) inputs:** App Store Connect API key (.p8, Key ID, Issuer ID), Team ID, the app's Apple ID;
+  Play service account with Android Publisher access and an RTDN Pub/Sub topic; a public HTTPS URL for store
+  notifications (the dev tunnel is enough for sandbox only).
 
 ### Phase 5 — Content
 
