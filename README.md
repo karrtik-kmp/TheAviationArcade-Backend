@@ -219,6 +219,23 @@ later correct it with `PUT /v1/admin/accounts/{principal}/roles/admin/email`. No
 `POST .../roles/photographer/block` and `.../unblock` keep an account out of (or back into) the photographer request flow;
 an active admin cannot be blocked, and admin cannot be granted (API or this command) to a blocked account (409).
 
+### Importing website photo proposals (D1)
+
+A one-off operator command (plan [media-import](docs/plans/media-import.md)); there is no HTTP route for it:
+
+```
+npm run media:import -- --bundle <dir>          # dry run: reads, prints a per-entry report, writes nothing
+npm run media:import -- --bundle <dir> --yes    # imports; refused unless BLOB_STORE=bunny
+```
+
+The bundle is a directory with `manifest.json` and the image files (see the plan for the manifest format). Without `--yes` it is a
+dry run on any store: it reads the database and the files, never writes a row, an audit entry or a blob. `--yes` exits 2 unless
+`BLOB_STORE=bunny` (a memory store is per process and would be lost), and imports each entry in its own transaction after writing
+and reading back its blob. Settings are checked by the server's config loader as for `roles:grant`. Each entry is reported as
+imported, would import, already imported (a re-run is safe) or refused with the reason. Exit codes: 0 all fine, 1 unexpected
+failure, 2 refused by arguments, settings or manifest, 3 entries refused and none imported, 4 partial success. Audit actor
+`operator:<os user>`. Never run `--yes` against the real store without the user's sign-off.
+
 ## Content documents and the manifest (slice T4)
 
 Three published, versioned data documents live in `content_documents` (rows are immutable; a change is a new version for that

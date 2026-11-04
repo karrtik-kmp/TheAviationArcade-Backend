@@ -169,6 +169,9 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
 - **Description (staff only).** `media_versions.description`, 1-2000 code points, newlines allowed, edited with
   `PATCH` (`description`, string or null). It is never part of an `ImageRef`, `GET /v1/media` or the guest route. `rights`
   appears in the staff views only, and `rights.statedBy` for admin callers only.
+- **D1 photo import (operator command, no route).** `npm run media:import -- --bundle <dir> [--yes]` turns the old website review
+  queue into `unverified` items owned by their photographers, with rights `d1_private_review` and no licence; dry run by default,
+  `--yes` only with `BLOB_STORE=bunny`; idempotent through `media_imports` ([plan](plans/media-import.md)).
 - **Not built yet.** `ImageRef` on dealt Trips and Rounds (T9 / R4) and releases that freeze media versions (R2), both
   Wave B; Plane of the Day.
 

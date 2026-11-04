@@ -25,7 +25,10 @@ const EXTENSION = { "image/jpeg": "jpg", "image/png": "png" } as const;
 /** What a PATCH may change: licence fields and/or the description (`null` clears it; an absent key keeps the stored value). */
 export type MediaEdit = { licence?: MediaLicenceEdit | undefined; description?: string | null | undefined };
 
-export type MediaUploadResult = { item: MediaItemView; replayed: boolean };
+/** An image that passed `MediaService.checkImage`. */
+export type CheckedImage = { sha256: string; contentType: "image/jpeg" | "image/png"; width: number; height: number; byteSize: number };
+
+export type MediaUploadResult ={ item: MediaItemView; replayed: boolean };
 
 /** The licence fields a PATCH may change; an absent key keeps the stored value and `null` clears it. */
 export type MediaLicenceEdit = {
@@ -580,6 +583,22 @@ export class MediaService {
     });
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
+  }
+
+  /**
+   * The upload checks without any write, for callers that do not go through the HTTP body parser (the D1 import command): at most
+   * 5 MB, a JPEG or PNG by its bytes (not its name), the declared type equal to the sniffed one, each side within the limit.
+   * Throws 422 `media_invalid`. Returns what a version row needs, plus the digest.
+   */
+  checkImage(bytes: Uint8Array, declaredType: string): CheckedImage {
+    if (bytes.length > MAX_MEDIA_BYTES) throw new ApiError(422, "media_invalid", `The file is larger than ${MAX_MEDIA_BYTES} bytes.`);
+    const { contentType, width, height } = this.inspect(bytes, declaredType);
+    return { sha256: sha256Of(bytes), contentType, width, height, byteSize: bytes.length };
+  }
+
+  /** Put a checked image under its digest and read it back (the same `store` the upload routes use). 503 on any storage trouble. */
+  async storeImage(bytes: Uint8Array, image: CheckedImage): Promise<void> {
+    await this.store(`content/photos/${image.sha256}.${EXTENSION[image.contentType]}`, bytes, image.contentType, image.sha256);
   }
 
   // ---- helpers ----
