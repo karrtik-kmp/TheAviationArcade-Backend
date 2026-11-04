@@ -236,6 +236,18 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
 
 ## Purchases (design for the purchases slice)
 
+**As built, wave P (2026-11-04, API 0.20.0; plan `docs/plans/purchases.md`, contract from `../docs/briefs/commerce.md`).**
+The catalog is server data (`store_products`, admin-edited and audited; `demo` rows = placeholder store ids, never listed or
+sold in production), seeded with the client's catalog (two hint packs, Pass monthly and yearly). `POST /v1/purchases` verifies
+through a `StoreVerifier` port outside any transaction (`none` → 503, `fake` for local/test only), then grants in one
+`PlayerBalance.update`: `store_transactions` UNIQUE (store, transaction_ref) by `ON CONFLICT DO NOTHING` + read-back (replay /
+409), hint packs post hint kind `store_purchase`, a Pass upserts `store_subscriptions` (owner set once, expiry never moves back)
+and recomputes `first_class_until` from active + grace rows. Ownership is the per-player `commerce_token` (not the uid); no token
+on the store side → the first verified caller owns it (R3). Account deletion cascades the token and purchase rows (R4); `store_claims` keeps only the store reference (no player data,
+never cascaded), so a receipt can never be granted twice, even after its owner's account is deleted. Only
+`src/purchases/purchase-grant.ts` writes the two purchase tables (balance guard). Not built yet: Apple/Google adapters,
+notifications, acknowledge sweeper, refunds, `store_notifications` (P2-P4). The bullets below remain the target design.
+
 - Client sends only a store reference (Apple `transactionId`, Google `purchaseToken` + `productId`).
   Server re-fetches from the store, checks bundle/package, catalog product, ownership token
   (`appAccountToken` / `obfuscatedAccountId` = random per-player UUID, never the uid) and revocation.

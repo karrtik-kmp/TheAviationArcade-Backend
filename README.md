@@ -72,6 +72,7 @@ keys. Players created this way live in your local database only.
 | `UGS_MIRROR_MAX_PER_MIN` | Default 25, 1–33. Cloud Save calls per minute (token bucket, burst ≤ 10), **shared by all instances** through one Postgres row (`ugs_budget`), so run every instance with the same value. UGS allows about 33/min sustained per project and IP. Setting it without the other `UGS_*` variables fails at startup |
 | `UGS_MIRROR_MIN_INTERVAL_SEC` | Default 300, 0–3600; 0 turns the delay off. The least time between two copy writes for one player (C3): Rounds inside the interval coalesce into one write of the latest version. The first write after a link or re-link is not delayed (a Round that was already waiting when the player re-linked becomes due at once), and deletions are never delayed. Optional like `UGS_MIRROR_MAX_PER_MIN`, so it is not one of the five required variables, but setting it without them also fails at startup |
 | `DEMO_ACCOUNT_UID` | Optional. The Firebase uid of the website's shared demo account (a password handed to testers); same uid rules as any principal (1-128 characters, no `:` or `/`, no control characters), otherwise startup fails. The derived principal `firebase:<FIREBASE_PROJECT_ID>:<uid>` can never hold `photographer` or `admin`: the roles guard ignores any such row, and request, approve, admin grant, `roles:grant` and `media:import` refuse it (ADR-0002 follow-up, incident 2026-11-04). Not a secret. Revoke, reject and block still work, so cleanup is possible. Set it wherever the demo account exists |
+| `STORE_VERIFIER` | `none` (default) or `fake`. Who checks store purchases. `none`: `POST /v1/purchases` answers 503 `store_unavailable` (the app keeps the purchase pending). `fake`: the deterministic test store (see "Purchases"); a startup error when `APP_ENV=production`, and outside `APP_ENV=test` unless `FIREBASE_PROJECT_ID` starts with `demo-`. The Apple and Google verifiers come with waves P2/P3 |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
 The server runs locally only for now; hosting is not chosen.
@@ -136,6 +137,10 @@ All endpoints except health and the guest media read (`GET /v1/public/media`) ne
 | POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts }`. Scores and banks it from the segment's own Perfect Streak; moves the day streak (+1 hint on every 7th consecutive local day, `hintGrants`). Flight facts that break a module rule are 400 and bank nothing. An `Idempotency-Key` header is accepted and ignored (the Round id is the key) |
 | POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
+| GET | `/v1/store/products` | The store catalog the app may sell: `productId`, `kind` (`hint_pack` / `first_class_pass`), `hints` or `passPeriod`. No titles or prices (the store shows localized prices) |
+| GET | `/v1/me/entitlements` | First Class Pass state and the player's `commerceToken` (created on first read). Pass it to the store as Apple `appAccountToken` / Google `obfuscatedAccountId` (32 hex) |
+| POST | `/v1/purchases` | `{ store, productId, transactionId \| purchaseToken }`. The server asks the store, then grants once (hints, or extends `firstClassUntil`). 200 `granted` / `pending`; 409 `purchase_owned_by_other`; 422 `purchase_invalid` / `purchase_revoked`; 503 `store_unavailable`. Whether to finish the store transaction: table in openapi |
+| GET, PUT, POST | `/v1/admin/store/products[/:productId[/retire\|/restore]]` | Admin: list, create/edit (optimistic `version`; `kind` and `demo` fixed), retire, restore. Audited |
 | GET | `/v1/admin/me` | Admin only. `{ principal, staff: true, roles }` (`roles` = the caller's ACTIVE roles); 403 `forbidden` for anyone else, a photographer included |
 | POST | `/v1/admin/content/:module/imports` | Admin only. Raw `.xlsx` body (≤ 5 MB), optional `X-File-Name`, `?dryRun=true` (plan + field diffs + `planHash`), `?confirm=<planHash>`. 201 imported, 200 plan or `replayed: true`, 422 `import_invalid` (row report, or "dry run first"), 409 `plan_changed` or `import_in_progress`, 503 `storage_unavailable` |
 | POST | `/v1/admin/content/:module/trip-coverage` | Admin only. Optional JSON `{ itemIds?: string[] }` (≤ 2000, repeats count once). 200 `{ module, policy, flightsPerTrip, ranks: [{ rank, dealable }] }`: Flights a Trip would hold per rank from the module's approved items (blank photo not dealable). 404 for a module with no mapping or no deal policy, 422 `unknown_item_ids`, 400 for a bad body |
@@ -237,6 +242,21 @@ and reading back its blob. Settings are checked by the server's config loader as
 imported, would import, already imported (a re-run is safe) or refused with the reason. Exit codes: 0 all fine, 1 unexpected
 failure, 2 refused by arguments, settings or manifest, 3 entries refused and none imported, 4 partial success. Audit actor
 `operator:<os user>`. Never run `--yes` against the real store without the user's sign-off.
+
+## Purchases (wave P)
+
+Plan [docs/plans/purchases.md](docs/plans/purchases.md). The catalog is server data in `store_products`, edited by admins. Seed
+the client's catalog under its placeholder store ids (flagged `demo`; demo rows are never listed or sold when
+`APP_ENV=production`):
+
+```
+npm run store:seed-demo     # aa.hints.5, aa.hints.15, aa.firstclass.monthly, aa.firstclass.yearly; idempotent; refused in production
+```
+
+With `STORE_VERIFIER=fake` (local/test only) the store reference itself decides the outcome, so every path can be driven by hand
+or from a Unity dev build: `fake~<ok|invalid|transient|revoked>~<productId>~<commerceToken|none>~<purchasedAtSec>[~<expiresAtSec>]`
+as the Apple `transactionId` or the Google `purchaseToken` (Google's `productId` must match). A First Class Pass needs the
+expiry; references that differ only in their times are renewals of one subscription.
 
 ## Content documents and the manifest (slice T4)
 

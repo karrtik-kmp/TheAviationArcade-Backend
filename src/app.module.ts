@@ -18,9 +18,11 @@ import { createPostgresThrottlerStorage } from "./platform/pg-throttler-storage.
 import { RateLimitGuard, throttlerOptions } from "./platform/rate-limit.js";
 import { LogbookModule } from "./logbook/logbook.module.js";
 import { PlayersModule } from "./players/players.module.js";
+import { PurchasesModule } from "./purchases/purchases.module.js";
 import { RoundsModule } from "./rounds/rounds.module.js";
 import { ShopModule } from "./shop/shop.module.js";
 import { StorageModule } from "./storage/storage.module.js";
+import { StoreModule } from "./store/store.module.js";
 import { TripsModule } from "./trips/trips.module.js";
 import { UgsModule } from "./ugs/ugs.module.js";
 
@@ -41,6 +43,8 @@ import { UgsModule } from "./ugs/ugs.module.js";
     RoundsModule,
     TripsModule,
     ShopModule,
+    StoreModule,
+    PurchasesModule,
     AdminModule,
     ContentModule,
     MediaModule,

@@ -14,6 +14,13 @@ import {
   ROLE_STATES,
   ROUND_COMPLETIONS,
   ROUND_STATUSES,
+  STORE_ENVIRONMENTS,
+  STORE_PASS_PERIODS,
+  STORE_PRODUCT_KINDS,
+  STORE_PRODUCT_STATUSES,
+  STORE_CLAIM_KINDS,
+  STORE_SUBSCRIPTION_STATUSES,
+  STORES,
   TRIP_OUTCOMES,
   TRIP_STATUSES,
 } from "../src/db/enums.js";
@@ -56,11 +63,21 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "media_versions.media_versions_rights_statement_check": MEDIA_RIGHTS_STATEMENTS,
   "media_versions.media_versions_publishable_check": MEDIA_PUBLISHABLE_RIGHTS,
   "media_upload_keys.media_upload_keys_operation_check": MEDIA_UPLOAD_OPERATIONS,
+  "store_products.store_products_kind_check": STORE_PRODUCT_KINDS,
+  "store_products.store_products_pass_period_check": STORE_PASS_PERIODS,
+  "store_products.store_products_status_check": STORE_PRODUCT_STATUSES,
+  "store_transactions.store_transactions_store_check": STORES,
+  "store_transactions.store_transactions_kind_check": STORE_PRODUCT_KINDS,
+  "store_transactions.store_transactions_environment_check": STORE_ENVIRONMENTS,
+  "store_claims.store_claims_store_check": STORES,
+  "store_claims.store_claims_kind_check": STORE_CLAIM_KINDS,
+  "store_subscriptions.store_subscriptions_store_check": STORES,
+  "store_subscriptions.store_subscriptions_status_check": STORE_SUBSCRIPTION_STATUSES,
 };
 
 /**
  * CHECKs that compare against a single literal but are rules, not enumerations of a TypeScript list (the live-database scan
- * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts and media-schema.e2e.test.ts.
+ * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts, media-schema.e2e.test.ts and store-schema.e2e.test.ts.
  */
 const RULE_CHECKS: ReadonlySet<string> = new Set([
   "account_roles.account_roles_decided_check",
@@ -68,6 +85,8 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "account_roles.account_roles_blocked_role_check",
   "account_roles.account_roles_grant_email_check",
   "media_items.media_items_published_state_check",
+  "store_products.store_products_kind_rule_check",
+  "store_transactions.store_transactions_kind_rule_check",
   "media_imports.media_imports_source_system_check",
 ]);
 

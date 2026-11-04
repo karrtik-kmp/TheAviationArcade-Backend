@@ -30,6 +30,10 @@ export const ADMIN_AUDIT_ACTIONS = [
   "content_media_link",
   "media_rights",
   "media_import",
+  "store_product_create",
+  "store_product_edit",
+  "store_product_retire",
+  "store_product_restore",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
@@ -48,6 +52,16 @@ export const MEDIA_UPLOAD_OPERATIONS = ["create", "version"] as const;
 export const MEDIA_RIGHTS_STATEMENTS = ["v1_own", "v1_authorised", "d1_private_review"] as const;
 /** The statements a published version may carry (the publishable CHECK). Also the only ones the API accepts. */
 export const MEDIA_PUBLISHABLE_RIGHTS = ["v1_own", "v1_authorised"] as const;
+/** Store catalog and purchases (docs/plans/purchases.md, migration 0020). */
+export const STORE_PRODUCT_KINDS = ["hint_pack", "first_class_pass"] as const;
+export const STORE_PRODUCT_STATUSES = ["active", "retired"] as const;
+/** Informational only for a Pass: the store's expiry is authoritative. ISO 8601 durations. */
+export const STORE_PASS_PERIODS = ["P1M", "P1Y"] as const;
+export const STORES = ["apple", "google"] as const;
+export const STORE_ENVIRONMENTS = ["production", "sandbox", "fake"] as const;
+/** Pinned now for the notification wave (P4); the purchase route only writes `active`. */
+export const STORE_CLAIM_KINDS = ["transaction", "subscription"] as const;
+export const STORE_SUBSCRIPTION_STATUSES = ["active", "grace", "billing_retry", "on_hold", "expired", "revoked"] as const;
 
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
@@ -64,3 +78,10 @@ export type MediaContentType = (typeof MEDIA_CONTENT_TYPES)[number];
 export type MediaRightsStatement = (typeof MEDIA_RIGHTS_STATEMENTS)[number];
 export type MediaPublishableRights = (typeof MEDIA_PUBLISHABLE_RIGHTS)[number];
 export type MediaUploadOperation = (typeof MEDIA_UPLOAD_OPERATIONS)[number];
+export type StoreProductKind = (typeof STORE_PRODUCT_KINDS)[number];
+export type StoreProductStatus = (typeof STORE_PRODUCT_STATUSES)[number];
+export type StorePassPeriod = (typeof STORE_PASS_PERIODS)[number];
+export type StoreName = (typeof STORES)[number];
+export type StoreEnvironment = (typeof STORE_ENVIRONMENTS)[number];
+export type StoreClaimKind = (typeof STORE_CLAIM_KINDS)[number];
+export type StoreSubscriptionStatus = (typeof STORE_SUBSCRIPTION_STATUSES)[number];

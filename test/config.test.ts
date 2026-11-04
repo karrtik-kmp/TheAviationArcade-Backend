@@ -47,6 +47,7 @@ describe("loadConfig", () => {
       rateLimitStore: "postgres",
       minClientBuild: undefined,
       blobStore: "memory",
+      storeVerifier: "none",
       bunny: undefined,
     });
   });
@@ -280,6 +281,31 @@ describe("loadConfig", () => {
         expect(text, key).toContain("BUNNY_CDN_TOKEN_KEY");
         expect(text, key).not.toContain(key);
       }
+    });
+  });
+
+  describe("STORE_VERIFIER", () => {
+    it("defaults to none everywhere", () => {
+      expect(loadConfig(local).storeVerifier).toBe("none");
+      expect(loadConfig({ ...local, APP_ENV: "test" }).storeVerifier).toBe("none");
+      expect(loadConfig(production).storeVerifier).toBe("none");
+    });
+
+    it("accepts fake locally on a demo- project and in tests, rejects unknown kinds", () => {
+      expect(loadConfig({ ...local, STORE_VERIFIER: "fake" }).storeVerifier).toBe("fake");
+      expect(loadConfig({ ...local, APP_ENV: "test", STORE_VERIFIER: "fake" }).storeVerifier).toBe("fake");
+      expect(message({ ...local, STORE_VERIFIER: "apple" })).toContain("STORE_VERIFIER");
+    });
+
+    it("refuses fake in production", () => {
+      expect(message({ ...production, STORE_VERIFIER: "fake" })).toContain("STORE_VERIFIER");
+    });
+
+    it("refuses fake against a real Firebase project in every APP_ENV, tests included", () => {
+      const realLocal = { ...local, FIREBASE_PROJECT_ID: "airplane-games-auth-20261022", ALLOW_EMULATOR_TOKENS: undefined };
+      expect(message({ ...realLocal, STORE_VERIFIER: "fake" })).toContain("STORE_VERIFIER");
+      expect(loadConfig({ ...realLocal, STORE_VERIFIER: "none" }).storeVerifier).toBe("none");
+      expect(message({ ...realLocal, APP_ENV: "test", STORE_VERIFIER: "fake" })).toContain("STORE_VERIFIER");
     });
   });
 

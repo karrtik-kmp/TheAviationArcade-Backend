@@ -40,6 +40,8 @@ export type AppConfig = {
   minClientBuild: number | undefined;
   /** Where admin-uploaded files go: none = refuse (503), memory = process-local (local/test only), bunny = Bunny Storage. */
   blobStore: BlobStoreKind;
+  /** Store-receipt verifier for purchases (docs/plans/purchases.md). `fake` only outside production and on a test or demo- project. */
+  storeVerifier: StoreVerifierKind;
   /** Present only when blobStore is "bunny". The password is a secret: never log or echo it. */
   bunny: BunnyConfig | undefined;
   /** Present only when both BUNNY_CDN_* settings are given; without it image previews carry `url: null` (reason `cdn_not_configured`). */
@@ -72,6 +74,8 @@ export type UgsConfig = {
 export type RateLimitStoreKind = "postgres" | "memory";
 
 export type BlobStoreKind = "none" | "memory" | "bunny";
+/** Which store-receipt verifier POST /v1/purchases uses. `none` answers 503 store_unavailable; `fake` is the deterministic test double (never in production). */
+export type StoreVerifierKind = "none" | "fake";
 
 export type BunnyConfig = {
   zone: string;
@@ -172,6 +176,8 @@ const envSchema = z.object({
   MIN_CLIENT_BUILD: optionalInt(1, 999_999_999),
   /** Default depends on APP_ENV (memory locally, none in production), so it is applied after parsing. */
   BLOB_STORE: z.enum(["none", "memory", "bunny"]).optional(),
+  /** none (default: purchases answer 503) | fake (deterministic test double; refused in production and unless FIREBASE_PROJECT_ID starts with demo-). */
+  STORE_VERIFIER: z.enum(["none", "fake"]).default("none"),
   BUNNY_STORAGE_ZONE: z.string().trim().optional(),
   /** Not trimmed: a password is used byte for byte. Blank (whitespace only) counts as unset. */
   BUNNY_STORAGE_PASSWORD: z.string().optional(),
@@ -217,6 +223,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     RATE_LIMIT_PUBLIC_PER_MIN,
     RATE_LIMIT_STORE,
     MIN_CLIENT_BUILD,
+    STORE_VERIFIER,
     BUNNY_STORAGE_ZONE,
     BUNNY_STORAGE_PASSWORD,
     BUNNY_STORAGE_REGION,
@@ -261,6 +268,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     if (FIREBASE_PROJECT_ID.startsWith("demo-")) {
       throw new Error("Invalid environment configuration: FIREBASE_PROJECT_ID must not be a demo- project when APP_ENV=production");
     }
+  }
+  // The fake verifier accepts any reference that names an "ok" outcome, so it must not run where real money or real accounts exist:
+  // never in production, and in every APP_ENV only against a demo- project (same shape as the emulator-token rule). Names only.
+  if (STORE_VERIFIER === "fake" && (APP_ENV === "production" || !FIREBASE_PROJECT_ID.startsWith("demo-"))) {
+    throw new Error("Invalid environment configuration: STORE_VERIFIER=fake is not allowed in production or with a real FIREBASE_PROJECT_ID");
   }
   const blobStore: BlobStoreKind = parsed.data.BLOB_STORE ?? (APP_ENV === "production" ? "none" : "memory");
   if (APP_ENV === "production" && blobStore === "memory") {
@@ -363,6 +375,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rateLimitStore: RATE_LIMIT_STORE,
     minClientBuild: MIN_CLIENT_BUILD,
     blobStore,
+    storeVerifier: STORE_VERIFIER,
     bunny,
     cdn,
     ugs,

@@ -1,6 +1,6 @@
 # Purchases (Phase 4), wave P: catalog, purchase route, fake store
 
-Status: **approved with changes, revised** (2026-11-04). Reviews: senior-lead, backend-expert, game-domain-expert (all
+Status: **built** (2026-11-04, slices P-A, P-B, P-C; integration by the lead). Earlier: approved with changes, revised (2026-11-04). Reviews: senior-lead, backend-expert, game-domain-expert (all
 "approve with changes"); every finding is folded in below. Design: `docs/ARCHITECTURE.md` "Purchases"; port: brief S8
 (`../docs/briefs/backend.md`); proposed contract: **`../docs/briefs/commerce.md`** (Unity session, 2026-11-04), adopted.
 
@@ -16,7 +16,7 @@ Status: **approved with changes, revised** (2026-11-04). Reviews: senior-lead, b
 - R3 **Adopt the commerce brief**: `commerceToken` via `GET /v1/me/entitlements`, 409 `purchase_owned_by_other`, response
   `{ status, replayed, storePurchase, progress }`, schema names `StorePurchaseRequest` / `StorePurchaseResponse` /
   `Entitlements`, and **a purchase with no account token is owned by the first verified caller, set once**.
-- R4 **Account deletion is final**: store token and purchase rows cascade; old receipts answer 409 for a new account.
+- R4 **Account deletion is final**: store token and purchase rows cascade, but a no-personal-data `store_claims` tombstone remembers every granted store reference, so an old receipt (tokened or not) answers 409 for any new account.
 - Deviation from brief S8 step 1 (port lands with only the fake adapter), by R1. Mitigation: the fake cannot be configured
   in production or against a real Firebase project; demo products are never listed or sold in production.
 

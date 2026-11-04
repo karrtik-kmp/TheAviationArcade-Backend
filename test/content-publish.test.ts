@@ -254,6 +254,10 @@ describe("codes and audit actions", () => {
       "content_media_link",
       "media_rights",
       "media_import",
+      "store_product_create",
+      "store_product_edit",
+      "store_product_retire",
+      "store_product_restore",
     ]);
   });
 });

@@ -1,0 +1,178 @@
+import { Inject, Injectable, Logger } from "@nestjs/common";
+import { eq } from "drizzle-orm";
+import { PlayerBalance } from "../balance/player-balance.js";
+import type { BalanceChange } from "../balance/player-balance.js";
+import { APP_CONFIG } from "../config/config.module.js";
+import type { AppConfig } from "../config/config.module.js";
+import { rootCause } from "../database/database-errors.js";
+import { DatabaseService, ExpectedRollback } from "../database/database.module.js";
+import { players, storeAccounts } from "../db/schema.js";
+import type { PlayerRow, StoreTransactionRow } from "../db/schema.js";
+import { findProduct, isSellable } from "../store/catalog.js";
+import type { LivePlayer } from "../trips/trip-store.js";
+import { withLiveStreak } from "../trips/trip-store.js";
+import { claimSubscription, claimTransaction, recomputeFirstClassUntil } from "./purchase-grant.js";
+import { normalizeAccountToken, STORE_VERIFIER } from "./store-verifier.js";
+import type { StoreReference, StoreVerifier, VerifiedTransaction } from "./store-verifier.js";
+
+/** The store calls are bounded: a hung store becomes a 503 the app retries, never a held request. */
+const VERIFY_TIMEOUT_MS = 8000;
+const ACKNOWLEDGE_TIMEOUT_MS = 5000;
+const DEFAULT_RETRY_AFTER_SEC = 10;
+const MAX_RETRY_AFTER_SEC = 3600;
+
+export type PurchaseOutcome =
+  | { kind: "no_player" }
+  | { kind: "unavailable"; retryAfterSec: number }
+  | { kind: "invalid" }
+  | { kind: "revoked" }
+  | { kind: "owned_by_other" }
+  | { kind: "pending"; player: LivePlayer }
+  | { kind: "granted"; replayed: boolean; record: StoreTransactionRow; player: LivePlayer };
+
+/** What the transaction callback decides; everything but `granted` wrote nothing. */
+type Decision =
+  | { kind: "pending" }
+  | { kind: "invalid" }
+  | { kind: "owned_by_other" }
+  | { kind: "granted"; replayed: boolean; record: StoreTransactionRow };
+
+/** Undo the transaction row inserted a moment ago, and carry the decision out (the connection is kept, not destroyed). */
+class PurchaseRollback extends ExpectedRollback {
+  constructor(readonly decision: Decision) {
+    super("Purchase rolled back.");
+  }
+}
+
+/** The unique constraints that mean "this store reference is already taken"; any other violation is a bug and stays a 500. */
+const REFERENCE_CONSTRAINTS: ReadonlySet<string> = new Set(["store_transactions_store_ref", "store_subscriptions_pk", "store_claims_pk"]);
+
+export function isReferenceConflict(error: unknown): boolean {
+  const root = rootCause(error) as { code?: unknown; constraint?: unknown } | null;
+  return root?.code === "23505" && typeof root.constraint === "string" && REFERENCE_CONSTRAINTS.has(root.constraint);
+}
+
+function retryAfterSeconds(retryAfterMs: number | undefined): number {
+  if (retryAfterMs === undefined || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) return DEFAULT_RETRY_AFTER_SEC;
+  return Math.min(MAX_RETRY_AFTER_SEC, Math.max(1, Math.ceil(retryAfterMs / 1000)));
+}
+
+/**
+ * POST /v1/purchases. The store is asked first, outside any transaction; the grant is then ONE PlayerBalance.update (player
+ * row locked first) whose callback calls the writers in purchase-grant.ts. Pending, owned-by-other and replay come back as
+ * values, so no error unwinds the pooled connection; a rollback with a value (ExpectedRollback) undoes the one case where an
+ * earlier insert must not stay.
+ */
+@Injectable()
+export class PurchasesService {
+  private readonly logger = new Logger("Purchases");
+
+  constructor(
+    private readonly balance: PlayerBalance,
+    private readonly database: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(STORE_VERIFIER) private readonly verifier: StoreVerifier,
+  ) {}
+
+  async submit(principal: string, reference: StoreReference): Promise<PurchaseOutcome> {
+    const [existing] = await this.database.db.select({ id: players.id }).from(players).where(eq(players.id, principal));
+    if (!existing) return { kind: "no_player" };
+
+    let verified;
+    try {
+      verified = await this.verifier.verify(reference, AbortSignal.timeout(VERIFY_TIMEOUT_MS));
+    } catch (error) {
+      // An adapter that throws is a store we could not ask: transient, nothing written.
+      this.logger.warn(`store verify failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { kind: "unavailable", retryAfterSec: DEFAULT_RETRY_AFTER_SEC };
+    }
+    if (verified.kind === "transient") return { kind: "unavailable", retryAfterSec: retryAfterSeconds(verified.retryAfterMs) };
+    if (verified.kind === "invalid") return { kind: "invalid" };
+    const transaction = verified.transaction;
+    if (transaction.productId !== reference.productId || transaction.store !== reference.store) return { kind: "invalid" };
+    if (transaction.revoked) return { kind: "revoked" };
+
+    let decision: Decision;
+    let player: PlayerRow | null;
+    try {
+      const result = await this.balance.update<Decision>(principal, (locked) => this.grant(locked, transaction));
+      if (result.kind === "no_player") return { kind: "no_player" };
+      if (result.kind === "insufficient") throw new Error("A purchase grant cannot be insufficient.");
+      decision = result.value;
+      player = result.player;
+    } catch (error) {
+      if (error instanceof PurchaseRollback) {
+        decision = error.decision;
+        player = null;
+      } else if (isReferenceConflict(error)) {
+        // A residual unique violation on a store reference (a claim that raced past the checks): it belongs to someone else.
+        decision = { kind: "owned_by_other" };
+        player = null;
+      } else {
+        throw error;
+      }
+    }
+
+    if (decision.kind === "invalid") return { kind: "invalid" };
+    if (decision.kind === "owned_by_other") return { kind: "owned_by_other" };
+    if (!player) throw new Error("Player row missing after a purchase.");
+    const live = await withLiveStreak(this.database.db, player);
+    if (decision.kind === "pending") return { kind: "pending", player: live };
+
+    // Google wants the purchase acknowledged; also on a replay, until the notification wave retries failures.
+    if (transaction.store === "google") await this.acknowledge(transaction);
+    return { kind: "granted", replayed: decision.replayed, record: decision.record, player: live };
+  }
+
+  private async grant(
+    locked: Parameters<Parameters<PlayerBalance["update"]>[1]>[0],
+    transaction: VerifiedTransaction,
+  ): Promise<{ value: Decision; change?: BalanceChange }> {
+    const { tx, player, now } = locked;
+    const product = await findProduct(tx, transaction.productId);
+    if (!product || !isSellable(product, this.config.appEnv)) return { value: { kind: "pending" } };
+    const isPass = product.kind === "first_class_pass";
+    // Real stores always give a subscription its chain and expiry. A Pass product whose verified transaction has neither is a
+    // staff catalog mistake (a hint pack's store id marked Pass), not a bad receipt: nothing is written, the app keeps it pending.
+    if (isPass && (!transaction.originalRef || !transaction.expiresAt)) {
+      this.logger.error(`catalog product ${product.productId} is first_class_pass but the verified ${transaction.store} transaction has no expiry or original reference`);
+      return { value: { kind: "pending" } };
+    }
+
+    if (transaction.accountToken !== null) {
+      const [account] = await tx.select().from(storeAccounts).where(eq(storeAccounts.playerId, player.id));
+      if (!account || normalizeAccountToken(account.commerceToken) !== normalizeAccountToken(transaction.accountToken)) {
+        return { value: { kind: "owned_by_other" } };
+      }
+    }
+
+    const claim = await claimTransaction(tx, { playerId: player.id, product, transaction, now });
+    if (claim.kind === "other") return { value: { kind: "owned_by_other" } };
+    if (claim.kind === "remembered") throw new PurchaseRollback({ kind: "owned_by_other" });
+    // A replay carries no change, so players.version does not move.
+    if (claim.kind === "replay") return { value: { kind: "granted", replayed: true, record: claim.row } };
+
+    if (!isPass) {
+      const hints = claim.row.grantedHints;
+      if (hints === null) throw new Error("A hint pack grant has no hint count.");
+      return {
+        value: { kind: "granted", replayed: false, record: claim.row },
+        change: { postings: [{ account: "hints", kind: "store_purchase", ref: `${transaction.store}:${transaction.transactionRef}`, delta: hints }] },
+      };
+    }
+
+    const owned = await claimSubscription(tx, { playerId: player.id, product, transaction, expiresAt: transaction.expiresAt as Date, now });
+    if (!owned) throw new PurchaseRollback({ kind: "owned_by_other" });
+    const firstClassUntil = await recomputeFirstClassUntil(tx, player.id);
+    return { value: { kind: "granted", replayed: false, record: claim.row }, change: { firstClassUntil } };
+  }
+
+  private async acknowledge(transaction: VerifiedTransaction): Promise<void> {
+    try {
+      const result = await this.verifier.acknowledge(transaction, AbortSignal.timeout(ACKNOWLEDGE_TIMEOUT_MS));
+      if (result.kind !== "ok") this.logger.warn(`acknowledge of ${transaction.store} purchase did not complete (transient)`);
+    } catch (error) {
+      this.logger.warn(`acknowledge of ${transaction.store} purchase failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}

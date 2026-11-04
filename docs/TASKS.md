@@ -65,12 +65,21 @@ Needs App Store Connect / Play Console access and credentials. First Class Pass 
 consumables, Status Point boosts (refund reverses only an unused boost; confirm "used"), Apple ASSN v2 and
 Google RTDN. Design in ARCHITECTURE.md; port and slice in `../docs/briefs/backend.md` S8.
 
-**Wave P (in progress 2026-11-04):** plan [plans/purchases.md](plans/purchases.md), reviewed (senior-lead,
+**Wave P built 2026-11-04 (API 0.20.0, migration 0020).** Verified on the final tree (PowerShell, H:): typecheck clean,
+`npm test` 36 files / 777 passed, `npm run test:e2e` 36 files / 989 passed (one full run, nothing else running). Independent
+review: "ship after fixes"; all findings fixed (major: `store_claims` tombstones so a tokenless receipt cannot be granted again
+after its owner's account is deleted; residual 23505 maps to 409 only for the store constraints; a Pass/kind mismatch answers
+`pending`; the fake verifier needs a `demo-` project in every environment; Google token capped at 1024; seed tests made
+non-vacuous plus a production-refusal script test; tighter kind CHECKs). Not proven: any real store (no Apple/Google adapter yet),
+`store:seed-demo` against the dev database, a Unity client call.
+**Wave P plan:** plan [plans/purchases.md](plans/purchases.md), reviewed (senior-lead,
 backend-expert, game-domain-expert). Staff-editable catalog seeded with the client's catalog under placeholder store ids
 (`demo`), `POST /v1/purchases`, `GET /v1/me/entitlements`, fake store verifier (local/test only), contract from
 `../docs/briefs/commerce.md`. User rulings 2026-11-04: R1 demo plans now, editable; R2 First Class +50% stays ON (Unity
 to align); R3 adopt the commerce brief incl. "no account token → first verified caller owns"; R4 account deletion is
-final. Next waves: P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
+final. Website admin brief: `../docs/briefs/website-monetization-admin.md` (catalog desk on the built admin routes;
+purchases view waits on **P-D**: staff read routes `GET /v1/admin/store/purchases` (paged, player filter) and one player's
+entitlements, not built). Next waves: P-D, P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
 ads and Pass hint grants → P5 Status Point boosts → final store ids.
 
 **Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**

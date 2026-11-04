@@ -19,7 +19,8 @@
     "bunny:check": "nest build && node scripts/bunny-check.mjs",
     "ugs:check": "nest build && node scripts/ugs-check.mjs",
     "roles:grant": "nest build && node scripts/roles-grant.mjs",
-    "media:import": "nest build && node scripts/media-import.mjs"
+    "media:import": "nest build && node scripts/media-import.mjs",
+    "store:seed-demo": "nest build && node scripts/store-seed-demo.mjs"
   },
   "dependencies": {
     "@nestjs/common": "12.1.3",

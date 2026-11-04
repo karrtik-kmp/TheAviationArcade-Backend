@@ -30,6 +30,13 @@ import type {
   RoleState,
   RoundCompletion,
   RoundStatus,
+  StoreEnvironment,
+  StoreName,
+  StorePassPeriod,
+  StoreProductKind,
+  StoreProductStatus,
+  StoreClaimKind,
+  StoreSubscriptionStatus,
   TripOutcome,
   TripStatus,
 } from "./enums.js";
@@ -281,7 +288,7 @@ export const hintLedger = pgTable(
     check("hint_ledger_delta_check", sql`${t.delta} <> 0`),
     check(
       "hint_ledger_kind_check",
-      sql`${t.kind} IN ('starter', 'hint_pack', 'round_spend', 'trip_grant', 'day_streak_grant')`,
+      sql`${t.kind} IN ('starter', 'hint_pack', 'round_spend', 'trip_grant', 'day_streak_grant', 'store_purchase')`,
     ),
   ],
 );
@@ -536,7 +543,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore')`,
     ),
   ],
 );
@@ -885,6 +892,153 @@ export const rateLimitHits = pgTable(
   ],
 );
 
+/**
+ * The store catalog (docs/plans/purchases.md, migration 0020): staff-editable, one row per store product id (the same id in the
+ * App Store and Google Play). `title` is a staff label only, never shown to players. `demo` rows carry placeholder store ids:
+ * never listed and never sold in production. A product is never deleted (transactions reference it); `retired` stops listing but
+ * a retired product still grants, so an old receipt is honoured. `pass_period` is informational: the store's expiry is authoritative.
+ */
+export const storeProducts = pgTable(
+  "store_products",
+  {
+    productId: text("product_id").primaryKey(),
+    kind: text("kind").$type<StoreProductKind>().notNull(),
+    // hint_pack only (1..1000), else NULL.
+    hints: integer("hints"),
+    // first_class_pass only, else NULL.
+    passPeriod: text("pass_period").$type<StorePassPeriod>(),
+    title: text("title").notNull(),
+    demo: boolean("demo").notNull(),
+    status: text("status").$type<StoreProductStatus>().notNull(),
+    // Optimistic fence for staff edits, like content_items.version.
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("store_products_product_id_check", sql`${t.productId} ~ '^[a-z0-9][a-z0-9._]{0,99}$'`),
+    check("store_products_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass')`),
+    check("store_products_pass_period_check", sql`${t.passPeriod} IN ('P1M', 'P1Y')`),
+    check("store_products_status_check", sql`${t.status} IN ('active', 'retired')`),
+    check("store_products_title_check", sql`length(${t.title}) BETWEEN 1 AND 100`),
+    check("store_products_version_check", sql`${t.version} >= 1`),
+    // A hint pack has a hint count and no period; a Pass has a period and no hint count. (`hints IS NOT NULL` is explicit: a NULL BETWEEN would pass a CHECK.)
+    check(
+      "store_products_kind_rule_check",
+      sql`(${t.kind} = 'hint_pack' AND ${t.hints} IS NOT NULL AND ${t.hints} BETWEEN 1 AND 1000 AND ${t.passPeriod} IS NULL) OR (${t.kind} = 'first_class_pass' AND ${t.hints} IS NULL AND ${t.passPeriod} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/**
+ * The per-player token handed to the stores (Apple appAccountToken, Google obfuscatedExternalAccountId) so a purchase can be tied
+ * to its buyer without the Firebase uid reaching a store. Random, created on first read of GET /v1/me/entitlements, never derived
+ * from the uid. Deleted with the player (user ruling R4: account deletion is final).
+ */
+export const storeAccounts = pgTable("store_accounts", {
+  playerId: text("player_id")
+    .primaryKey()
+    .references(() => players.id, { onDelete: "cascade" }),
+  commerceToken: uuid("commerce_token").notNull().unique().defaultRandom(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * One verified store transaction, granted once. UNIQUE (store, transaction_ref) is the idempotency key across every player: the
+ * second claimant of a reference is refused. `granted_hints` / `granted_until` snapshot what was granted, so a later catalog edit
+ * never changes a past grant. Apple: transaction_ref = transactionId, original_ref = originalTransactionId. Written only by
+ * src/purchases/purchase-grant.ts inside PlayerBalance.update.
+ */
+export const storeTransactions = pgTable(
+  "store_transactions",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    store: text("store").$type<StoreName>().notNull(),
+    transactionRef: text("transaction_ref").notNull(),
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    productId: text("product_id")
+      .notNull()
+      .references(() => storeProducts.productId, { onDelete: "restrict" }),
+    kind: text("kind").$type<StoreProductKind>().notNull(),
+    environment: text("environment").$type<StoreEnvironment>().notNull(),
+    orderId: text("order_id"),
+    // Subscriptions only: the first transaction of the chain (Apple originalTransactionId; Google first purchaseToken).
+    originalRef: text("original_ref"),
+    purchasedAt: timestamp("purchased_at", { withTimezone: true }).notNull(),
+    grantedHints: integer("granted_hints"),
+    grantedUntil: timestamp("granted_until", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("store_transactions_store_ref").on(t.store, t.transactionRef),
+    index("store_transactions_player").on(t.playerId),
+    check("store_transactions_store_check", sql`${t.store} IN ('apple', 'google')`),
+    check("store_transactions_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass')`),
+    check("store_transactions_environment_check", sql`${t.environment} IN ('production', 'sandbox', 'fake')`),
+    check("store_transactions_granted_hints_check", sql`${t.grantedHints} IS NULL OR ${t.grantedHints} > 0`),
+    check(
+      "store_transactions_kind_rule_check",
+      sql`(${t.kind} = 'hint_pack' AND ${t.grantedHints} IS NOT NULL AND ${t.grantedUntil} IS NULL AND ${t.originalRef} IS NULL) OR (${t.kind} = 'first_class_pass' AND ${t.grantedHints} IS NULL AND ${t.grantedUntil} IS NOT NULL AND ${t.originalRef} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/**
+ * One Pass subscription chain per (store, original_ref); the owner is set once (a later claim by another player is refused).
+ * `players.first_class_until` is recomputed from the player's `active` and `grace` rows. Statuses beyond `active` are written by
+ * the store-notification wave (P4); they are pinned here so that wave needs no CHECK change.
+ */
+export const storeSubscriptions = pgTable(
+  "store_subscriptions",
+  {
+    store: text("store").$type<StoreName>().notNull(),
+    originalRef: text("original_ref").notNull(),
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    productId: text("product_id")
+      .notNull()
+      .references(() => storeProducts.productId, { onDelete: "restrict" }),
+    status: text("status").$type<StoreSubscriptionStatus>().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastEventAt: timestamp("last_event_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "store_subscriptions_pk", columns: [t.store, t.originalRef] }),
+    index("store_subscriptions_player").on(t.playerId),
+    check("store_subscriptions_store_check", sql`${t.store} IN ('apple', 'google')`),
+    check(
+      "store_subscriptions_status_check",
+      sql`${t.status} IN ('active', 'grace', 'billing_retry', 'on_hold', 'expired', 'revoked')`,
+    ),
+  ],
+);
+
+/**
+ * A tombstone of every store reference ever granted (docs/plans/purchases.md R4): no player data, no foreign key, never cascaded.
+ * `kind` transaction = a store_transactions reference, subscription = a store_subscriptions original_ref. Account deletion removes
+ * the purchase rows but not this one, so an old receipt can never be granted a second time to a new account. Written only by
+ * src/purchases/purchase-grant.ts.
+ */
+export const storeClaims = pgTable(
+  "store_claims",
+  {
+    store: text("store").$type<StoreName>().notNull(),
+    kind: text("kind").$type<StoreClaimKind>().notNull(),
+    ref: text("ref").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "store_claims_pk", columns: [t.store, t.kind, t.ref] }),
+    check("store_claims_store_check", sql`${t.store} IN ('apple', 'google')`),
+    check("store_claims_kind_check", sql`${t.kind} IN ('transaction', 'subscription')`),
+  ],
+);
+
 export type PlayerRow = typeof players.$inferSelect;
 export type RoundRow = typeof rounds.$inferSelect;
 export type TripRow = typeof trips.$inferSelect;
@@ -894,3 +1048,6 @@ export type FieldAwardRow = typeof playerFieldAwards.$inferSelect;
 export type ContentItemRow = typeof contentItems.$inferSelect;
 export type ContentDocumentRow = typeof contentDocuments.$inferSelect;
 export type ContentImportRow = typeof contentImports.$inferSelect;
+export type StoreProductRow = typeof storeProducts.$inferSelect;
+export type StoreTransactionRow = typeof storeTransactions.$inferSelect;
+export type StoreSubscriptionRow = typeof storeSubscriptions.$inferSelect;

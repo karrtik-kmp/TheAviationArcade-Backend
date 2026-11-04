@@ -38,6 +38,9 @@ const TRIPS = rawTable("trips", "trips");
 const COUNTERS = rawTable("player_counters", "playerCounters");
 const CARDS = rawTable("player_clipper_cards", "playerClipperCards");
 const AWARDS = rawTable("player_field_awards", "playerFieldAwards");
+const STORE_TX = rawTable("store_transactions", "storeTransactions");
+const STORE_SUBS = rawTable("store_subscriptions", "storeSubscriptions");
+const STORE_CLAIMS = rawTable("store_claims", "storeClaims");
 const QUEUE = `(?:${rawTable("ugs_mirror_outbox", "ugsMirrorOutbox")}|${rawTable("ugs_mirror_deletions", "ugsMirrorDeletions")})`;
 const PROTECTED = id("players|milesLedger|hintLedger|ugsLinks|ugsMirrorOutbox|ugsMirrorDeletions|ugsMirrorPace");
 const NOT_BACKTICK = "[^;`]";
@@ -93,6 +96,15 @@ export const RULES: { name: string; pattern: RegExp }[] = [
       "i",
     ),
   },
+  {
+    // Verified store purchases and Pass subscriptions are written once per grant, inside PlayerBalance.update's transaction,
+    // by the files in PURCHASE_WRITERS only (docs/plans/purchases.md).
+    name: "writes store_transactions, store_subscriptions or store_claims",
+    pattern: R(
+      String.raw`\.(?:insert|update|delete)\(\s*${id("storeTransactions|storeSubscriptions|storeClaims")}\s*\)|\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+(?:${STORE_TX}|${STORE_SUBS}|${STORE_CLAIMS})`,
+      "i",
+    ),
+  },
   // Any string literal naming the private module: static import, dynamic import(), require(); .js/.ts/no extension.
   { name: "imports the private mirror-outbox module", pattern: /["'][^"'\n]*\bmirror-outbox(?:\.[cm]?[jt]s)?["']/ },
   {
@@ -134,9 +146,15 @@ export const AWARD_WRITERS: Record<string, string> = {
   "src/trips/trip-completion.ts": "collects Cards and records earned Field Awards once per complete, inside PlayerBalance.update (T3)",
 };
 
+/** Files outside src/balance that may write store_transactions, store_subscriptions or store_claims, and why. */
+export const PURCHASE_WRITERS: Record<string, string> = {
+  "src/purchases/purchase-grant.ts": "records a verified store transaction, its Pass subscription and the store_claims tombstones inside PlayerBalance.update (purchases wave P)",
+};
+
 const PACE_RULE = "writes ugs_mirror_pace";
 const AWARD_RULE = "writes Clipper Cards or Field Awards";
 const TRIP_RULE = "writes trips or player_counters";
+const PURCHASE_RULE = "writes store_transactions, store_subscriptions or store_claims";
 const IMPORT_RULE = "imports a ledger or mirror-queue table";
 
 /** Names of the rules the given source violates. */
@@ -164,6 +182,7 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
         if (rel.split(sep).join("/") in PACE_WRITERS && name === PACE_RULE) continue;
         if (rel.split(sep).join("/") in TRIP_WRITERS && name === TRIP_RULE) continue;
         if (rel.split(sep).join("/") in AWARD_WRITERS && name === AWARD_RULE) continue;
+        if (rel.split(sep).join("/") in PURCHASE_WRITERS && name === PURCHASE_RULE) continue;
         found.push(`${rel}: ${name}`);
       }
     }
@@ -191,6 +210,12 @@ describe("balance guard: only src/balance writes balances and the mirror queue",
   it("the Cards and awards writer allowlist has no stale entries", () => {
     for (const rel of Object.keys(AWARD_WRITERS)) {
       expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(AWARD_RULE);
+    }
+  });
+
+  it("the purchases writer allowlist has no stale entries", () => {
+    for (const rel of Object.keys(PURCHASE_WRITERS)) {
+      expect(violations(readFileSync(join(ROOT, rel), "utf8")), rel).toContain(PURCHASE_RULE);
     }
   });
 
@@ -244,6 +269,39 @@ describe("balance guard checker catches seeded violations", () => {
       "await tx.execute(sql`UPDATE public.player_field_awards SET trip_id = null`);",
     ]) {
       expect(violations(seeded), seeded).toContain(AWARD_RULE);
+    }
+  });
+
+  it("writes to store_transactions, store_subscriptions and store_claims: drizzle and raw SQL, any quoting", () => {
+    for (const seeded of [
+      "await tx.insert(storeTransactions).values({});",
+      "await tx.update(schema.storeSubscriptions).set({}).where(x);",
+      "await tx\n  .delete(\n    storeTransactions\n  );",
+      "await tx.insert(storeSubscriptions).values({}).onConflictDoUpdate({});",
+      "await tx.execute(sql`INSERT INTO store_transactions (store) VALUES ('apple')`);",
+      "await tx.execute(sql`update ${storeSubscriptions} set status = 'active'`);",
+      'await tx.execute(sql`DELETE FROM "store_subscriptions"`);',
+      "await tx.execute(sql`UPDATE public.store_transactions SET order_id = null`);",
+      "await tx.execute(sql`insert into ${ schema.storeTransactions } (store) values ('apple')`);",
+      "await tx.insert(storeClaims).values({}).onConflictDoNothing();",
+      "await tx.delete(schema.storeClaims);",
+      "await tx.execute(sql`DELETE FROM store_claims`);",
+      "await tx.execute(sql`insert into ${storeClaims} (store) values ('apple')`);",
+    ]) {
+      expect(violations(seeded), seeded).toContain(PURCHASE_RULE);
+    }
+  });
+
+  it("reading store_transactions and store_subscriptions is fine", () => {
+    for (const seeded of [
+      "await tx.select().from(storeTransactions).where(x);",
+      "await tx.select().from(storeClaims).where(x);",
+      "await tx.select({ until: max(storeSubscriptions.expiresAt) }).from(storeSubscriptions);",
+      "await tx.execute(sql`SELECT * FROM store_transactions WHERE player_id = ${id}`);",
+      "await tx.insert(storeAccounts).values({}).onConflictDoNothing();",
+      "await tx.update(storeProducts).set({}).where(x);",
+    ]) {
+      expect(violations(seeded), seeded).not.toContain(PURCHASE_RULE);
     }
   });
 

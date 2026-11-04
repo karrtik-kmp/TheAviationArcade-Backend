@@ -1,10 +1,18 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.19.0
+  version: 0.20.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.20.0 (purchases, wave P; docs/plans/purchases.md, docs/briefs/commerce.md).** Built: `POST /v1/purchases`, `GET /v1/me/entitlements`, `GET /v1/store/products`, the
+    staff catalog `GET /v1/admin/store/products`, `PUT .../{productId}`, `POST .../{productId}/retire` and `.../restore`, and, still `x-planned` (wave P4),
+    the Apple and Google store-notification webhooks. New schemas `StorePurchaseRequest`, `StorePurchaseResponse`, `Entitlements`, the
+    store product schemas; new error codes `store_unavailable`, `purchase_invalid`, `purchase_revoked`, `purchase_owned_by_other`. Store verification runs on the fake verifier only (local/test; `STORE_VERIFIER=none` answers 503
+    `store_unavailable`) until the Apple and Google adapters land (P2, P3). The store reference is the idempotency key. Every purchase outcome says whether the app finishes
+    the store transaction or keeps it pending (table on `POST /v1/purchases`). A purchase with no account token is owned by the first
+    verified caller. The First Class +50% stays on in the backend: a Pass bought here makes it live (`progress.firstClassPass`).
 
     **Changelog 0.19.0 (staff media; breaking for uploaders, no change for the game).** User rulings 2026-11-04 (plan
     `docs/plans/media-rights-and-public.md` Wave R). Both uploads (`POST /v1/admin/media`, `POST .../{mediaId}/versions`)
@@ -137,7 +145,8 @@ info:
     `invalid_request` from both Round routes until it adopts this. Unity changes: open a segment per Trip with a fresh
     `Idempotency-Key`, issue each Round with its `tripId`, send the Flight facts, call `complete` after the 10th Round.
 
-    **Planned contract.** The media contract (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002) was recorded as
+    **Planned contract.** The purchase contract (0.20.0, `docs/plans/purchases.md`) is built except the two store webhooks, which are still planned
+    and not served yet (`POST /v1/purchases`, `GET /v1/me/entitlements` and the store catalog routes are served). The media contract (plan T0, `docs/plans/media-pipeline.md`, ADR-0001, ADR-0002) was recorded as
     planned and is now fully built: upload (0.14.0); versions, licence edit, publish and withdraw (0.15.0); list, get, the
     content link and `GET /v1/media` (0.16.0). Before it, the Logbook was the last planned operation (0.10.0). An operation marked `x-planned: true` is the agreed next contract, recorded here so Unity can build
     against it. It is NOT served yet: the parity test asserts each one answers 404 `not_found` today. Planned
@@ -183,6 +192,10 @@ tags:
   - name: player
   - name: rounds
   - name: shop
+  - name: store
+    description: The store product catalog (player listing, staff editing); the store notification webhooks are still planned (wave P4).
+  - name: purchases
+    description: Verified store purchases and the player's entitlements (purchases plan).
   - name: admin
   - name: roles
     description: Role registration and admin decisions (Backend ADR-0002).
@@ -1149,6 +1162,437 @@ paths:
         "426": { $ref: "#/components/responses/ClientUpdateRequired" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Purchases (Phase 4, wave P; docs/plans/purchases.md, docs/briefs/commerce.md). Built in 0.20.0, except the two store-notification
+  # webhooks (wave P4), which stay x-planned and answer 404 `not_found`.
+  # ---------------------------------------------------------------------------------------------------------
+
+  /v1/purchases:
+    post:
+      tags: [purchases]
+      operationId: submitStorePurchase
+      summary: Submit a store purchase for verification and grant
+      description: |
+        Signed-in player (a player row must exist: 404 `player_not_found` before `PUT /v1/me`). The app sends the store's
+        reference of a purchase it holds; the server verifies it with the store itself (a client claim is never trusted), then grants
+        exactly once. The reference is the idempotency key: the same `(store, transactionId | purchaseToken)` never grants twice, for any
+        player. An `Idempotency-Key` header is accepted and ignored. Strict body, one of two shapes (below). The server computes the
+        grant from its own catalog (`GET /v1/store/products`); the body never says what to grant. A hint pack adds its hints; a First
+        Class Pass extends `firstClassUntil` (the store's expiry is authoritative) and turns the +50% on.
+
+        **Every answer tells the client what to do with the store transaction: finish it, or keep it pending and resend later.**
+
+        | Answer | Client action |
+        |---|---|
+        | 200 `status: granted` (new, or `replayed: true`) | finish the store transaction (consume consumables) |
+        | 200 `status: pending` (valid store purchase, product not in the catalog or not sellable here; nothing written) | keep pending, resend later |
+        | 503 `store_unavailable` + `Retry-After` (store transient, or no verifier configured; nothing written) | keep pending, resend |
+        | 409 `purchase_owned_by_other` | finish (it belongs to another account) |
+        | 422 `purchase_invalid` (the store says invalid), `purchase_revoked` | finish; nothing granted |
+
+        Ownership: the store carries the buyer's `commerceToken` (`GET /v1/me/entitlements`) as Apple `appAccountToken` or Google
+        `obfuscatedExternalAccountId`. A token that is present and is not the caller's is 409 `purchase_owned_by_other`. A purchase with no
+        account token is owned by the first verified caller, set once; any later caller of the same purchase is 409. Account deletion is final
+        (user ruling R4): the old receipt answers 409 for a new account, with or without an account token, because the server remembers
+        every store reference it has granted (the reference only, no personal data) so it can never be granted twice.
+
+        A replay (same reference, same player) is 200 `status: granted`, `replayed: true`, the recorded grant and the current `progress`;
+        nothing is granted or billed again and `progress.version` does not move. A retired product still grants; a demo product is never
+        sold in production (`pending` there). `progress` is the player's current balance in every 200 answer.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Accepted and ignored. The store reference is the idempotency key.
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StorePurchaseRequest" }
+      responses:
+        "200":
+          description: |
+            `granted`: the purchase is recorded (finish the store transaction); `replayed` is true when it had been granted before.
+            `pending`: the store says the purchase is valid but this server will not grant it yet (the product is not in the catalog,
+            or is a demo product in production, or the catalog marks it a First Class Pass while the store's transaction has no subscription expiry:
+            a staff catalog mistake, logged server-side); nothing was written, `storePurchase` is null: keep the store transaction pending and resend later.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorePurchaseResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "409":
+          description: |
+            `purchase_owned_by_other`: the purchase belongs to another account (its account token is not yours, or another player
+            claimed the reference first). Nothing was written. Finish the store transaction; do not resend.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [purchase_owned_by_other]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: |
+            `purchase_invalid`: the store says the reference is not a valid purchase of this product (or `productId` differs from
+            the store's). `purchase_revoked`: the store refunded or revoked it. Nothing was granted. Finish the store transaction; do not resend.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [purchase_invalid, purchase_revoked]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: |
+            `store_unavailable`: the store could not be asked (a transient store failure), or no store verifier is configured on this
+            server. Nothing was written. Keep the store transaction pending and resend after `Retry-After` seconds. The other 503 codes
+            (`auth_unavailable`, `service_unavailable`) mean the same.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [store_unavailable, auth_unavailable, service_unavailable]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/me/entitlements:
+    get:
+      tags: [purchases]
+      operationId: getEntitlements
+      summary: The caller's First Class Pass state and commerce token
+      description: |
+        Signed-in player (404 `player_not_found` before `PUT /v1/me`). `commerceToken` is the opaque per-player UUID the app
+        hands to the stores as Apple `appAccountToken` (the UUID) and, as 32 hex digits without hyphens, as Google
+        `obfuscatedExternalAccountId` (and later the ad network's user id). It is random, created on the first read (every later read
+        returns the same value), and never derived from the Firebase uid. `firstClassPass` is true while `firstClassUntil` is in the
+        future on the database clock (`evaluatedAt`, the same instant `Progress` uses); `productId` is the product of the subscription
+        that sets `firstClassUntil` (null without a Pass). Reads do not bump `progress.version`.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      responses:
+        "200":
+          description: The caller's entitlements.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Entitlements" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/store/products:
+    get:
+      tags: [store]
+      operationId: listStoreProducts
+      summary: The products on offer
+      description: |
+        Any signed-in caller. Lists the `active` catalog products, in a stable order, except demo products in production.
+        Per product: `productId` (the id in the App Store and Google Play), `kind`, and `hints` (hint packs) or `passPeriod` (Passes).
+        There is no title and no price: the app shows its own copy and the store's localized price. Retired products are not listed
+        but a purchase of one is still honoured.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      responses:
+        "200":
+          description: The listed products (possibly none).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoreProductList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/store/products:
+    get:
+      tags: [store, admin]
+      operationId: listAdminStoreProducts
+      summary: Every catalog product, with staff fields
+      description: |
+        Admin only. All products in any status, with `title` (a staff label, never shown to players), `demo`, `status` and the
+        `version` the edit routes check. Exempt from the client version gate.
+      responses:
+        "200":
+          description: Every product.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminStoreProductList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/store/products/{productId}:
+    put:
+      tags: [store, admin]
+      operationId: putAdminStoreProduct
+      summary: Create or edit a catalog product
+      description: |
+        Admin only. Strict body `{ version?, kind, title, hints?, passPeriod?, demo }`. Without `version` this creates the
+        product (201); if the id already exists it is 409 `version_conflict`. With `version` it edits (200): a stale version is 409
+        `version_conflict`, nothing written. `kind` and `demo` cannot change on an existing product (422 `content_invalid`), and creating
+        `demo: true` in production is 422 `content_invalid`. A hint pack needs `hints` (1 to 1000) and no `passPeriod`; a First Class
+        Pass needs `passPeriod` and no `hints` (else 422 `content_invalid`). A change bumps `version` and writes one `store_product_create`
+        or `store_product_edit` audit row (principal from the token); sending the stored values back is a 200 with no change. Edits never
+        change past grants (each grant is snapshotted). The id must match `^[a-z0-9][a-z0-9._]{0,99}$` (else 400).
+      parameters:
+        - $ref: "#/components/parameters/StoreProductIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminStoreProductRequest" }
+      responses:
+        "200":
+          description: The product as it is now (an edit, or no change).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminStoreProduct" }
+        "201":
+          description: The product was created.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminStoreProduct" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`not_found`: `version` was sent (an edit) but no product has this id. Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`version_conflict`: the product exists and no `version` was sent, or `version` is not the stored one. Nothing was written; reload and decide again."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`content_invalid`: kind/demo changed, `demo: true` in production, or hints/passPeriod do not fit the kind."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/store/products/{productId}/retire:
+    post:
+      tags: [store, admin]
+      operationId: retireAdminStoreProduct
+      summary: Retire a catalog product
+      description: |
+        Admin only. Sets the product `retired`: no longer listed, but a purchase of it is still honoured. Optimistic on `version`
+        (stale is 409 `version_conflict`); a change bumps `version` and writes a `store_product_retire` audit row. Already retired is 200
+        with no change (the version is still checked). An unknown id is 404 `not_found`.
+      parameters:
+        - $ref: "#/components/parameters/StoreProductIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreProductVersionRequest" }
+      responses:
+        "200":
+          description: The product as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminStoreProduct" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: "`version_conflict`: `version` is not the stored one. Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/store/products/{productId}/restore:
+    post:
+      tags: [store, admin]
+      operationId: restoreAdminStoreProduct
+      summary: Restore a retired catalog product
+      description: |
+        Admin only. Sets the product `active` again (listed again, unless it is a demo product in production). Optimistic on
+        `version`; a change bumps `version` and writes a `store_product_restore` audit row. Already active is 200 with no change (the
+        version is still checked). An unknown id is 404 `not_found`.
+      parameters:
+        - $ref: "#/components/parameters/StoreProductIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreProductVersionRequest" }
+      responses:
+        "200":
+          description: The product as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminStoreProduct" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: "`version_conflict`: `version` is not the stored one. Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/store/notifications/apple:
+    post:
+      tags: [store]
+      x-planned: true
+      x-planned-note: Purchases plan wave P4 (docs/plans/purchases.md, "Next waves"). Not built, not scheduled; answers 404 not_found today.
+      operationId: receiveAppleStoreNotification
+      summary: Apple App Store Server Notification v2 (webhook)
+      description: |
+        PLANNED (wave P4). Called by Apple, not the app: no Firebase token, exempt from the client version gate and the per-IP rate limit.
+        The body is Apple's `{ signedPayload }`; the server verifies the JWS itself, de-duplicates by `notificationUUID` and re-fetches the
+        transaction before acting. A non-2xx answer on a transient failure makes Apple retry.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signedPayload]
+              properties:
+                signedPayload: { type: string, maxLength: 65536 }
+      responses:
+        "200":
+          description: Accepted (or ignored as a duplicate or unknown event). Empty object.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: false }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "503":
+          description: Transient failure; Apple retries.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [service_unavailable]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/store/notifications/google:
+    post:
+      tags: [store]
+      x-planned: true
+      x-planned-note: Purchases plan wave P4 (docs/plans/purchases.md, "Next waves"). Not built, not scheduled; answers 404 not_found today.
+      operationId: receiveGoogleStoreNotification
+      summary: Google Play real-time developer notification (Pub/Sub push webhook)
+      description: |
+        PLANNED (wave P4). Called by Google Cloud Pub/Sub, not the app: no Firebase token (the server verifies the push's OIDC JWT:
+        issuer, audience, service account, verified email), exempt from the client version gate and the per-IP rate limit. De-duplicated
+        by `messageId`; the server always re-fetches the purchase from the Play API before acting. A non-2xx answer on a transient failure
+        makes Pub/Sub retry.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: object
+                  required: [data, messageId]
+                  properties:
+                    data: { type: string, maxLength: 65536, description: Base64 of the notification JSON. }
+                    messageId: { type: string, maxLength: 128 }
+                subscription: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: Accepted (or ignored as a duplicate or unknown event). Empty object.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: false }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "503":
+          description: Transient failure; Pub/Sub retries.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [service_unavailable]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /v1/admin/me:
     get:
@@ -2947,6 +3391,13 @@ components:
         (else 422 `idempotency_key_reused`).
       schema: { type: string, enum: [v1_own, v1_authorised] }
 
+    StoreProductIdPath:
+      name: productId
+      in: path
+      required: true
+      description: A store product id, `^[a-z0-9][a-z0-9._]{0,99}$`. A malformed id is 400 `invalid_request` on PUT and 404 `not_found` on retire and restore (as is an unknown one there).
+      schema: { $ref: "#/components/schemas/StoreProductId" }
+
     TripId:
       name: tripId
       in: path
@@ -3296,6 +3747,10 @@ components:
                 - local_date_mismatch
                 - idempotency_key_reused
                 - trip_incomplete
+                - store_unavailable
+                - purchase_invalid
+                - purchase_revoked
+                - purchase_owned_by_other
             message:
               type: string
               description: For logs, not for display or logic.
@@ -4103,6 +4558,168 @@ components:
       properties:
         purchase: { $ref: "#/components/schemas/PurchaseReceipt" }
         progress: { $ref: "#/components/schemas/Progress" }
+
+    # ---------------------------------------------------------------------------------------------------------
+    # Store catalog and purchases (wave P; docs/plans/purchases.md). Built in 0.20.0.
+    # ---------------------------------------------------------------------------------------------------------
+
+    StoreProductKind:
+      type: string
+      enum: [hint_pack, first_class_pass]
+    StorePassPeriod:
+      type: string
+      enum: [P1M, P1Y]
+      description: "ISO 8601 duration of one Pass term (monthly, yearly). Informational: the store's expiry is authoritative."
+    StoreProductStatus:
+      type: string
+      enum: [active, retired]
+    StoreProductId:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9._]{0,99}$"
+      description: The product id as registered in the App Store and Google Play (the same string in both).
+    StoreName:
+      type: string
+      enum: [apple, google]
+    StoreProduct:
+      type: object
+      additionalProperties: false
+      required: [productId, kind]
+      description: One product on offer. No title and no price (the app shows its own copy and the store's localized price).
+      properties:
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        kind: { $ref: "#/components/schemas/StoreProductKind" }
+        hints: { type: integer, minimum: 1, maximum: 1000, description: Hints a `hint_pack` adds. Absent for a Pass. }
+        passPeriod: { $ref: "#/components/schemas/StorePassPeriod" }
+    StoreProductList:
+      type: object
+      additionalProperties: false
+      required: [products]
+      properties:
+        products:
+          type: array
+          items: { $ref: "#/components/schemas/StoreProduct" }
+    AdminStoreProduct:
+      type: object
+      additionalProperties: false
+      required: [productId, kind, title, demo, status, version, createdAt, updatedAt]
+      properties:
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        kind: { $ref: "#/components/schemas/StoreProductKind" }
+        hints: { type: [integer, "null"], minimum: 1, maximum: 1000, description: Present for a `hint_pack`, null for a Pass. }
+        passPeriod:
+          oneOf: [{ $ref: "#/components/schemas/StorePassPeriod" }, { type: "null" }]
+          description: Present for a Pass, null for a `hint_pack`.
+        title: { type: string, minLength: 1, maxLength: 100, description: A staff label. Never shown to players. }
+        demo:
+          type: boolean
+          description: A demo product carries a placeholder store id; it is never listed and never sold in production.
+        status: { $ref: "#/components/schemas/StoreProductStatus" }
+        version: { type: integer, minimum: 1, description: The optimistic-lock value the edit routes check. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AdminStoreProductList:
+      type: object
+      additionalProperties: false
+      required: [products]
+      properties:
+        products:
+          type: array
+          items: { $ref: "#/components/schemas/AdminStoreProduct" }
+    AdminStoreProductRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, title, demo]
+      description: |
+        No `version` creates, `version` edits. A `hint_pack` needs `hints` and no `passPeriod`; a `first_class_pass` needs `passPeriod`
+        and no `hints`. `kind` and `demo` are immutable once the product exists.
+      properties:
+        version: { type: integer, minimum: 1, maximum: 2147483647, description: The product `version` the caller read. Omit to create. }
+        kind: { $ref: "#/components/schemas/StoreProductKind" }
+        title: { type: string, minLength: 1, maxLength: 100 }
+        hints: { type: integer, minimum: 1, maximum: 1000 }
+        passPeriod: { $ref: "#/components/schemas/StorePassPeriod" }
+        demo: { type: boolean }
+    StoreProductVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1, maximum: 2147483647, description: The product `version` the caller read. }
+    StorePurchaseAppleRequest:
+      type: object
+      additionalProperties: false
+      required: [store, productId, transactionId]
+      properties:
+        store: { type: string, const: apple }
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        transactionId: { type: string, pattern: "^[A-Za-z0-9._~-]{1,256}$", description: The StoreKit 2 transaction id. }
+        jws: { type: string, maxLength: 12288, description: "The signed transaction (optional, unused until the Apple verifier lands). Capped below the 16 KB JSON body limit." }
+    StorePurchaseGoogleRequest:
+      type: object
+      additionalProperties: false
+      required: [store, productId, purchaseToken]
+      properties:
+        store: { type: string, const: google }
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        purchaseToken: { type: string, pattern: "^[A-Za-z0-9._~:-]{1,1024}$" }
+    StorePurchaseRequest:
+      description: The store reference of a purchase the app holds. Strict; the shape is chosen by `store`. The server never reads a grant from it.
+      oneOf:
+        - { $ref: "#/components/schemas/StorePurchaseAppleRequest" }
+        - { $ref: "#/components/schemas/StorePurchaseGoogleRequest" }
+      discriminator:
+        propertyName: store
+        mapping:
+          apple: "#/components/schemas/StorePurchaseAppleRequest"
+          google: "#/components/schemas/StorePurchaseGoogleRequest"
+    StorePurchase:
+      type: object
+      additionalProperties: false
+      required: [store, productId, kind, environment, purchasedAt, grantedHints, grantedUntil]
+      description: The recorded grant, snapshotted when it was made (a later catalog edit does not change it).
+      properties:
+        store: { $ref: "#/components/schemas/StoreName" }
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        kind: { $ref: "#/components/schemas/StoreProductKind" }
+        environment: { type: string, enum: [production, sandbox, fake] }
+        purchasedAt: { type: string, format: date-time }
+        grantedHints: { type: [integer, "null"], minimum: 1, description: Hints added by a `hint_pack`; null for a Pass. }
+        grantedUntil: { type: [string, "null"], format: date-time, description: The Pass expiry this transaction carried; null for a `hint_pack`. }
+    StorePurchaseResponse:
+      type: object
+      additionalProperties: false
+      required: [status, replayed, storePurchase, progress]
+      properties:
+        status:
+          type: string
+          enum: [granted, pending]
+          description: |
+            `granted`: recorded; finish the store transaction. `pending`: valid at the store but not granted here (product unknown
+            or not sellable); nothing written; keep the store transaction pending and resend later.
+        replayed:
+          type: boolean
+          description: True when this store reference was already granted to this player; nothing was granted again. Always false for `pending`.
+        storePurchase:
+          oneOf: [{ $ref: "#/components/schemas/StorePurchase" }, { type: "null" }]
+          description: The recorded grant; null when `status` is `pending`.
+        progress: { $ref: "#/components/schemas/Progress" }
+    Entitlements:
+      type: object
+      additionalProperties: false
+      required: [commerceToken, firstClassPass, firstClassUntil, productId, evaluatedAt]
+      properties:
+        commerceToken:
+          type: string
+          format: uuid
+          description: |
+            Opaque per-player token for the stores: Apple `appAccountToken` as this UUID, Google `obfuscatedExternalAccountId` as 32 hex
+            digits without hyphens. Random, stable once created, unrelated to the Firebase uid.
+        firstClassPass: { type: boolean, description: True while `firstClassUntil` is in the future at `evaluatedAt`. }
+        firstClassUntil: { type: [string, "null"], format: date-time }
+        productId:
+          oneOf: [{ $ref: "#/components/schemas/StoreProductId" }, { type: "null" }]
+          description: The Pass product that sets `firstClassUntil`; null without a Pass.
+        evaluatedAt: { type: string, format: date-time, description: The database clock at the instant this view was built. }
 
     # ---------------------------------------------------------------------------------------------------------
     # Flight Segment, Field Award and Logbook schemas: built in slices T2, T3 and T5 (a schema marked x-planned: true would be
