@@ -194,8 +194,19 @@ describe("GET /v1/admin/media", () => {
     const page = await list(who, "?limit=1");
     expect(page.body.nextCursor).not.toBeNull();
     expect((await list(who, `?limit=1&state=unverified&cursor=${page.body.nextCursor}`)).status).toBe(400);
-    const forged = Buffer.from(`m1.-.${idOf(item!.id)}`).toString("base64url").replace(/.$/, "x");
-    expect((await list(who, `?cursor=${forged}`)).status).toBe(400);
+    // Cursors are unsigned by design (they grant nothing), so a hand-built CANONICAL cursor is accepted. Refused: text that does
+    // not decode to `m1.<filter>.<id>`, and a non-canonical spelling of a real cursor. "m1.-.12" is 7 bytes, so its last
+    // base64url character carries 4 padding bits: flipping the lowest bit decodes to the same text but is not canonical.
+    expect(idOf(item!.id)).toBeGreaterThan(0);
+    for (const text of ["m1.-.0", "m1.-.abc", "m2.-.12", "m1.live.12", "m1.-.12.3"]) {
+      expect((await list(who, `?cursor=${Buffer.from(text).toString("base64url")}`)).status, text).toBe(400);
+    }
+    const canonical = Buffer.from("m1.-.12").toString("base64url");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const nonCanonical = canonical.slice(0, -1) + alphabet[alphabet.indexOf(canonical.at(-1)!) ^ 1];
+    expect(Buffer.from(nonCanonical, "base64url").toString()).toBe("m1.-.12");
+    expect((await list(who, `?cursor=${nonCanonical}`)).status).toBe(400);
+    expect((await list(who, `?cursor=${canonical}`)).status).toBe(200);
     const stateCursor = (await list(who, "?limit=1&state=unverified")).body.nextCursor;
     expect((await list(who, `?limit=1&state=unverified&cursor=${stateCursor}`)).status).toBe(200);
   });

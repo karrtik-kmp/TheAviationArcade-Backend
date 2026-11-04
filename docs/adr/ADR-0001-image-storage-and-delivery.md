@@ -76,6 +76,12 @@ each image only when the caller is allowed to see it.**
    - The website gets image records (link + licence fields) from the backend API, server to server with the staff or
      player token, exactly as the app does. It never signs links and never reads Bunny for game images.
    - Each link is sent with the image's sha256 (the stable id for device caching) and its licence fields.
+
+   **Amendment 2026-11-04 (user ruling).** Guests may see published images on the public website. The backend adds an
+   anonymous, published-only read, `GET /v1/public/media?ids=`: the same signed 24-hour links, licence fields and
+   50-id limit as the signed-in read, no owner or principal in the answer, and no website secret (the route is public and
+   rate limited per IP; an Authorization header is ignored). Unpublished and withdrawn images stay unreachable. A signed
+   24-hour link is still not a public image URL: it is issued per request and expires.
 9. **Plane of the Day** is the next slice built on this pipeline: a dated schedule of published images and text.
 
 ## Options Considered

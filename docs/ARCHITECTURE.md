@@ -37,7 +37,7 @@ A repository class per table (services own their SQL; add a cross-aggregate serv
 case spans two) · a response envelope repeating the status, or non-HTTP codes (433/327) · our own JWT/
 password/OTP auth (Firebase owns credentials) · HMAC request signing (the secret ships in the app; use
 Firebase App Check later if genuine-app proof is needed) · runtime secret fetch from Infisical (secrets come
-from the host's environment/secret manager) · player uploads/multer (the uploads we do accept are role-gated and route-scoped, raw body only: a staff xlsx on `/v1/admin/content/:module/imports` and a JPEG/PNG on `/v1/admin/media`, 5 MB each; players never upload) · image resizing or transcoding, a public image URL or a URL stored in a row (links are signed per request) · socket.io · nodemailer/Twilio/OTP
+from the host's environment/secret manager) · player uploads/multer (the uploads we do accept are role-gated and route-scoped, raw body only: a staff xlsx on `/v1/admin/content/:module/imports` and a JPEG/PNG on `/v1/admin/media`, 5 MB each; players never upload) · image resizing or transcoding, a public image URL or a URL stored in a row (links are signed per request; the anonymous guest read still returns signed 24 h links, which are not public URLs) · socket.io · nodemailer/Twilio/OTP
 (Firebase handles email flows) · Stripe/PayPal (the product sells nothing on the web; digital goods go
 through the stores) · mongodump-style restore scripts (use the managed Postgres provider's backups / PITR)
 · `google-play-billing-validator` (stale; use the Play Developer API v3 directly).
@@ -97,7 +97,7 @@ DO NOTHING, the one write that cannot lock first), deletion (`erase`) and the UG
 or inserts into the mirror queue tables or the ledgers (the checker is multiline-aware and unit-tested on seeded violations).
 No write overwrites another. The database also enforces one open Round per player (unique partial index).
 
-Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health). Production config refuses
+Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health and the guest media read `GET /v1/public/media`). Production config refuses
 emulator tokens and demo projects, and never reads `.env`.
 
 ## File storage: Bunny (decided 2026-10-27, user)
@@ -145,7 +145,13 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
 - **Who gets links.** Staff: `GET /v1/admin/media/{mediaId}` returns a signed preview of the item's draft version in any
   state (photographers only for their own items; the list route carries no links). `GET /v1/media?ids=` (any signed-in
   caller, the website's server included, at most 50 ids) returns `ImageRef`s for **published** items only and signs the
-  published version with its frozen licence; unknown, unpublished and withdrawn ids are simply absent.
+  published version with its frozen licence; unknown, unpublished and withdrawn ids are simply absent. Guests:
+  `GET /v1/public/media?ids=` is the anonymous twin (user ruling 2026-11-04, ADR-0001 §8 amendment): published only, the
+  same signed 24 h links, no owner or principal, no website secret, an Authorization header ignored, rate limited per IP
+  on the public tier. The website calls it from its server, so all guests share one budget (see the hosting notes).
+- **Hosting notes for the guest media read.** Size `RATE_LIMIT_PUBLIC_PER_MIN` for the website's egress (one IP, every
+  guest), and set `TRUST_PROXY` to the host's proxy hop count so the limiter keys on the real client address. The website
+  must batch up to 50 ids per call, cache each `ImageRef`, refresh ahead of `expiresAt`, and keep serving cache on 429.
 - **Not built yet.** `ImageRef` on dealt Trips and Rounds (T9 / R4) and releases that freeze media versions (R2), both
   Wave B; Plane of the Day.
 

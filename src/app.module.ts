@@ -53,7 +53,7 @@ import { UgsModule } from "./ugs/ugs.module.js";
     // work. Auth next. Rate limit next, so it can key on the verified principal. Role check last: it needs
     // the verified identity, and a caller without the role still counts against the rate limit.
     { provide: APP_GUARD, useClass: ClientVersionGuard },
-    // Every route requires a verified token unless it is marked @Public() (health only).
+    // Every route requires a verified token unless it is marked @Public() (health and the guest media read only).
     { provide: APP_GUARD, useClass: FirebaseAuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
     // Enforces @Roles() routes (Backend ADR-0002) from account_roles; a no-op everywhere else.

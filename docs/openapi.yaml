@@ -1,10 +1,17 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.17.0
+  version: 0.18.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.18.0 (website; additive, no change for the game).** New `GET /v1/public/media?ids=` (user ruling
+    2026-11-04): the guest twin of `GET /v1/media` for the public website. No token (an Authorization header is ignored),
+    no client-version gate, the same strict `ids` query and the same `{ images: ImageRef[] }` answer: published versions
+    only, 24 h signed links, no owner or principal. Rate limit: the per-IP public tier (`RATE_LIMIT_PUBLIC_PER_MIN`). The
+    website's server calls it, so all guests share its budget: send up to 50 ids per call, cache each ImageRef and
+    refresh it ahead of `expiresAt`, and keep serving cached refs on 429.
 
     **Changelog 0.17.0 (staff-only, no change for the game).** Fix: `PATCH /v1/admin/media/{mediaId}` now refuses a
     licence edit that would change `creditRequired` unless the caller is an admin (403 `forbidden`, nothing written;
@@ -132,7 +139,8 @@ info:
     (ten Flights). Type names use the backend words; the wire keeps the ruled names `/v1/trips`, `tripId` and
     `trip` (contract round 1, 2026-10-29).
 
-    - Every route except `/v1/health` and `/v1/health/ready` needs `Authorization: Bearer <Firebase ID token>`.
+    - Every route except `/v1/health`, `/v1/health/ready` and the guest media read `GET /v1/public/media` needs
+      `Authorization: Bearer <Firebase ID token>`.
       The manifest and the documents need a signed-in player like every other route (any player, no staff rule).
     - Bodies are JSON only, at most 16 KB (exceptions for staff: the xlsx import, 5 MB, and Trip coverage, 160 KB). Unknown fields are rejected (400 `invalid_request`).
     - Every response carries `X-Request-Id`. `/v1` responses other than `/v1/health` are `Cache-Control: no-store`.
@@ -143,7 +151,7 @@ info:
       Both health routes are exempt. Over the limit is 429 `rate_limited` with `Retry-After` (seconds until a
       request would be accepted); there is no extra lockout, so requests succeed again as soon as room frees up.
     - Client version gate: when the server sets a minimum build, a missing, malformed or too-low
-      `X-Client-Version` is 426 `client_update_required` (checked before the token). Health routes and `DELETE /v1/me` (account deletion
+      `X-Client-Version` is 426 `client_update_required` (checked before the token). Health routes, the guest media read and `DELETE /v1/me` (account deletion
       must work for outdated clients) are exempt. The website's server calls with `X-Client: web` (exactly `web`, any case)
       instead of a build number and is exempt. That is a compatibility label, not a credential: the token is still verified, and the app
       must never send it.
@@ -2735,6 +2743,47 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/public/media:
+    get:
+      tags: [media]
+      operationId: getPublicPublishedMedia
+      summary: Read published images by id, anonymously
+      description: |
+        The anonymous twin of `GET /v1/media`, for guests on the public website (user ruling 2026-11-04). No token is needed and
+        an `Authorization` header, valid or not, is ignored (the request is treated as a guest). It is not version gated. Same
+        `ids` rules, same answer, same signed 24 h links: only PUBLISHED images, in request order, with their frozen licence;
+        unknown, unpublished and withdrawn ids are absent, never 404. No owner, principal or other internal field is returned.
+        Always `Cache-Control: no-store`.
+
+        Rate limit: the per-IP public tier (`RATE_LIMIT_PUBLIC_PER_MIN`), 429 with `Retry-After`. The website calls this from
+        its server, so every guest shares that one budget. The website must therefore send up to 50 ids per call, cache each
+        `ImageRef`, refresh ahead of `expiresAt` (for example when under 1 hour is left), and keep serving its cached refs
+        when this route answers 429.
+      security: []
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            items: { $ref: "#/components/schemas/MediaId" }
+      responses:
+        "200":
+          description: The published images among those asked for.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaImages" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 

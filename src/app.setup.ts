@@ -14,7 +14,7 @@ import { DrainState } from "./platform/drain-state.js";
 import { countAuthenticatedRequest } from "./platform/rate-limit.js";
 import { ThrottlerStorage } from "@nestjs/throttler";
 
-/** API responses are per-player and must never be stored by a cache. Health is the one exception. */
+/** API responses are per-caller (or carry short-lived signed links) and must never be stored by a cache. Health is the one exception. */
 function noStore(req: Request, res: Response, next: NextFunction): void {
   if (req.path.startsWith("/v1/") && req.path !== "/v1/health") res.setHeader("Cache-Control", "no-store");
   next();

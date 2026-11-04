@@ -672,7 +672,7 @@ describe("authorization header and global guard", () => {
     },
   );
 
-  it("every route except the health routes returns 401 without a token", async () => {
+  it("every route except the public routes (health, guest media read) returns 401 without a token", async () => {
     const router = (app.getHttpAdapter().getInstance() as any).router;
     const routes: { method: string; path: string }[] = [];
     for (const layer of router.stack) {
@@ -681,12 +681,13 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 48 guarded routes (incl. 31 admin, 3 trips, 2 content, the Logbook, 2 role routes, 1 media read) plus two health routes.
-    expect(routes.length).toBe(50);
+    // Guard against the enumeration silently finding nothing: 48 guarded routes (incl. 31 admin, 3 trips, 2 content, the Logbook, 2 role routes, 1 media read) plus three public routes (two health, the guest media read).
+    expect(routes.length).toBe(51);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military").replace(":name", "field-awards").replace(":version", "1").replace(":principal", "firebase:demo-airplane-games:x").replace(":role", "admin");
       const response = await send(method, concrete, {});
-      const expected = path.startsWith("/v1/health") ? 200 : 401;
+      // The guest media read is public; without ?ids it answers 400 (validation), never 401.
+      const expected = path.startsWith("/v1/health") ? 200 : path === "/v1/public/media" ? 400 : 401;
       expect(response.status, `${method} ${path}`).toBe(expected);
     }
   });
