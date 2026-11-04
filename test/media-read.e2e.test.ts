@@ -199,6 +199,93 @@ describe("GET /v1/admin/media", () => {
     const stateCursor = (await list(who, "?limit=1&state=unverified")).body.nextCursor;
     expect((await list(who, `?limit=1&state=unverified&cursor=${stateCursor}`)).status).toBe(200);
   });
+
+  describe("?pending=true", () => {
+    const patchItem = (who: Actor, item: { id: string }, revision: number, licence: object) =>
+      request(withCdn.server).patch(`${PATH}/${item.id}`).set(who.auth).send({ revision, licence });
+    const publishItem = (who: Actor, item: { id: string }, revision: number) =>
+      request(withCdn.server).post(`${PATH}/${item.id}/publish`).set(who.auth).send({ revision });
+    const ids = (res: request.Response) => (res.body.items as Item[]).map((i) => i.id);
+
+    /** Five items for one photographer: unverified, published clean, published + licence edit, published + new version, withdrawn. */
+    async function seeded(photographer: Actor, admin: Actor) {
+      const [unverified, clean, licenceEdit, newVersion, withdrawn] = await uploaded(photographer, 5);
+      const published: Item[] = [];
+      for (const item of [clean!, licenceEdit!, newVersion!, withdrawn!]) {
+        const named = await patchItem(photographer, item, item.revision, { credit: "A. Pilot", licenceName: "CC BY 4.0" });
+        expect(named.status).toBe(200);
+        const pub = await publishItem(admin, item, named.body.revision);
+        expect(pub.status).toBe(200);
+        published.push(pub.body);
+      }
+      const edit = await patchItem(photographer, licenceEdit!, published[1]!.revision, { credit: "Renamed" });
+      expect(edit.status).toBe(200);
+      const version = await request(withCdn.server)
+        .post(`${PATH}/${newVersion!.id}/versions?revision=${published[2]!.revision}`)
+        .set(photographer.auth)
+        .set("Content-Type", "image/png")
+        .set("Idempotency-Key", newKey())
+        .send(uniquePng());
+      expect(version.status).toBe(201);
+      const gone = await request(withCdn.server).post(`${PATH}/${withdrawn!.id}/withdraw`).set(admin.auth).send({ revision: published[3]!.revision });
+      expect(gone.status).toBe(200);
+      return { unverified: unverified!, clean: clean!, licenceEdit: licenceEdit!, newVersion: newVersion!, withdrawn: withdrawn! };
+    }
+
+    it("lists only published items whose draft is ahead of the published version; photographers see only their own", async () => {
+      const admin = await actor("admin");
+      const photographer = await actor("photographer");
+      const other = await actor("photographer");
+      const s = await seeded(photographer, admin);
+      const foreign = await seeded(other, admin);
+
+      const mine = await list(photographer, "?pending=true");
+      expect(mine.status).toBe(200);
+      expect(ids(mine)).toEqual([s.newVersion.id, s.licenceEdit.id]);
+      for (const item of mine.body.items as Item[]) {
+        expect(item.state).toBe("published");
+        expect(item.draftVersion).toBeGreaterThan(item.publishedVersion!);
+        expect(item).not.toHaveProperty("owner");
+      }
+      expect(ids(await list(photographer, "?pending=true&state=published"))).toEqual([s.newVersion.id, s.licenceEdit.id]);
+
+      const all = ids(await list(admin, "?pending=true&limit=100"));
+      expect(all).toEqual(expect.arrayContaining([s.newVersion.id, s.licenceEdit.id, foreign.newVersion.id, foreign.licenceEdit.id]));
+      for (const excluded of [s.unverified, s.clean, s.withdrawn, foreign.unverified, foreign.clean, foreign.withdrawn]) expect(all).not.toContain(excluded.id);
+    });
+
+    it("pages with limit=1, and a cursor is bound to the pending filter", async () => {
+      const admin = await actor("admin");
+      const photographer = await actor("photographer");
+      const s = await seeded(photographer, admin);
+
+      const page1 = await list(photographer, "?pending=true&limit=1");
+      expect(ids(page1)).toEqual([s.newVersion.id]);
+      expect(page1.body.nextCursor).not.toBeNull();
+      const page2 = await list(photographer, `?pending=true&limit=1&cursor=${page1.body.nextCursor}`);
+      expect(ids(page2)).toEqual([s.licenceEdit.id]);
+      expect(page2.body.nextCursor).toBeNull();
+
+      for (const q of [`?limit=1&cursor=${page1.body.nextCursor}`, `?state=published&limit=1&cursor=${page1.body.nextCursor}`]) {
+        expect((await list(photographer, q)).status, q).toBe(400);
+      }
+      const plain = await list(photographer, "?limit=1");
+      expect((await list(photographer, `?pending=true&limit=1&cursor=${plain.body.nextCursor}`)).status).toBe(400);
+      const published = await list(photographer, "?state=published&limit=1");
+      expect(published.body.nextCursor).not.toBeNull();
+      expect((await list(photographer, `?pending=true&limit=1&cursor=${published.body.nextCursor}`)).status).toBe(400);
+    });
+
+    it("accepts only the literal true, and only with state=published or no state", async () => {
+      const who = await actor("photographer");
+      for (const q of ["?pending=false", "?pending=1", "?pending=", "?pending=TRUE", "?pending=true&pending=true", "?pending=true&state=unverified", "?pending=true&state=withdrawn"]) {
+        const res = await list(who, q);
+        expect(res.status, q).toBe(400);
+        expect(res.body.error.code, q).toBe("invalid_request");
+      }
+      expect((await list(who, "?pending=true")).status).toBe(200);
+    });
+  });
 });
 
 describe("GET /v1/admin/media/{mediaId}", () => {

@@ -45,6 +45,7 @@ const emptyQuery = z.strictObject({});
 const listQuery = z.strictObject({
   state: z.enum(["unverified", "published", "withdrawn"]).optional(),
   cursor: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
+  pending: z.literal("true").optional(),
   limit: z
     .string()
     .regex(/^[1-9][0-9]{0,2}$/)
@@ -97,9 +98,13 @@ export class MediaController {
   list(
     @Principal() principal: string,
     @CallerRoles() roles: readonly AccountRole[],
-    @Query(new ZodValidationPipe(listQuery, "Expected only ?state=unverified|published|withdrawn, ?cursor=<a nextCursor> and ?limit=1-100.")) query: ListQuery,
+    @Query(new ZodValidationPipe(listQuery, "Expected only ?state=unverified|published|withdrawn, ?pending=true, ?cursor=<a nextCursor> and ?limit=1-100.")) query: ListQuery,
   ) {
-    return this.media.list(principal, roles.includes("admin"), query.state, query.cursor, query.limit ?? 50);
+    const pending = query.pending === "true";
+    if (pending && query.state !== undefined && query.state !== "published") {
+      throw new ApiError(400, "invalid_request", "?pending=true lists published items with a newer draft; combine it only with ?state=published or no state.");
+    }
+    return this.media.list(principal, roles.includes("admin"), query.state, query.cursor, query.limit ?? 50, pending);
   }
 
   /** The item, its version history and a signed preview link (404 for another photographer's item). */

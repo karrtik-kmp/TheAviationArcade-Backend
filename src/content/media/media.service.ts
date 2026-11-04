@@ -96,10 +96,19 @@ export class MediaService {
    * One page of items, newest first (by id, which never changes, so new uploads cannot shift a page). A non-admin sees only their
    * own. The cursor names the last id returned and the state filter it was made under; anything else is 400.
    */
-  async list(principal: string, isAdmin: boolean, state: MediaItemRow["state"] | undefined, cursor: string | undefined, limit: number): Promise<MediaListView> {
+  async list(
+    principal: string,
+    isAdmin: boolean,
+    state: MediaItemRow["state"] | undefined,
+    cursor: string | undefined,
+    limit: number,
+    pending = false,
+  ): Promise<MediaListView> {
+    // `pending` (published items whose draft is ahead of the published version) is its own cursor filter key.
+    const filterKey = pending ? "pending" : state;
     let before: number | undefined;
     if (cursor !== undefined) {
-      before = decodeCursor(cursor, state);
+      before = decodeCursor(cursor, filterKey);
       if (before === undefined) throw new ApiError(400, "invalid_request", "Not a cursor this route returned (or the state filter changed). Start again without cursor.");
     }
     const rows = await this.database.db
@@ -109,7 +118,8 @@ export class MediaService {
       .where(
         and(
           isAdmin ? undefined : eq(mediaItems.owner, principal),
-          state === undefined ? undefined : eq(mediaItems.state, state),
+          pending ? eq(mediaItems.state, "published") : state === undefined ? undefined : eq(mediaItems.state, state),
+          pending ? sql`${mediaItems.draftVersion} > ${mediaItems.publishedVersion}` : undefined,
           before === undefined ? undefined : lt(mediaItems.id, before),
         ),
       )
@@ -119,7 +129,7 @@ export class MediaService {
     const last = page[page.length - 1];
     return {
       items: page.map((r) => toItemView(r.item, r.draft, isAdmin)),
-      nextCursor: rows.length > limit && last ? encodeCursor(last.item.id, state) : null,
+      nextCursor: rows.length > limit && last ? encodeCursor(last.item.id, filterKey) : null,
     };
   }
 
@@ -342,6 +352,9 @@ export class MediaService {
         const to = wanted === undefined ? from : wanted;
         merged[column] = to;
         if (to !== from) changes[field] = { from, to };
+      }
+      if (!isAdmin && changes.creditRequired) {
+        return { ok: false, error: new ApiError(403, "forbidden", "Only an admin can change creditRequired. Nothing was changed.") };
       }
       if (Object.keys(changes).length === 0) return { ok: true, value: toItemView(item, draft, isAdmin) };
 

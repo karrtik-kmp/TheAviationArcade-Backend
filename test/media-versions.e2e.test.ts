@@ -339,8 +339,9 @@ describe("POST /v1/admin/media/{id}/versions", () => {
 
   it("ASSUMPTION: a new version starts with creditRequired true even when the previous version was set to false", async () => {
     const photographer = await actor("photographer");
+    const admin = await actor("admin");
     const created = await create(photographer, png(86, 66, 1));
-    const off = await patch(photographer, created.body.id, { revision: 1, licence: { creditRequired: false } });
+    const off = await patch(admin, created.body.id, { revision: 1, licence: { creditRequired: false } });
     expect(off.body.draft.licence.creditRequired).toBe(false);
     const res = await addVersion(photographer, created.body.id, off.body.revision, png(87, 67, 1));
     expect(res.body.draft.licence.creditRequired).toBe(true);
@@ -493,13 +494,14 @@ describe("PATCH /v1/admin/media/{id}", () => {
 
   it("absent keeps, null clears, creditRequired toggles; repeating the stored values is 200 with no new revision, version or audit row", async () => {
     const photographer = await actor("photographer");
+    const admin = await actor("admin");
     const item = await licensedItem(photographer);
-    const cleared = await patch(photographer, item.id, { revision: item.revision, licence: { credit: null, creditRequired: false } });
+    const cleared = await patch(admin, item.id, { revision: item.revision, licence: { credit: null, creditRequired: false } });
     expect(cleared.status).toBe(200);
     expect(cleared.body.draft.licence).toMatchObject({ credit: null, creditRequired: false, licenceName: "CC BY 4.0" });
     expect(cleared.body.revision).toBe(item.revision + 1);
     const audits = await auditOf(item.id, "media_edit");
-    const same = await patch(photographer, item.id, { revision: cleared.body.revision, licence: { credit: null, creditRequired: false, licenceName: "CC BY 4.0" }, note: "no change" });
+    const same = await patch(admin, item.id, { revision: cleared.body.revision, licence: { credit: null, creditRequired: false, licenceName: "CC BY 4.0" }, note: "no change" });
     expect(same.status).toBe(200);
     expect(same.body).toEqual(cleared.body);
     expect(await auditOf(item.id, "media_edit")).toBe(audits);
@@ -642,6 +644,55 @@ describe("PATCH /v1/admin/media/{id}", () => {
     expect(await auditOf(created.body.id, "media_edit")).toBe(1);
   });
 
+  it("creditRequired: a photographer owner cannot change it (403 forbidden, nothing written); the stored value alongside another field is fine; an admin may change it", async () => {
+    const photographer = await actor("photographer");
+    const admin = await actor("admin");
+    const created = await create(photographer, png(117, 97, 1));
+    const id = created.body.id as string;
+    const versionBefore = await versionRow(id, 1);
+    const itemBefore = await row(id);
+    const denied = await patch(photographer, id, { revision: 1, licence: { creditRequired: false, credit: "Sneaky" } });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("forbidden");
+    expect(denied.body.error.message).toMatch(/creditRequired/);
+    expect(await versionRow(id, 1)).toEqual(versionBefore);
+    expect(await row(id)).toEqual(itemBefore);
+    expect(await versionsOf(id)).toBe(1);
+    expect(await auditOf(id, "media_edit")).toBe(0);
+
+    const kept = await patch(photographer, id, { revision: 1, licence: { creditRequired: true, credit: "Real Credit" } });
+    expect(kept.status).toBe(200);
+    expect(kept.body.draft.licence).toMatchObject({ creditRequired: true, credit: "Real Credit" });
+    expect(await auditOf(id, "media_edit")).toBe(1);
+
+    const byAdmin = await patch(admin, id, { revision: kept.body.revision, licence: { creditRequired: false } });
+    expect(byAdmin.status).toBe(200);
+    expect(byAdmin.body.draft.licence.creditRequired).toBe(false);
+    // Once an admin turned it off, the photographer sending the stored false is a no-op; flipping it back is refused.
+    const same = await patch(photographer, id, { revision: byAdmin.body.revision, licence: { creditRequired: false } });
+    expect(same.status).toBe(200);
+    expect(same.body.revision).toBe(byAdmin.body.revision);
+    expect(same.body.draftVersion).toBe(byAdmin.body.draftVersion);
+    expect(await auditOf(id, "media_edit")).toBe(2);
+    const flip = await patch(photographer, id, { revision: byAdmin.body.revision, licence: { creditRequired: true } });
+    expect(flip.status).toBe(403);
+    expect(flip.body.error.code).toBe("forbidden");
+    expect((await row(id)).revision).toBe(byAdmin.body.revision);
+    expect((await versionRow(id, byAdmin.body.draftVersion)).credit_required).toBe(false);
+    expect(await auditOf(id, "media_edit")).toBe(2);
+  });
+
+  it("creditRequired: another photographer's item is still 404 and a stale revision still 409, both before the 403", async () => {
+    const owner = await actor("photographer");
+    const other = await actor("photographer");
+    const created = await create(owner, png(118, 98, 1));
+    const foreign = await patch(other, created.body.id, { revision: 1, licence: { creditRequired: false } });
+    expect(foreign.status).toBe(404);
+    const stale = await patch(owner, created.body.id, { revision: 7, licence: { creditRequired: false } });
+    expect(stale.status).toBe(409);
+    expect((await row(created.body.id)).revision).toBe(1);
+  });
+
   it("refusals do not leak connections: more refused writes than the pool size still all succeed", async () => {
     const photographer = await actor("photographer");
     const created = await create(photographer, png(115, 95, 1));
@@ -733,7 +784,7 @@ describe("POST /v1/admin/media/{id}/publish and /withdraw", () => {
     expect(row1).toMatchObject({ state: "unverified", revision: named.body.revision, published_version: null });
     expect(await auditOf(created.body.id, "media_publish")).toBe(0);
     // Credit not required: a licence name alone is enough.
-    const relaxed = await patch(photographer, created.body.id, { revision: named.body.revision, licence: { creditRequired: false } });
+    const relaxed = await patch(admin, created.body.id, { revision: named.body.revision, licence: { creditRequired: false } });
     const ok = await publish(admin, created.body.id, { revision: relaxed.body.revision });
     expect(ok.status).toBe(200);
     expect(ok.body.state).toBe("published");

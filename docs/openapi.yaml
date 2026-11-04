@@ -1,10 +1,17 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.16.0
+  version: 0.17.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.17.0 (staff-only, no change for the game).** Fix: `PATCH /v1/admin/media/{mediaId}` now refuses a
+    licence edit that would change `creditRequired` unless the caller is an admin (403 `forbidden`, nothing written;
+    sending the stored value back stays a no-op), as the licence description always said. New filter
+    `GET /v1/admin/media?pending=true`: published items whose draft is ahead of the published version (a licence edit or
+    a new file waiting for an admin). It combines only with `state=published` (any other `state` is 400), and a cursor is
+    bound to the filter it was made under.
 
     **Changelog 0.16.0 (media plan T5-T7, Backend ADR-0001).** All media routes are now built. For the game and the website:
     `GET /v1/media?ids=` (any signed-in caller, at most 50 ids, `X-Client: web` accepted) returns an `ImageRef` per
@@ -2367,17 +2374,26 @@ paths:
         Needs an ACTIVE `photographer` role (an `admin` also qualifies). A photographer sees only their own items; an admin
         sees all (and the `owner` field). Newest first. `state` filters. `limit` is 1 to 100 (default 50). `nextCursor` is opaque; pass
         it back as `cursor` for the next page, `null` on the last. A malformed cursor, one made under another `state`, or one that is too long, is 400
-        `invalid_request`, as is any other query parameter, a repeated one or a malformed value. Pages are ordered by item id, so
+        `invalid_request`, as is any other query parameter, a repeated one or a malformed value. `pending=true` lists only
+        `published` items whose draft version is ahead of the published version (an edit or new file waiting for an admin to
+        publish); it may be combined with `state=published` or no `state`, and with any other `state` it is 400. Only the literal
+        `true` is accepted. A cursor made under `pending=true` is 400 without it (and the reverse, including under
+        `state=published`). Pages are ordered by item id, so
         uploads made while paging never move or repeat an item. Exempt from the client version gate.
       parameters:
         - name: state
           in: query
           required: false
           schema: { $ref: "#/components/schemas/MediaState" }
+        - name: pending
+          in: query
+          required: false
+          description: Only the literal `true`. Published items whose draft is ahead of the published version. With a `state` other than `published`, 400.
+          schema: { type: string, enum: ["true"] }
         - name: cursor
           in: query
           required: false
-          description: Opaque; pass back a `nextCursor` with the same `state` filter. A malformed cursor or another filter's is 400. It is not a secret and grants nothing (visibility is checked on every page).
+          description: Opaque; pass back a `nextCursor` with the same `state` / `pending` filter. A malformed cursor or another filter's is 400. It is not a secret and grants nothing (visibility is checked on every page).
           schema: { type: string, minLength: 1, maxLength: 100 }
         - name: limit
           in: query
@@ -2444,6 +2460,10 @@ paths:
         creates a new version instead. Text is trimmed; control characters are 400. Fenced by `revision`
         (stale is 409 `version_conflict`, nothing written). A change bumps `revision` and writes one audit row with the field diff.
         Sending the stored values is a 200 with no change, no new version and no new `revision`. Exempt from the client version gate.
+
+        Only an `admin` may CHANGE `creditRequired`: a photographer who sends a value different from the stored one gets 403
+        `forbidden` and nothing is written (sending the stored value, with or without other fields, is fine). The checks run in
+        order: role, then ownership (404), then the `revision` fence (409), then this rule (403).
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
       requestBody:
@@ -4554,6 +4574,7 @@ components:
       minProperties: 1
       description: |
         A partial licence edit. A key that is absent keeps the stored value; `null` clears it (`creditRequired` cannot be null).
+        Only an admin may change `creditRequired` (a photographer gets 403 `forbidden`; sending the stored value is fine).
         Text is trimmed and kept verbatim otherwise; control characters are refused (400). URLs must start with `http://` or
         `https://` and are at most 2048 characters.
       properties:
