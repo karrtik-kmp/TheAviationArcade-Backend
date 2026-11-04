@@ -348,7 +348,8 @@ T0 contract (x-planned)        T1 pure: image sniffer + CDN signer
     Rules, media table), `docs/TASKS.md` row 5.R and the verification record, design doc §2 cross-references.
   - Verify: links resolve; no secret values.
   - Depends on: T7.
-- [ ] **T10: Live Bunny setup — user sign-off required** — S (human-gated)
+- [x] **T10: Live Bunny setup — user sign-off required** — S (human-gated). **Done 2026-11-04** (user sign-off): pull zone
+  `aviation-arcade-media` on `aviation-arcade-website`, token auth, Edge Rules; results in `docs/TASKS.md`.
   - With the user's explicit go-ahead: create the pull zone on `aviation-arcade-website`, enable advanced token auth,
     add Edge Rules (block outside `/backend/content/photos/`; edge cache 1 year; browser cache 24 h), set
     `BUNNY_CDN_TOKEN_KEY`/`BUNNY_CDN_HOST` in the local `.env` (never committed), run `npm run bunny:check`, then upload
