@@ -1,6 +1,6 @@
 # Plan: import website D1 photo proposals into backend media
 
-Status: **draft, not approved.** Build after the user rules on the image description and rights-statement fields
+Status: **draft; the licence and status rules were ruled by the user 2026-11-04; the operator-command shape and the plan gate are still to be approved.** Build after the user rules on the image description and rights-statement fields
 (so the import can fill them). No live data needs moving yet: D1 holds local and preview test data only.
 
 Source: user ruling 2026-11-04 (recorded by the website in `../docs/PROJECT_STATE.md`): photographer submissions live
@@ -22,6 +22,7 @@ The website writes the bundle: `manifest.json` plus the image files.
 | `credit` | `payload.credit` | Draft licence `credit` |
 | `rightsBasis` | `payload.rightsBasis` (`owner` / `authorized`) | Audit only (until a rights field exists) |
 | `submittedAt` | `created_at` | Audit only |
+| `status` | `status` | `rejected` is refused; others imported (audit only) |
 
 Not imported: contact `email` (never stored or audited), the photographer display name, and editorial review state.
 `creditRequired` is not accepted; it starts true.
@@ -34,10 +35,14 @@ Each entry becomes an `unverified` item owned by `owner` (version 1), audited as
 sourceId, owner, rightsBasis, submittedAt). The new audit action needs a migration. A dry run prints a per-entry report
 (would import / already imported / refused + reason); `--yes` writes. Running against real Bunny needs user sign-off.
 
+## Rulings (user, 2026-11-04, relayed by the website session)
+
+1. No-licence rule confirmed: imported items have an empty `licenceName` and cannot be published until the photographer
+   grants a licence; `credit` carries over; email is left out; the audit note is as above.
+2. Import every D1 `status` except `rejected` (pending, changes_requested, approved). Rejected proposals stay in D1 and
+   are deleted with it. The command refuses a manifest entry with status `rejected` (the manifest carries `status`).
+
 ## Open questions (user)
 
-1. Confirm the no-licence rule above.
-2. Which D1 `status` values are imported (pending, changes_requested, approved, rejected)? The suggested answer is
-   everything except `rejected`.
-3. Description and rights-statement fields on media (decide first; payload `description`, `aircraft`, `location`,
-   `rightsBasis` would map onto them).
+1. Description and rights-statement fields on media (decide first; payload `description`, `aircraft`, `location`,
+   `rightsBasis` would map onto them). Then this plan goes through the plan gate and is built.
