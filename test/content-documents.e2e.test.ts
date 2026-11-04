@@ -25,7 +25,7 @@ import { catalogInForce } from "../src/trips/catalog-in-force.js";
 import { clientSheet } from "./fixtures.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
-import { factsFor, newKey, openBody } from "./trip-helpers.js";
+import { factsFor, localClock, newKey, openBody } from "./trip-helpers.js";
 
 // Slice T4: the content manifest, the immutable documents, the v1 seed and catalogInForce reading them. The real Nest app
 // against the real test database; the "fresh database" cases use throwaway databases of their own (names end `_test`).
@@ -383,7 +383,8 @@ async function newPlayer() {
 
 /** Opens a segment, banks ten correct Rounds and completes it; returns the completion body. */
 async function completeATrip(p: Awaited<ReturnType<typeof newPlayer>>) {
-  const opened = await request(server).post("/v1/trips").set(p.auth).set("Idempotency-Key", newKey()).send(openBody("atc-match"));
+  // Midday local time, so Red-Eye Special (22:00-05:00) never joins the expected awards whatever the UTC time of the run.
+  const opened = await request(server).post("/v1/trips").set(p.auth).set("Idempotency-Key", newKey()).send(openBody("atc-match", localClock(12)));
   expect(opened.status, JSON.stringify(opened.body)).toBe(201);
   const tripId = opened.body.trip.tripId as string;
   for (let i = 0; i < 10; i++) {

@@ -13,6 +13,20 @@ export function utcToday(plusMinutes = 0): string {
   return new Date(Date.now() + plusMinutes * 60_000).toISOString().slice(0, 10);
 }
 
+/**
+ * An open-body override that puts the segment's local clock at `hour`:30 now (offset and matching localDate). Use it when an
+ * assertion depends on day or night (Red-Eye Special is due for a segment completed 22:00-05:00 local): offset 0 makes such a
+ * test depend on the UTC time of the run.
+ */
+export function localClock(hour: number) {
+  const now = new Date();
+  const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  let offset = hour * 60 + 30 - utcMinutes;
+  if (offset > 840) offset -= 1440;
+  if (offset < -720) offset += 1440;
+  return { utcOffsetMinutes: offset, localDate: new Date(now.getTime() + offset * 60_000).toISOString().slice(0, 10) };
+}
+
 /** A valid POST /v1/trips body. */
 export function openBody(module = "atc-match", overrides: Record<string, unknown> = {}) {
   return {

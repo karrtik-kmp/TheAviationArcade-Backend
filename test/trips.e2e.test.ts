@@ -19,7 +19,7 @@ import { catalogInForce } from "../src/trips/catalog-in-force.js";
 import { toCounters } from "../src/trips/counters-store.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
-import { ensureMilitaryItem, factsFor, newKey, openBody, utcToday } from "./trip-helpers.js";
+import { ensureMilitaryItem, factsFor, localClock, newKey, openBody, utcToday } from "./trip-helpers.js";
 
 // Slices T2 and T3: Flight Segments (Unity Trips), the Round routes that run inside them, and completing a segment. The real Nest app against the real
 // test database. Pure rules have their own tests (trip-segments.test.ts); the contract twin is openapi.e2e.test.ts.
@@ -1173,16 +1173,6 @@ describe("a re-issued Round keeps the Perfect Streak", () => {
 // ---------------------------------------------------------------------------------------------------------------
 // Slice T3: POST /v1/trips/{tripId}/complete. Outcome, counters, Clipper Cards, the 28 Field Awards, the Trip hint.
 // ---------------------------------------------------------------------------------------------------------------
-
-/** An open-body override that puts the segment's local clock at `hour`:30 now (offset and matching localDate). */
-function localClock(hour: number) {
-  const now = new Date();
-  const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-  let offset = hour * 60 + 30 - utcMinutes;
-  if (offset > 840) offset -= 1440;
-  if (offset < -720) offset += 1440;
-  return { utcOffsetMinutes: offset, localDate: new Date(now.getTime() + offset * 60_000).toISOString().slice(0, 10) };
-}
 
 const identifierFacts = (key: string, body: Record<string, unknown> = {}) => ({ ...factsFor("identifier", { aircraftKey: key }), ...body });
 const militaryFacts = (itemId: string, body: Record<string, unknown> = {}) =>
