@@ -120,6 +120,18 @@ deploy runbook.
 Leaderboards and the Callsign/game-identity contract (needs the shared-identity ruling; consider
 verified email for ranked play).
 
+### Follow-ups (2026-11-04)
+
+- **`not_owner` error code** (website request): 403 for a non-owner admin on owner-only media routes, apart from
+  `forbidden` (missing or lapsed role). Ship with the next contract change.
+- **Guest image read behind the website's shared egress IP.** Signed-in calls are limited per principal; only the public
+  tier is per IP, and every guest arrives from the website Worker's Cloudflare egress. Current choice: the website caches
+  ImageRefs until near `expiresAt` and `RATE_LIMIT_PUBLIC_PER_MIN` is sized at hosting. A trusted website key that forwards
+  the visitor IP would be a website secret, which the 2026-11-04 ruling excluded, and Cloudflare egress IPs are shared by all
+  Workers, so they cannot identify the website. Revisit with the user before the public read gets a consumer.
+- **Dev tunnel** (`d8mfz914`, anonymous, user-hosted) serves the local backend to the deployed dev site; delete it after
+  testing. The backend runs from the E: clone's build with this folder's `.env`.
+
 ## Decisions
 
 - 2026-10-27: backend runs as a separate Node server (NestJS + PostgreSQL), not on Cloudflare.
