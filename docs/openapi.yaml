@@ -1,10 +1,16 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.20.0
+  version: 0.21.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.21.0 (staff read of purchases, wave P-D; docs/plans/purchases.md).** Built: `GET /v1/admin/store/purchases` (every verified store transaction, newest first,
+    cursor-paged, filterable) and `GET /v1/admin/store/players/{principal}/entitlements` (a player's Pass state and subscriptions). Both are admin only,
+    read only, and never expose `commerceToken`, a raw Google purchase token or a store claim. New schemas `StaffStorePurchase`, `StaffStorePurchaseList`,
+    `StaffStoreGrant`, `StaffEntitlements`, `StaffStoreSubscription`. `PUT /v1/admin/store/products/{productId}`: `title` is now trimmed and must be 1 to 100
+    characters with no control character (400 `invalid_request` otherwise).
 
     **Changelog 0.20.0 (purchases, wave P; docs/plans/purchases.md, docs/briefs/commerce.md).** Built: `POST /v1/purchases`, `GET /v1/me/entitlements`, `GET /v1/store/products`, the
     staff catalog `GET /v1/admin/store/products`, `PUT .../{productId}`, `POST .../{productId}/retire` and `.../restore`, and, still `x-planned` (wave P4),
@@ -1357,7 +1363,8 @@ paths:
         `demo: true` in production is 422 `content_invalid`. A hint pack needs `hints` (1 to 1000) and no `passPeriod`; a First Class
         Pass needs `passPeriod` and no `hints` (else 422 `content_invalid`). A change bumps `version` and writes one `store_product_create`
         or `store_product_edit` audit row (principal from the token); sending the stored values back is a 200 with no change. Edits never
-        change past grants (each grant is snapshotted). The id must match `^[a-z0-9][a-z0-9._]{0,99}$` (else 400).
+        change past grants (each grant is snapshotted). The id must match `^[a-z0-9][a-z0-9._]{0,99}$` (else 400). `title` is trimmed first, then must be
+        1 to 100 characters (code points) with no control character (U+0000 to U+001F, U+007F to U+009F), else 400 `invalid_request`.
       parameters:
         - $ref: "#/components/parameters/StoreProductIdPath"
       requestBody:
@@ -1500,6 +1507,98 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/store/purchases:
+    get:
+      tags: [store, admin]
+      operationId: listAdminStorePurchases
+      summary: Verified store purchases, newest first
+      description: |
+        Admin only; read only. One row per verified store transaction (hint packs and every Pass term), newest first by `id` (insert order). Filters (all
+        optional, each at most once, never empty): `player` (a principal of this project), `productId`, `store`, `transactionRef` (exact transaction
+        id or token as the store reported it) and `orderId` (exact). `limit` is 1 to 100 (default 50). `nextCursor` is opaque and bound to the filters it
+        was made under; pass it back as `cursor` with the same filters (a changed filter, an edited or foreign cursor is 400 `invalid_request`). An unknown
+        player or product, or a deleted player, is 200 with an empty list, never 404. An unknown query key, an empty value, a repeated key, or another
+        project's principal is 400. A transaction that commits after a page passed its id shows up on a fresh traversal.
+
+        Privacy: no raw Google purchase token is ever returned, only `tokenFingerprint` / `originalFingerprint` (first 12 hex digits of its SHA-256). The
+        buyer's `commerceToken` and the claim tombstones are never exposed. `grant` is a tagged union and is OPEN: later waves add types
+        (the Miles wave adds `miles`) and `kind` values, so a consumer must show an unknown type or kind raw and never fail. Exempt from the client version gate.
+      parameters:
+        - name: player
+          in: query
+          required: false
+          description: "A principal, exactly `firebase:<the configured project>:<uid>` (another project's principal is 400)."
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: productId
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/StoreProductId" }
+        - name: store
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/StoreName" }
+        - name: transactionRef
+          in: query
+          required: false
+          description: Exact lookup of the stored transaction reference (the Apple transaction id, or the Google token or order id as stored).
+          schema: { type: string, pattern: "^[A-Za-z0-9._~:-]{1,1024}$" }
+        - name: orderId
+          in: query
+          required: false
+          schema: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque; only a `nextCursor` this route returned under the same filters is accepted (otherwise 400).
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,100}$" }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: A page of purchases (possibly none).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffStorePurchaseList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/store/players/{principal}/entitlements:
+    get:
+      tags: [store, admin]
+      operationId: getAdminStoreEntitlements
+      summary: A player's First Class Pass state and subscriptions
+      description: |
+        Admin only; read only, from one consistent snapshot. Unlike `GET /v1/me/entitlements` this never creates the player's commerce token and never
+        returns it (`hasStoreAccount` says whether the player has ever read theirs). `firstClassPass` is true while `firstClassUntil` is in the future
+        on the database clock (`evaluatedAt`); `productId` is the product of the subscription that sets it. `subscriptions` lists every Pass chain
+        (any status), ordered by `expiresAt` descending, then original reference, then `store` (a total order). A Google chain shows only a fingerprint of its first purchase token. 404 `player_not_found` for an unknown
+        player; 400 for a malformed principal or any query parameter. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/AccountPrincipal"
+      responses:
+        "200":
+          description: The player's entitlements.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffEntitlements" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
@@ -4635,7 +4734,7 @@ components:
       properties:
         version: { type: integer, minimum: 1, maximum: 2147483647, description: The product `version` the caller read. Omit to create. }
         kind: { $ref: "#/components/schemas/StoreProductKind" }
-        title: { type: string, minLength: 1, maxLength: 100 }
+        title: { type: string, minLength: 1, maxLength: 100, description: Trimmed by the server first; then 1 to 100 characters (code points) with no control character (U+0000 to U+001F, U+007F to U+009F). }
         hints: { type: integer, minimum: 1, maximum: 1000 }
         passPeriod: { $ref: "#/components/schemas/StorePassPeriod" }
         demo: { type: boolean }
@@ -4720,6 +4819,90 @@ components:
           oneOf: [{ $ref: "#/components/schemas/StoreProductId" }, { type: "null" }]
           description: The Pass product that sets `firstClassUntil`; null without a Pass.
         evaluatedAt: { type: string, format: date-time, description: The database clock at the instant this view was built. }
+
+    StaffStoreGrant:
+      description: |
+        What a purchase granted, snapshotted when it was made. Closed per contract version: a new grant type (the Miles wave adds `miles`) arrives
+        with a version bump of this file. A consumer must still show an unknown `type` raw at runtime and never fail.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, hints]
+          properties:
+            type: { type: string, const: hints }
+            hints: { type: integer, minimum: 1 }
+        - type: object
+          additionalProperties: false
+          required: [type, until]
+          properties:
+            type: { type: string, const: first_class_pass }
+            until: { type: string, format: date-time, description: The expiry of the term this transaction paid for. }
+      discriminator:
+        propertyName: type
+    StaffStorePurchase:
+      type: object
+      additionalProperties: false
+      required: [id, store, principal, productId, kind, environment, transactionId, originalTransactionId, orderId, tokenFingerprint, originalFingerprint, purchasedAt, grant, createdAt]
+      properties:
+        id: { type: integer, minimum: 1, description: The row id; insert order (the list is newest first by it). }
+        store: { $ref: "#/components/schemas/StoreName" }
+        principal: { type: string, description: "The buyer, `firebase:<project>:<uid>`." }
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        kind:
+          type: string
+          description: "OPEN: `hint_pack` or `first_class_pass` today; later waves add values. Show an unknown value raw."
+        environment: { type: string, enum: [production, sandbox, fake] }
+        transactionId: { type: [string, "null"], description: "The Apple transaction id as stored. Null for Google. Fake-store (test) references have their embedded account-token segment replaced by its fingerprint." }
+        originalTransactionId: { type: [string, "null"], description: The Apple original transaction id as stored (a Pass). Null otherwise. }
+        orderId: { type: [string, "null"], description: The store's order id when it gave one. }
+        tokenFingerprint:
+          type: [string, "null"]
+          description: Google one-time purchases only (a Google Pass reference is an order id, so null there). First 12 hex digits of the SHA-256 of the purchase token; the token itself is never returned.
+        originalFingerprint:
+          type: [string, "null"]
+          description: Google Pass only. Same fingerprint rule for the first purchase token of the chain.
+        purchasedAt: { type: string, format: date-time }
+        grant: { $ref: "#/components/schemas/StaffStoreGrant" }
+        createdAt: { type: string, format: date-time }
+    StaffStorePurchaseList:
+      type: object
+      additionalProperties: false
+      required: [purchases, nextCursor]
+      properties:
+        purchases:
+          type: array
+          items: { $ref: "#/components/schemas/StaffStorePurchase" }
+        nextCursor: { type: [string, "null"], pattern: "^[A-Za-z0-9_-]{1,100}$", description: Opaque; null on the last page. }
+    StaffStoreSubscription:
+      type: object
+      additionalProperties: false
+      required: [store, originalTransactionId, originalFingerprint, productId, status, expiresAt, lastEventAt, createdAt]
+      properties:
+        store: { $ref: "#/components/schemas/StoreName" }
+        originalTransactionId: { type: [string, "null"], description: Apple only, as stored. }
+        originalFingerprint: { type: [string, "null"], description: Google only. First 12 hex digits of the SHA-256 of the chain's first purchase token. }
+        productId: { $ref: "#/components/schemas/StoreProductId" }
+        status: { type: string, enum: [active, grace, billing_retry, on_hold, expired, revoked] }
+        expiresAt: { type: string, format: date-time }
+        lastEventAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    StaffEntitlements:
+      type: object
+      additionalProperties: false
+      required: [principal, firstClassPass, firstClassUntil, productId, evaluatedAt, hasStoreAccount, subscriptions]
+      description: "No `commerceToken`: the ownership key stays with its owner."
+      properties:
+        principal: { type: string }
+        firstClassPass: { type: boolean, description: True while `firstClassUntil` is in the future at `evaluatedAt`. }
+        firstClassUntil: { type: [string, "null"], format: date-time }
+        productId:
+          oneOf: [{ $ref: "#/components/schemas/StoreProductId" }, { type: "null" }]
+          description: The Pass product that sets `firstClassUntil`; null without a Pass.
+        evaluatedAt: { type: string, format: date-time }
+        hasStoreAccount: { type: boolean, description: Whether the player has ever read their own entitlements (their commerce token exists). }
+        subscriptions:
+          type: array
+          items: { $ref: "#/components/schemas/StaffStoreSubscription" }
 
     # ---------------------------------------------------------------------------------------------------------
     # Flight Segment, Field Award and Logbook schemas: built in slices T2, T3 and T5 (a schema marked x-planned: true would be

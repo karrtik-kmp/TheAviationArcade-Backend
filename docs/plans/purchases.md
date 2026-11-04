@@ -111,7 +111,7 @@ from the uid); 404 `player_not_found` before `PUT /v1/me`.
 
 **`POST /v1/purchases`** (signed-in, version gate, rate limit; `Idempotency-Key` accepted and ignored). Strict body:
 `{ store: "apple", productId, transactionId, jws? }` or `{ store: "google", productId, purchaseToken }`; per-field
-patterns and lengths (Apple id `^[A-Za-z0-9._~-]{1,256}$`, Google token `^[A-Za-z0-9._~:-]{1,4096}$`, jws <= 16 KB,
+patterns and lengths (Apple id `^[A-Za-z0-9._~-]{1,256}$`, Google token `^[A-Za-z0-9._~:-]{1,1024}$` (as built; 4096 in the first draft would overflow a btree entry), jws <= 12 KB,
 unused until P2). Flow:
 1. 404 if no player. `STORE_VERIFIER=none` → 503 `store_unavailable`.
 2. Verify outside any transaction. transient → 503 + `Retry-After`; invalid → 422 `purchase_invalid`; `productId` differs
@@ -156,8 +156,85 @@ idempotent and refused in production.
 | P-C | `src/purchases/*` except the module skeleton's registration, `test/purchases*.test.ts`, `test/balance-guard.test.ts` |
 | Lead (integration) | drop `x-planned` marks, move codes into `src/common/errors.ts`, route counts in `test/api.test.ts`, `npm run contracts:write`, `docs/TASKS.md`, `docs/ARCHITECTURE.md` Purchases, README env table, reply to Unity |
 
+## Wave P-D: staff read of purchases and entitlements (approved with changes, revised, 2026-11-04)
+
+For the website admin's Phase 2 (`../docs/briefs/website-monetization-admin.md`). User order 2026-11-04: P-D first, then P-E
+Miles packs (U11, confirmed by the user here). Read-only; no migration, no balance write, no new error code. Reviews:
+senior-lead and backend-expert, both "approve with changes"; every finding is folded in below. Default taken (reviewers'
+recommendation, user may overrule): **staff do not see `commerceToken`** (the ownership key stays with its owner).
+
+Both routes: `@Roles("admin")` + `@SkipClientVersion()`, as `store-admin.controller.ts`. The identity field is `principal`
+(as `adminView` in `accounts.controller.ts`), never `playerId`.
+
+### 1. `GET /v1/admin/store/purchases`
+
+- Strict query (`z.strictObject`; unknown key, empty value or repeated key → 400 `invalid_request`):
+  `player` (string <= 200, refined with `uidOfAccountPrincipal(value, config.firebaseProjectId) !== undefined`; another
+  project's principal → 400), `productId` (`PRODUCT_ID_PATTERN`), `store` (`z.enum(STORES)`), `transactionRef` (Apple id
+  pattern of `POST /v1/purchases`) and `orderId` (`^[A-Za-z0-9._:-]{1,128}$`) for exact lookup, `cursor`, `limit`
+  (`^[0-9]{1,3}$`, then 1..100, default 50).
+- Order `id DESC` (identity PK, insert order), keyset `id < lastId` — **the media list pattern** (`media.service.ts:66-147`),
+  not `created_at`. Cursor = base64url(`sp1.<lastId>.<f>`), `f` = first 22 base64url chars of SHA-256 over the canonical JSON
+  `[player, productId, store, transactionRef, orderId]` (nulls for absent). Decode, compare `f` with this request's filters,
+  re-encode and refuse non-canonical spellings; anything else → 400 with the media message. Cursor pattern
+  `^[A-Za-z0-9_-]{1,100}$`, same bound in openapi.
+- A well-formed but unknown player or product → 200 `{ purchases: [] }` (never 404; reveals nothing). A deleted player's rows are
+  gone (R4); `store_claims` is never exposed. Limit, documented: a row whose transaction commits after a page passed its id
+  appears on a fresh traversal.
+- Response `{ purchases: [StaffStorePurchase], nextCursor: string | null }`. `StaffStorePurchase = { id, store, principal,
+  productId, kind, environment, transactionId | null (Apple only, as stored), orderId | null, tokenFingerprint | null (Google
+  only: first 12 hex of sha256 of the purchase token; the raw token is never returned), originalFingerprint | null (same rule
+  for `original_ref`; Apple returns `originalTransactionId` as stored instead), purchasedAt, grant, createdAt }`.
+- `grant` is a tagged union with a discriminator: `{ type: "hints", hints }` | `{ type: "first_class_pass", until }`. Documented as
+  **open**: P-E adds `{ type: "miles", miles }` (with a `granted_miles` column and the kind CHECK change in 0021) and a new `kind`
+  value; consumers must show an unknown type or kind raw and never fail.
+
+### 2. `GET /v1/admin/store/players/{principal}/entitlements`
+
+- `@Param("principal", AccountPrincipalPipe)` (moved to a small shared module if importing it from the controller is awkward);
+  empty strict query.
+- A separate service method (never `EntitlementsService.get`, which creates the token row): one
+  `withTransaction(fn, { isolationLevel: "repeatable read", accessMode: "read only" })` (the `READ_SNAPSHOT` of
+  `content-admin.service.ts`). In order: player (missing → 404 `player_not_found`), subscriptions ordered by `expires_at DESC,
+  original_ref`, `evaluatedAt = databaseNow(tx)`, `firstClassPass = hasFirstClassPass(player.firstClassUntil, evaluatedAt)`,
+  `productId` of the current Pass by the same rule as `/v1/me/entitlements`.
+- Response `{ principal, firstClassPass, firstClassUntil, productId | null, evaluatedAt, hasStoreAccount, subscriptions: [{ store,
+  originalTransactionId | null (Apple), originalFingerprint | null (Google), productId, status (full enum), expiresAt,
+  lastEventAt, createdAt }] }`. No `commerceToken`.
+
+### 3. Store product title (website finding)
+
+`PUT /v1/admin/store/products/{productId}`: `title` is trimmed, then must be 1..100 characters with no control characters
+(U+0000-U+001F, U+007F-U+009F) → else 400 `invalid_request`. Documented in openapi.
+
+### Contract and tests
+
+openapi **0.21.0**, both operations built (no `x-planned`), `additionalProperties: false` on `StaffStorePurchase`,
+`StaffStorePurchaseList`, `StaffEntitlements`, `StaffStoreSubscription`; `id` integer >= 1; nullable strings as above;
+`grant` `oneOf` + `discriminator` on `type`. `test/openapi.e2e.test.ts`: real-response validation for both routes next to the
+existing "admin routes: staff responses validate against the spec" case (a hint-pack row, a Pass row, a 400 cursor, a 404), and
+the strictness `rejects(...)` cases (extra field; a `grant` with both shapes). `test/api.test.ts` count 59 → 61 (58 guarded, 38
+admin).
+
+Tests (`test/store-purchases-admin.e2e.test.ts`): paging with `limit=1` asserts the exact id sequence over several pages; a cursor
+replayed under each other filter set → 400; an edited (non-canonical) cursor → 400; repeated keys and empty values → 400; another
+project's principal → 400; unknown principal → 200 empty; exact lookup by `transactionRef` and by `orderId`; a deleted player's
+rows absent and no tombstone fields anywhere; Google rows never contain the raw token; entitlements: 404 unknown, a player with
+no store account (`hasStoreAccount: false`, `store_accounts` count unchanged), expired vs active subscriptions,
+`setTestDatabaseClockSkew` flips `firstClassPass` while `firstClassUntil` stays; 401, 403 for a player and for an admin without
+a verified email, on both routes; title trimming and control-character refusal.
+
+### Ownership and integration
+
+| Who | Files |
+|---|---|
+| Implementer | `src/store/store-purchases-admin.controller.ts`, `src/store/store-purchases-admin.service.ts`, `src/store/store.module.ts`, `src/store/store-admin.controller.ts` + `store-catalog.service.ts` (title rule only), a shared principal pipe module if needed (and its import in `accounts.controller.ts`), `docs/openapi.yaml`, `test/api.test.ts`, `test/openapi.e2e.test.ts`, `test/store-purchases-admin.e2e.test.ts`, `test/store-products.e2e.test.ts` (title tests) |
+| Lead | `npm run contracts:write`, `docs/TASKS.md`, `docs/ARCHITECTURE.md` Purchases (staff read), the website brief's Phase 2 updated to API 0.21.0 with the real shapes, then the message to the website session |
+
+Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShell (uppercase `H:`), one full run.
+
 ## Next waves
 
-P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
+P-E Miles packs (U11) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
 RTDN, refunds (hint clawback clamped at 0, D6), grace/expiry, Get Notification History → ads + Pass hint grants (brief) →
 P5 SP boosts → final store ids replace the demo rows.

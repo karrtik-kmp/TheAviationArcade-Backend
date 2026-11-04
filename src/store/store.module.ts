@@ -6,6 +6,8 @@ import { DatabaseService } from "../database/database.module.js";
 import { countActiveDemoProducts } from "./seed-demo.js";
 import { StoreAdminController } from "./store-admin.controller.js";
 import { StoreCatalogService } from "./store-catalog.service.js";
+import { StorePurchasesAdminController } from "./store-purchases-admin.controller.js";
+import { StorePurchasesAdminService } from "./store-purchases-admin.service.js";
 import { StoreController } from "./store.controller.js";
 
 /**
@@ -13,8 +15,8 @@ import { StoreController } from "./store.controller.js";
  * catalog.ts and the seed list in demo-products.ts.
  */
 @Module({
-  controllers: [StoreController, StoreAdminController],
-  providers: [StoreCatalogService],
+  controllers: [StoreController, StoreAdminController, StorePurchasesAdminController],
+  providers: [StoreCatalogService, StorePurchasesAdminService],
 })
 export class StoreModule implements OnApplicationBootstrap {
   private readonly log = new Logger("Store");

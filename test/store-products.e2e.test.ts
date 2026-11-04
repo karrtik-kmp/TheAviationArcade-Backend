@@ -420,3 +420,44 @@ describe("scripts/store-seed-demo.mjs", () => {
     expect(after.rows).toEqual(before.rows);
   });
 });
+
+describe("title rule (wave P-D)", () => {
+  it("trims the title, then stores the trimmed value", async () => {
+    const res = await put(NEW_ID, pack({ title: "  Seven hints \t " }));
+    expect(res.status).toBe(201);
+    expect(res.body.title).toBe("Seven hints");
+    expect((await stored(NEW_ID)).title).toBe("Seven hints");
+  });
+
+  it("refuses an empty, all-whitespace, over-long or control-character title (400 invalid_request), writing nothing", async () => {
+    const bad = ["", "   ", "x".repeat(101), "a\u0000b", "a\nb", "a\u001Fb", "a\u007Fb", "a\u0085b", "a\u009Fb"];
+    for (const title of bad) {
+      const res = await put(NEW_ID, pack({ title }));
+      expect(res.status, JSON.stringify(title)).toBe(400);
+      expect(res.body.error.code).toBe("invalid_request");
+    }
+    expect(await stored(NEW_ID)).toBeUndefined();
+    expect(await audits()).toHaveLength(0);
+  });
+
+  it("accepts exactly 100 characters, also after trimming, and ordinary punctuation and accents", async () => {
+    const hundred = "x".repeat(100);
+    expect((await put(NEW_ID, pack({ title: ` ${hundred} ` }))).status).toBe(201);
+    expect((await stored(NEW_ID)).title).toBe(hundred);
+    expect((await put(PASS_ID, pass({ title: "Première classe: 1 mois (été)" }))).status).toBe(201);
+  });
+});
+
+describe("title length counts code points (wave P-D)", () => {
+  it("accepts 100 emoji (200 UTF-16 units) and refuses 101", async () => {
+    const hundred = "\u{1F6EB}".repeat(100);
+    expect(hundred.length).toBe(200);
+    const ok = await put(NEW_ID, pack({ title: hundred }));
+    expect(ok.status).toBe(201);
+    expect((await stored(NEW_ID)).title).toBe(hundred);
+    const tooLong = await put(PASS_ID, pass({ title: "\u{1F6EB}".repeat(101) }));
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error.code).toBe("invalid_request");
+    expect(await stored(PASS_ID)).toBeUndefined();
+  });
+});

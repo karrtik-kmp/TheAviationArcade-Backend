@@ -16,7 +16,20 @@ const productVersion = z.number().int().min(1).max(2_147_483_647);
 const putBody = z.strictObject({
   version: productVersion.optional(),
   kind: z.enum(STORE_PRODUCT_KINDS),
-  title: z.string().min(1).max(100),
+  // Trimmed first, then 1..100 characters with no control character (U+0000-U+001F, U+007F-U+009F).
+  title: z
+    .string()
+    .transform((value) => value.trim())
+    // Length counts code points (as openapi maxLength and the database length() do), not UTF-16 units.
+    .pipe(
+      z
+        .string()
+        .regex(/^[^\p{Cc}]*$/u)
+        .refine((value) => {
+          const n = [...value].length;
+          return n >= 1 && n <= 100;
+        }),
+    ),
   hints: z.number().int().min(1).max(1000).optional(),
   passPeriod: z.enum(STORE_PASS_PERIODS).optional(),
   demo: z.boolean(),

@@ -78,8 +78,13 @@ backend-expert, game-domain-expert). Staff-editable catalog seeded with the clie
 `../docs/briefs/commerce.md`. User rulings 2026-11-04: R1 demo plans now, editable; R2 First Class +50% stays ON (Unity
 to align); R3 adopt the commerce brief incl. "no account token → first verified caller owns"; R4 account deletion is
 final. Website admin brief: `../docs/briefs/website-monetization-admin.md` (catalog desk on the built admin routes;
-purchases view waits on **P-D**: staff read routes `GET /v1/admin/store/purchases` (paged, player filter) and one player's
-entitlements, not built). Next waves: P-D, P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
+website Phase 1 done, website `8389a73`). **P-D built 2026-11-04 (API 0.21.0, no migration):** `GET
+/v1/admin/store/purchases` (id-keyset cursor bound to the filters, exact lookup by Apple transaction id / Google token / order
+id) and `GET /v1/admin/store/players/{principal}/entitlements` (READ ONLY snapshot); Google tokens only as 12-hex
+fingerprints, no `commerceToken` in staff views (fake-store refs masked too); product titles trimmed, no control characters,
+1..100 code points (a legacy title with surrounding spaces, saved unchanged, now counts as an edit). Reviews: senior-lead,
+backend-expert (plan), code-reviewer ("ship after fixes", all fixed). Verified: typecheck clean, `npm test` 777, `npm run
+test:e2e` 37 files / 1013. Next waves: P-E Miles packs (U11), P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
 ads and Pass hint grants → P5 Status Point boosts → final store ids.
 
 **Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**

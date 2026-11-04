@@ -17,6 +17,7 @@ import { XLSX_MIME } from "../src/content/xlsx.js";
 import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
 import { clientSheet } from "./fixtures.js";
 import { seedAdmins } from "./roles-helpers.js";
+import { DEMO_HINT_5, DEMO_PASS_MONTHLY, seedDemoProducts } from "./store-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
@@ -447,6 +448,74 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", unknownModule.body);
     rejects("ImportInvalid", { error: invalid.body.error });
     rejects("AdminMe", { principal: "x", staff: false });
+  });
+
+  it("admin routes: staff purchases and entitlements validate against the spec", async () => {
+    const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
+    await seedDemoProducts(sql);
+    const buyerUid = `spec-buyer-${randomUUID()}`;
+    const buyer = `firebase:demo-airplane-games:${buyerUid}`;
+    expect((await request(server).put("/v1/me").set({ Authorization: `Bearer ${emulatorToken(buyerUid)}` })).status).toBe(201);
+    try {
+      const googleToken = `spec-google-${randomUUID()}`;
+      await sql.query(
+        `INSERT INTO store_transactions (store, transaction_ref, player_id, product_id, kind, environment, order_id, original_ref, purchased_at, granted_hints, granted_until)
+         VALUES ('apple', $1, $3, $4, 'hint_pack', 'sandbox', NULL, NULL, now(), 5, NULL),
+                ('google', $2, $3, $5, 'first_class_pass', 'sandbox', 'GPA.1', $2, now(), NULL, now() + interval '30 days')`,
+        [`spec-${randomUUID()}`, googleToken, buyer, DEMO_HINT_5, DEMO_PASS_MONTHLY],
+      );
+      await sql.query(
+        "INSERT INTO store_subscriptions (store, original_ref, player_id, product_id, status, expires_at, last_event_at) VALUES ('google', $1, $2, $3, 'active', now() + interval '30 days', now())",
+        [`spec-orig-${randomUUID()}`, buyer, DEMO_PASS_MONTHLY],
+      );
+      await sql.query("UPDATE players SET first_class_until = now() + interval '30 days' WHERE id = $1", [buyer]);
+
+      const base = `/v1/admin/store/purchases?player=${encodeURIComponent(buyer)}&limit=1`;
+      const page = await request(server).get(base).set(staff);
+      expect(page.status).toBe(200);
+      check("StaffStorePurchaseList", page.body);
+      expect(page.body.purchases).toHaveLength(1);
+      expect(page.body.nextCursor).toEqual(expect.any(String));
+      const next = await request(server).get(`${base}&cursor=${page.body.nextCursor}`).set(staff);
+      expect(next.status).toBe(200);
+      check("StaffStorePurchaseList", next.body);
+      const both = [...page.body.purchases, ...next.body.purchases];
+      expect(both.map((p: { grant: { type: string } }) => p.grant.type).sort()).toEqual(["first_class_pass", "hints"]);
+      for (const row of both) check("StaffStorePurchase", row);
+      expect(JSON.stringify(both)).not.toContain(googleToken);
+      const empty = await request(server).get(`/v1/admin/store/purchases?player=${encodeURIComponent(`firebase:demo-airplane-games:nobody-${randomUUID()}`)}`).set(staff);
+      expect(empty.status).toBe(200);
+      check("StaffStorePurchaseList", empty.body);
+
+      const badCursor = await request(server).get("/v1/admin/store/purchases?cursor=AAAA").set(staff);
+      expect(badCursor.status).toBe(400);
+      check("Error", badCursor.body);
+
+      const ent = await request(server).get(`/v1/admin/store/players/${encodeURIComponent(buyer)}/entitlements`).set(staff);
+      expect(ent.status).toBe(200);
+      check("StaffEntitlements", ent.body);
+      expect(ent.body.subscriptions).toHaveLength(1);
+      expect(ent.body.firstClassPass).toBe(true);
+      const missing = await request(server)
+        .get(`/v1/admin/store/players/${encodeURIComponent(`firebase:demo-airplane-games:nobody-${randomUUID()}`)}/entitlements`)
+        .set(staff);
+      expect(missing.status).toBe(404);
+      check("Error", missing.body);
+      expect(missing.body.error.code).toBe("player_not_found");
+
+      rejects("StaffStorePurchaseList", { ...page.body, extra: 1 });
+      rejects("StaffStorePurchase", { ...page.body.purchases[0], commerceToken: "x" });
+      rejects("StaffEntitlements", { ...ent.body, commerceToken: "x" });
+      rejects("StaffStoreSubscription", { ...ent.body.subscriptions[0], extra: 1 });
+      const { grant: _grant, ...withoutGrant } = page.body.purchases[0];
+      rejects("StaffStorePurchase", withoutGrant);
+      // A grant carrying both shapes, or missing its own field, matches no branch of the oneOf.
+      rejects("StaffStoreGrant", { type: "hints", hints: 5, until: "2026-01-01T00:00:00.000Z" });
+      rejects("StaffStoreGrant", { type: "first_class_pass", until: "2026-01-01T00:00:00.000Z", hints: 5 });
+      rejects("StaffStoreGrant", { type: "hints", until: "2026-01-01T00:00:00.000Z" });
+    } finally {
+      await sql.query("DELETE FROM players WHERE id = $1", [buyer]);
+    }
   });
 
   it("content: the manifest and each served document validate against the spec, headers included (slice T4)", async () => {

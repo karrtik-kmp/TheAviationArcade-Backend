@@ -246,7 +246,9 @@ and recomputes `first_class_until` from active + grace rows. Ownership is the pe
 on the store side → the first verified caller owns it (R3). Account deletion cascades the token and purchase rows (R4); `store_claims` keeps only the store reference (no player data,
 never cascaded), so a receipt can never be granted twice, even after its owner's account is deleted. Only
 `src/purchases/purchase-grant.ts` writes the two purchase tables (balance guard). Not built yet: Apple/Google adapters,
-notifications, acknowledge sweeper, refunds, `store_notifications` (P2-P4). The bullets below remain the target design.
+notifications, acknowledge sweeper, refunds, `store_notifications` (P2-P4). Staff read (P-D, API 0.21.0): a purchase list paged
+on `id DESC` with a filter-bound cursor and exact lookups, and one player's entitlements from a READ ONLY snapshot; Google purchase
+tokens are shown only as a 12-hex fingerprint and the `commerceToken` is never in a staff view. The bullets below remain the target design.
 
 - Client sends only a store reference (Apple `transactionId`, Google `purchaseToken` + `productId`).
   Server re-fetches from the store, checks bundle/package, catalog product, ownership token
