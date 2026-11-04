@@ -655,7 +655,7 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
     const licence = { credit: "A. Pilot", licenceName: "CC BY 4.0", licenceUrl: "https://example.org/l", sourceUrl: null, attributionText: null, creditRequired: true };
     const version = {
       version: 1, sha256: "a".repeat(64), contentType: "image/jpeg", byteSize: 1000, width: 800, height: 600, licence,
-      publishedAt: null, createdAt: "2026-11-03T12:00:00Z",
+      description: null, rights: null, publishedAt: null, createdAt: "2026-11-03T12:00:00Z",
     };
     const item = {
       id: "med-1", state: "unverified", revision: 1, draftVersion: 1, publishedVersion: null, draft: version,
@@ -687,7 +687,19 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
     expect(valid("MediaEditRequest", { revision: 2, licence: { licenceUrl: "ftp://x" } })).toBe(false);
     expect(valid("MediaEditRequest", { licence: { credit: "x" } })).toBe(false);
     expect(valid("MediaEditRequest", { revision: 2, licence: { credit: "x" } })).toBe(true);
-    expect(valid("MediaEditRequest", { revision: 2 })).toBe(false); // licence is required
+    expect(valid("MediaEditRequest", { revision: 2 })).toBe(false); // licence or description is required
+    expect(valid("MediaEditRequest", { revision: 2, description: "Line\nTwo" })).toBe(true);
+    expect(valid("MediaEditRequest", { revision: 2, description: null })).toBe(true);
+    expect(valid("MediaEditRequest", { revision: 2, description: "x".repeat(2001) })).toBe(false);
+    expect(valid("MediaRightsRequest", { revision: 2, statement: "v1_own" })).toBe(true);
+    expect(valid("MediaRightsRequest", { revision: 2, statement: "d1_private_review" })).toBe(false); // never accepted on the wire
+    expect(valid("MediaRightsRequest", { revision: 2 })).toBe(false);
+    const rights = { statement: "v1_authorised", statedAt: "2026-11-04T12:00:00Z" };
+    expect(valid("MediaItem", { ...item, draft: { ...version, description: "A note", rights } })).toBe(true);
+    expect(valid("MediaItem", { ...item, draft: { ...version, rights: { ...rights, statedBy: "firebase:demo-airplane-games:u1" } } })).toBe(true); // admin callers only
+    expect(valid("MediaItem", { ...item, draft: { ...version, rights: { ...rights, statement: "own" } } })).toBe(false);
+    expect(valid("ImageRef", { ...signed, description: "x" })).toBe(false); // staff-only fields are never on an ImageRef
+    expect(valid("ImageRef", { ...signed, rights })).toBe(false);
     expect(valid("MediaEditRequest", { revision: 2, note: "fix" })).toBe(false); // a note-only call is not an edit
     expect(valid("MediaEditRequest", { revision: 2, licence: {} })).toBe(false); // an empty licence edit changes nothing
     expect(valid("MediaEditRequest", { revision: 2, licence: { credit: "x" }, owner: "x" })).toBe(false);

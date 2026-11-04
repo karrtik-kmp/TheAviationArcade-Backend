@@ -24,6 +24,7 @@ import type {
   ContentSource,
   ContentStatus,
   MediaContentType,
+  MediaRightsStatement,
   MediaState,
   MediaUploadOperation,
   RoleState,
@@ -380,6 +381,13 @@ export const mediaVersions = pgTable(
     licenceUrl: text("licence_url"),
     sourceUrl: text("source_url"),
     attributionText: text("attribution_text"),
+    // The photographer's rights statement for this file (docs/plans/media-rights-and-public.md): all three set or all null. Null
+    // only on rows from before migration 0019. Staff-only: never part of an ImageRef.
+    rightsStatement: text("rights_statement").$type<MediaRightsStatement>(),
+    rightsStatedBy: text("rights_stated_by"),
+    rightsStatedAt: timestamp("rights_stated_at", { withTimezone: true }),
+    // Staff-only photo description (1-2000 characters, newlines allowed).
+    description: text("description"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -405,10 +413,45 @@ export const mediaVersions = pgTable(
     ),
     check("media_versions_attribution_check", sql`${t.attributionText} IS NULL OR length(${t.attributionText}) <= 1000`),
     check("media_versions_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check("media_versions_rights_statement_check", sql`${t.rightsStatement} IN ('v1_own', 'v1_authorised', 'd1_private_review')`),
+    check(
+      "media_versions_rights_all_or_none_check",
+      sql`(${t.rightsStatement} IS NULL) = (${t.rightsStatedBy} IS NULL) AND (${t.rightsStatement} IS NULL) = (${t.rightsStatedAt} IS NULL)`,
+    ),
+    check("media_versions_description_check", sql`${t.description} IS NULL OR length(${t.description}) BETWEEN 1 AND 2000`),
+    // A NULL statement would pass an IN test (NULL is not false), hence the explicit IS NOT NULL.
+    // Migration 0019 adds this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
+    // statement and stay as they are, while every new or changed row must satisfy it.
     check(
       "media_versions_publishable_check",
-      sql`${t.publishedAt} IS NULL OR (${t.licenceName} IS NOT NULL AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL))`,
+      sql`${t.publishedAt} IS NULL OR (${t.licenceName} IS NOT NULL AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL) AND ${t.rightsStatement} IS NOT NULL AND ${t.rightsStatement} IN ('v1_own', 'v1_authorised'))`,
     ),
+  ],
+);
+
+/**
+ * Which external photo each imported media item came from (the D1 import command). One media item per source row, and one source
+ * row per media item; the claim is inserted in the same transaction as the item, so a repeated import finds it and does nothing.
+ */
+export const mediaImports = pgTable(
+  "media_imports",
+  {
+    sourceSystem: text("source_system").notNull(),
+    sourceId: text("source_id").notNull(),
+    mediaId: bigint("media_id", { mode: "number" })
+      .notNull()
+      .unique("media_imports_media_id_unique")
+      .references(() => mediaItems.id),
+    owner: text("owner").notNull(),
+    sha256: text("sha256").notNull(),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "media_imports_pk", columns: [t.sourceSystem, t.sourceId] }),
+    check("media_imports_source_system_check", sql`${t.sourceSystem} = 'd1'`),
+    check("media_imports_source_id_check", sql`length(${t.sourceId}) BETWEEN 1 AND 128`),
+    check("media_imports_owner_check", sql`length(${t.owner}) BETWEEN 1 AND 256`),
+    check("media_imports_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
   ],
 );
 
@@ -493,7 +536,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import')`,
     ),
   ],
 );

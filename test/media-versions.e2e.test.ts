@@ -53,10 +53,11 @@ async function actor(role: "photographer" | "admin" | null): Promise<Actor> {
 }
 
 const create = (who: Actor, bytes: Buffer, key = newKey()) =>
-  request(server).post(PATH).set(who.auth).set("Content-Type", "image/png").set("Idempotency-Key", key).send(bytes);
-const addVersion = (who: Actor, id: string, revision: number | string | null, bytes: Buffer, key: string | null = newKey(), type = "image/png") => {
+  request(server).post(PATH).set(who.auth).set("Content-Type", "image/png").set("Idempotency-Key", key).set("X-Rights-Statement", "v1_own").send(bytes);
+const addVersion = (who: Actor, id: string, revision: number | string | null, bytes: Buffer, key: string | null = newKey(), type = "image/png", statement: string | null = "v1_own") => {
   let req = request(server).post(`${PATH}/${id}/versions${revision === null ? "" : `?revision=${revision}`}`).set(who.auth).set("Content-Type", type);
   if (key !== null) req = req.set("Idempotency-Key", key);
+  if (statement !== null) req = req.set("X-Rights-Statement", statement);
   return req.send(bytes);
 };
 const patch = (who: Actor, id: string, body: unknown) => request(server).patch(`${PATH}/${id}`).set(who.auth).send(body as object);
@@ -168,13 +169,22 @@ describe("POST /v1/admin/media/{id}/versions", () => {
     expect(dbItem).toMatchObject({ state: "published", draft_version: 2, published_version: 1, updated_by: photographer.principal });
   });
 
-  it("an admin sees owner in the response; an admin may add a version to another's item", async () => {
+  it("an admin sees owner in the response for their own item; an admin may NOT add a version to another's item (owner only, 403)", async () => {
     const photographer = await actor("photographer");
     const admin = await actor("admin");
-    const created = await create(photographer, png(71, 51, 1));
-    const res = await addVersion(admin, created.body.id, created.body.revision, png(72, 52, 1));
-    expect(res.status).toBe(201);
-    expect(res.body.owner).toBe(photographer.principal);
+    const mine = await create(admin, png(71, 51, 1));
+    const own = await addVersion(admin, mine.body.id, mine.body.revision, png(72, 52, 1));
+    expect(own.status).toBe(201);
+    expect(own.body.owner).toBe(admin.principal);
+
+    const theirs = await create(photographer, png(71, 51, 2));
+    const key = newKey();
+    const res = await addVersion(admin, theirs.body.id, theirs.body.revision, png(72, 52, 2), key);
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("forbidden");
+    expect(await versionsOf(theirs.body.id)).toBe(1);
+    const claimed = await sql.query("SELECT 1 FROM media_upload_keys WHERE principal = $1 AND idempotency_key = $2", [admin.principal, key]);
+    expect(claimed.rowCount).toBe(0);
   });
 
   it("who may: 401 without a token, 403 without the role, 404 for another photographer's item or an unknown or malformed id", async () => {
@@ -183,7 +193,7 @@ describe("POST /v1/admin/media/{id}/versions", () => {
     const none = await actor(null);
     const created = await create(owner, png(73, 53, 1));
     const bytes = png(74, 54, 1);
-    expect((await request(server).post(`${PATH}/${created.body.id}/versions?revision=1`).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).send(bytes)).status).toBe(401);
+    expect((await request(server).post(`${PATH}/${created.body.id}/versions?revision=1`).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own").send(bytes)).status).toBe(401);
     expect((await addVersion(none, created.body.id, 1, bytes)).status).toBe(403);
     const foreign = await addVersion(other, created.body.id, 1, bytes);
     expect(foreign.status).toBe(404);
@@ -899,14 +909,14 @@ describe("the versions route: rate limit", () => {
     try {
       const photographer = await actor("photographer");
       const target = limited.getHttpServer();
-      const made = await request(target).post(PATH).set(photographer.auth).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).send(png(130, 110, 1));
+      const made = await request(target).post(PATH).set(photographer.auth).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own").send(png(130, 110, 1));
       expect(made.status).toBe(201);
       for (let n = 0; n < 3; n += 1) {
         const res = await request(target)
           .post(`${PATH}/${made.body.id}/versions?revision=${made.body.revision + n}`)
           .set(photographer.auth)
           .set("Content-Type", "image/png")
-          .set("Idempotency-Key", newKey())
+          .set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own")
           .send(png(131 + n, 111, 1));
         expect(res.status).toBe(201);
       }

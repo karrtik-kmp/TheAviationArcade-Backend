@@ -109,7 +109,7 @@ async function upload(): Promise<Item> {
     .post(STAFF)
     .set(owner.auth)
     .set("Content-Type", "image/png")
-    .set("Idempotency-Key", newKey())
+    .set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own")
     .send(png(64, 48, extra++));
   expect(res.status).toBe(201);
   return res.body;

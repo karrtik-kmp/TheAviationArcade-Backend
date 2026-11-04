@@ -152,6 +152,23 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
 - **Hosting notes for the guest media read.** Size `RATE_LIMIT_PUBLIC_PER_MIN` for the website's egress (one IP, every
   guest), and set `TRUST_PROXY` to the host's proxy hop count so the limiter keys on the real client address. The website
   must batch up to 50 ids per call, cache each `ImageRef`, refresh ahead of `expiresAt`, and keep serving cache on 429.
+- **Rights statement and description (migration 0019, API 0.19.0; plan [media-rights-and-public](plans/media-rights-and-public.md)).**
+  Every file version carries the photographer's rights statement: `rights_statement` (`v1_own`, `v1_authorised`, or
+  `d1_private_review` for a photo imported from the old website review queue, never accepted on the wire), `rights_stated_by`
+  and `rights_stated_at` (database clock), all set or all null (null only for rows from before 0019). The two uploads require
+  the header `X-Rights-Statement: v1_own | v1_authorised`; sending it is the uploader's consent to the wording the website
+  shows. The backend stores the code, not the wording. A published version must carry a `v1_*` statement: the publishable CHECK
+  says so (added `NOT VALID` by hand in 0019 so published rows from before it survive; they cannot be updated again, and the
+  publish step refuses a draft without a statement with 422 `content_invalid` before touching any version row). A licence or
+  description edit that makes a new version copies the statement; a new file version copies the description and takes its own
+  statement. `PUT /v1/admin/media/{mediaId}/rights` states rights for a draft that has none and was never published
+  (409 `rights_already_stated` otherwise).
+- **Owner-only uploads (user 2026-11-04, [ADR-0002](adr/ADR-0002-role-based-access.md) follow-up).** Only the item's owner
+  uploads a new file version or states rights: a non-owner admin gets 403 `forbidden`, a non-owner photographer 404. Admins
+  still edit licences and descriptions, publish and withdraw. This narrows "admin includes every photographer permission".
+- **Description (staff only).** `media_versions.description`, 1-2000 code points, newlines allowed, edited with
+  `PATCH` (`description`, string or null). It is never part of an `ImageRef`, `GET /v1/media` or the guest route. `rights`
+  appears in the staff views only, and `rights.statedBy` for admin callers only.
 - **Not built yet.** `ImageRef` on dealt Trips and Rounds (T9 / R4) and releases that freeze media versions (R2), both
   Wave B; Plane of the Day.
 

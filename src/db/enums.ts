@@ -28,6 +28,8 @@ export const ADMIN_AUDIT_ACTIONS = [
   "media_publish",
   "media_withdraw",
   "content_media_link",
+  "media_rights",
+  "media_import",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
@@ -39,6 +41,13 @@ export const ROLE_STATES = ["pending", "active", "rejected", "revoked", "blocked
 export const MEDIA_STATES = ["unverified", "published", "withdrawn"] as const;
 export const MEDIA_CONTENT_TYPES = ["image/jpeg", "image/png"] as const;
 export const MEDIA_UPLOAD_OPERATIONS = ["create", "version"] as const;
+/**
+ * The photographer's rights statement on a file version (docs/plans/media-rights-and-public.md). Wire spelling = database
+ * spelling. `d1_private_review` is set only by the D1 import command and is never accepted on the wire.
+ */
+export const MEDIA_RIGHTS_STATEMENTS = ["v1_own", "v1_authorised", "d1_private_review"] as const;
+/** The statements a published version may carry (the publishable CHECK). Also the only ones the API accepts. */
+export const MEDIA_PUBLISHABLE_RIGHTS = ["v1_own", "v1_authorised"] as const;
 
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
@@ -52,4 +61,6 @@ export type AccountRole = (typeof ACCOUNT_ROLES)[number];
 export type RoleState = (typeof ROLE_STATES)[number];
 export type MediaState = (typeof MEDIA_STATES)[number];
 export type MediaContentType = (typeof MEDIA_CONTENT_TYPES)[number];
+export type MediaRightsStatement = (typeof MEDIA_RIGHTS_STATEMENTS)[number];
+export type MediaPublishableRights = (typeof MEDIA_PUBLISHABLE_RIGHTS)[number];
 export type MediaUploadOperation = (typeof MEDIA_UPLOAD_OPERATIONS)[number];

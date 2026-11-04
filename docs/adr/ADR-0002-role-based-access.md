@@ -67,6 +67,17 @@ Fixed constraints:
   token emails. An admin can correct it (audited as `role_email_edit`, without the value). `DELETE /v1/me` clears it.
   No email is ever written to `admin_audit`.
 
+## Follow-up ruling (user, 2026-11-04, owner-only file uploads and rights statements)
+
+- "Admin includes every photographer permission" is narrowed for two things on media: uploading a file (a new
+  `media_versions` row, `POST /v1/admin/media/{mediaId}/versions`) and stating rights (`PUT /v1/admin/media/{mediaId}/rights`,
+  and the `X-Rights-Statement` header on both uploads) belong to the item's OWNER only. A non-owner admin gets 403
+  `forbidden`; a non-owner photographer still gets 404 (existence is not revealed to them). The statement is the owner's own
+  assertion about the photo, so no one else can make it for them.
+- Admins keep every other media power: they list and read all items, edit licences and descriptions, publish and withdraw, and
+  an admin who owns an item can upload and state rights for it like any photographer.
+- Details: `docs/plans/media-rights-and-public.md` (Wave R), migration 0019, API 0.19.0.
+
 ## Options considered
 
 | Option | Verdict |

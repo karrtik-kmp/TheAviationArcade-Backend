@@ -19,6 +19,7 @@ beforeAll(() => {
 
 afterAll(async () => {
   if (itemIds.length) {
+    await pool.query("DELETE FROM media_imports WHERE media_id = ANY($1)", [itemIds]);
     await pool.query("DELETE FROM media_upload_keys WHERE media_id = ANY($1)", [itemIds]);
     await pool.query("DELETE FROM media_versions WHERE media_id = ANY($1)", [itemIds]);
     await pool.query("DELETE FROM media_items WHERE id = ANY($1)", [itemIds]);
@@ -52,14 +53,20 @@ interface VersionOverrides {
   sourceUrl?: string | null;
   attribution?: string | null;
   publishedAt?: "now" | null;
+  rights?: string | null;
+  rightsStatedBy?: string | null;
+  rightsStatedAt?: "now" | null;
+  description?: string | null;
 }
 
 function version(mediaId: number, o: VersionOverrides = {}): Promise<pg.QueryResult> {
   const has = <K extends keyof VersionOverrides>(k: K, d: VersionOverrides[K]): VersionOverrides[K] => (k in o ? o[k] : d);
   return pool.query(
     `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_name, credit_required,
-        licence_name, licence_url, source_url, attribution_text, published_at, created_by, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CASE WHEN $14::text = 'now' THEN clock_timestamp() END, $15, clock_timestamp())`,
+        licence_name, licence_url, source_url, attribution_text, published_at, created_by, created_at,
+        rights_statement, rights_stated_by, rights_stated_at, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CASE WHEN $14::text = 'now' THEN clock_timestamp() END, $15, clock_timestamp(),
+        $16, $17, CASE WHEN $18::text = 'now' THEN clock_timestamp() END, $19)`,
     [
       mediaId,
       o.version ?? 1,
@@ -76,6 +83,10 @@ function version(mediaId: number, o: VersionOverrides = {}): Promise<pg.QueryRes
       has("attribution", null),
       has("publishedAt", null),
       OWNER,
+      has("rights", "v1_own"),
+      has("rightsStatedBy", OWNER),
+      has("rightsStatedAt", "now"),
+      has("description", null),
     ],
   );
 }
@@ -205,10 +216,66 @@ describe("media_versions", () => {
     expect(await violated(version(id, { version: 4, publishedAt: "now" }))).toBeNull();
     // A draft (not published) may be incomplete.
     expect(await violated(version(id, { version: 5, licenceName: null, creditName: null }))).toBeNull();
+    // Migration 0019: a published version also needs a v1_* rights statement (NULL and d1_private_review do not qualify).
+    expect(await violated(version(id, { version: 6, publishedAt: "now", rights: null, rightsStatedBy: null, rightsStatedAt: null }))).toBe(
+      "media_versions_publishable_check",
+    );
+    expect(await violated(version(id, { version: 7, publishedAt: "now", rights: "d1_private_review" }))).toBe("media_versions_publishable_check");
+    expect(await violated(version(id, { version: 8, publishedAt: "now", rights: "v1_authorised" }))).toBeNull();
+    expect(await violated(version(id, { version: 9, rights: "d1_private_review" }))).toBeNull(); // an unpublished draft may carry it
     // Edits after the fact are held to the same rule.
     expect(
       await violated(pool.query("UPDATE media_versions SET licence_name = NULL WHERE media_id = $1 AND version = 4", [id])),
     ).toBe("media_versions_publishable_check");
+  });
+});
+
+describe("media_versions: rights statement and description (migration 0019)", () => {
+  it("accepts only the three statements, and old-style rows (all null)", async () => {
+    const id = await item();
+    for (const [n, rights] of ["v1_own", "v1_authorised", "d1_private_review"].entries()) {
+      expect(await violated(version(id, { version: n + 1, rights })), rights).toBeNull();
+    }
+    expect(await violated(version(id, { version: 4, rights: "v2_own" }))).toBe("media_versions_rights_statement_check");
+    expect(await violated(version(id, { version: 5, rights: "" }))).toBe("media_versions_rights_statement_check");
+    expect(await violated(version(id, { version: 6, rights: null, rightsStatedBy: null, rightsStatedAt: null }))).toBeNull();
+  });
+
+  it("statement, stated_by and stated_at are all set or all null", async () => {
+    const id = await item();
+    expect(await violated(version(id, { version: 1, rights: null }))).toBe("media_versions_rights_all_or_none_check");
+    expect(await violated(version(id, { version: 2, rightsStatedBy: null }))).toBe("media_versions_rights_all_or_none_check");
+    expect(await violated(version(id, { version: 3, rightsStatedAt: null }))).toBe("media_versions_rights_all_or_none_check");
+    expect(await violated(version(id, { version: 4, rights: null, rightsStatedBy: null }))).toBe("media_versions_rights_all_or_none_check");
+  });
+
+  it("bounds the description to 1-2000 characters (code points)", async () => {
+    const id = await item();
+    expect(await violated(version(id, { version: 1, description: "" }))).toBe("media_versions_description_check");
+    expect(await violated(version(id, { version: 2, description: "x".repeat(2001) }))).toBe("media_versions_description_check");
+    expect(await violated(version(id, { version: 3, description: "x".repeat(2000) }))).toBeNull();
+    expect(await violated(version(id, { version: 4, description: "\u{1F6E9}".repeat(2000) }))).toBeNull(); // 2000 code points, not bytes
+    expect(await violated(version(id, { version: 5, description: "a\nb" }))).toBeNull();
+  });
+});
+
+describe("media_imports", () => {
+  it("keys on (source_system, source_id), allows one source row per media item and only the d1 system", async () => {
+    const a = await item();
+    const b = await item();
+    const claim = (system: string, sourceId: string, mediaId: number, sha = SHA) =>
+      pool.query(
+        "INSERT INTO media_imports (source_system, source_id, media_id, owner, sha256, imported_at) VALUES ($1, $2, $3, $4, $5, clock_timestamp())",
+        [system, sourceId, mediaId, OWNER, sha],
+      );
+    expect(await violated(claim("d1", "photo-1", a))).toBeNull();
+    expect(await violated(claim("d1", "photo-1", b))).toBe("media_imports_pk");
+    expect(await violated(claim("d1", "photo-2", a))).toBe("media_imports_media_id_unique");
+    expect(await violated(claim("other", "photo-3", b))).toBe("media_imports_source_system_check");
+    expect(await violated(claim("d1", "", b))).toBe("media_imports_source_id_check");
+    expect(await violated(claim("d1", "x".repeat(129), b))).toBe("media_imports_source_id_check");
+    expect(await violated(claim("d1", "photo-4", b, "nope"))).toBe("media_imports_sha256_check");
+    expect(await violated(claim("d1", "photo-5", 999_999_999))).toBe("media_imports_media_id_media_items_id_fk");
   });
 });
 

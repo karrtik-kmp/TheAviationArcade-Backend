@@ -7,6 +7,8 @@ import {
   CONTENT_SOURCES,
   CONTENT_STATUSES,
   MEDIA_CONTENT_TYPES,
+  MEDIA_PUBLISHABLE_RIGHTS,
+  MEDIA_RIGHTS_STATEMENTS,
   MEDIA_STATES,
   MEDIA_UPLOAD_OPERATIONS,
   ROLE_STATES,
@@ -51,6 +53,8 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "account_roles.account_roles_state_check": ROLE_STATES,
   "media_items.media_items_state_check": MEDIA_STATES,
   "media_versions.media_versions_content_type_check": MEDIA_CONTENT_TYPES,
+  "media_versions.media_versions_rights_statement_check": MEDIA_RIGHTS_STATEMENTS,
+  "media_versions.media_versions_publishable_check": MEDIA_PUBLISHABLE_RIGHTS,
   "media_upload_keys.media_upload_keys_operation_check": MEDIA_UPLOAD_OPERATIONS,
 };
 
@@ -64,6 +68,7 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "account_roles.account_roles_blocked_role_check",
   "account_roles.account_roles_grant_email_check",
   "media_items.media_items_published_state_check",
+  "media_imports.media_imports_source_system_check",
 ]);
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

@@ -252,6 +252,8 @@ describe("codes and audit actions", () => {
       "media_publish",
       "media_withdraw",
       "content_media_link",
+      "media_rights",
+      "media_import",
     ]);
   });
 });

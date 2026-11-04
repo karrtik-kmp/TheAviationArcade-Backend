@@ -58,9 +58,10 @@ async function actor(role: "photographer" | "admin" | null): Promise<{ uid: stri
   return { uid, principal, auth: bearer(uid) };
 }
 
-const upload = (auth: Record<string, string>, bytes: Buffer, key: string | null = newKey(), type = "image/png") => {
+const upload = (auth: Record<string, string>, bytes: Buffer, key: string | null = newKey(), type = "image/png", statement: string | null = "v1_own") => {
   let req = request(server).post(PATH).set(auth).set("Content-Type", type);
   if (key !== null) req = req.set("Idempotency-Key", key);
+  if (statement !== null) req = req.set("X-Rights-Statement", statement);
   return req.send(bytes);
 };
 
@@ -96,7 +97,7 @@ afterAll(async () => {
 describe("POST /v1/admin/media: who may upload", () => {
   it("no token is 401, a signed-in caller without a role is 403, a pending photographer is 403, and nothing is stored", async () => {
     const bytes = png();
-    expect((await request(server).post(PATH).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).send(bytes)).status).toBe(401);
+    expect((await request(server).post(PATH).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own").send(bytes)).status).toBe(401);
     const none = await actor(null);
     const res = await upload(none.auth, bytes);
     expect(res.status).toBe(403);
@@ -223,7 +224,7 @@ describe("POST /v1/admin/media: create", () => {
     const empty = await upload(photographer.auth, Buffer.alloc(0));
     expect(empty.status).toBe(400);
     for (const type of ["text/plain", "application/json", "image/gif", "application/octet-stream"]) {
-      const res = await request(server).post(PATH).set(photographer.auth).set("Idempotency-Key", newKey()).set("Content-Type", type).send(type === "application/json" ? "{}" : bytes);
+      const res = await request(server).post(PATH).set(photographer.auth).set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own").set("Content-Type", type).send(type === "application/json" ? "{}" : bytes);
       expect(res.status, type).toBe(415);
       expect(res.body.error.code).toBe("invalid_request");
     }
@@ -444,8 +445,9 @@ async function race(photographer: { principal: string; auth: Record<string, stri
     );
     const id = Number(item.rows[0]!.id);
     await client.query(
-      `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_required, created_by, created_at)
-       VALUES ($1, 1, $2, 'image/png', $3, 64, 48, true, $4, clock_timestamp())`,
+      `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_required, created_by, created_at,
+          rights_statement, rights_stated_by, rights_stated_at)
+       VALUES ($1, 1, $2, 'image/png', $3, 64, 48, true, $4, clock_timestamp(), 'v1_own', $4, clock_timestamp())`,
       [id, sha(seedBytes), seedBytes.length, photographer.principal],
     );
     await client.query(
@@ -544,7 +546,7 @@ describe("POST /v1/admin/media: reader scope, rate limit and clock", () => {
       const photographer = await actor("photographer");
       const target = limited.getHttpServer();
       for (let n = 0; n < 3; n += 1) {
-        const res = await request(target).post(PATH).set(photographer.auth).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).send(png(110 + n, 40));
+        const res = await request(target).post(PATH).set(photographer.auth).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own").send(png(110 + n, 40));
         expect(res.status).toBe(201);
       }
       const status = await unfinishedUpload(target, { ...photographer.auth, "Idempotency-Key": newKey() }, PATH, "image/png");

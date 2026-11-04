@@ -29,6 +29,7 @@ export const ERROR_CODES = [
   "version_conflict",
   "content_invalid",
   "nothing_to_publish",
+  "rights_already_stated",
   "ugs_link_conflict",
   "storage_unavailable",
   "media_invalid",

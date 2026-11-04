@@ -1,10 +1,21 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.18.0
+  version: 0.19.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.19.0 (staff media; breaking for uploaders, no change for the game).** User rulings 2026-11-04 (plan
+    `docs/plans/media-rights-and-public.md` Wave R). Both uploads (`POST /v1/admin/media`, `POST .../{mediaId}/versions`)
+    require `X-Rights-Statement: v1_own | v1_authorised` (the photographer's rights statement v1; sending it is their
+    consent): missing or other is 400, and a replay of a key with a different statement is 422 `idempotency_key_reused`.
+    `POST .../versions` is owner only: an admin who is not the owner gets 403 `forbidden`. New
+    `PUT /v1/admin/media/{mediaId}/rights` (owner only) gives a v1 statement to a draft that has none or an imported one
+    and was never published, else 409 `rights_already_stated` (new error code). Publishing needs a v1 statement (422
+    `content_invalid`). `PATCH /v1/admin/media/{mediaId}` takes `licence` and/or `description` (1-2000 characters,
+    newlines allowed, null clears; staff only, a new file version copies it forward). Staff `MediaVersion` gains
+    `description` and `rights` (`statedBy` for admins only). `ImageRef` and both read routes are unchanged.
 
     **Changelog 0.18.0 (website; additive, no change for the game).** New `GET /v1/public/media?ids=` (user ruling
     2026-11-04): the guest twin of `GET /v1/media` for the public website. No token (an Authorization header is ignored),
@@ -180,7 +191,7 @@ tags:
   - name: content
     description: The content manifest and the versioned data documents it points to.
   - name: media
-    description: Images with their licence, upload and publish for staff, and a batch read of published images (PLANNED, media plan T0).
+    description: Images with their licence, rights statement and description; upload, edit and publish for staff; batch reads of published images (signed-in and guest).
 
 paths:
   /v1/health:
@@ -2336,12 +2347,15 @@ paths:
         owner = the verified caller) and one audit row. A bad image is 422 `media_invalid`. The licence starts empty (fill it with
         `PATCH`), with `creditRequired` `true` until staff change it; nothing reaches players until an admin publishes.
 
+        Requires an `X-Rights-Statement` header (`v1_own` or `v1_authorised`; 400 otherwise, checked before the key lookup).
+
         Requires an `Idempotency-Key`, looked up FIRST (this route has no `revision` fence). A replay needs the same operation (create,
-        not a version upload) and the same sha256: it answers 200 with the item as stored now (current state; nothing new is written).
-        Anything else with that key (another operation, another `mediaId`, other bytes) is 422 `idempotency_key_reused`. Two callers
+        not a version upload), the same sha256 and the same `X-Rights-Statement`: it answers 200 with the item as stored now (current state; nothing new is written).
+        Anything else with that key (another operation, another `mediaId`, other bytes, another statement) is 422 `idempotency_key_reused`. Two callers
         may use the same key independently. Counts against the rate limit before the body is read. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdempotencyKey"
+        - $ref: "#/components/parameters/MediaRightsStatementHeader"
       requestBody:
         required: true
         content:
@@ -2453,12 +2467,16 @@ paths:
     patch:
       tags: [media, admin]
       operationId: editMedia
-      summary: Edit the draft version's licence
+      summary: Edit the draft version's licence and description
       description: |
         Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer edits only their own items (others
-        are 404 `not_found`). Allowed in every state, including `withdrawn`. Strict body `{ revision, licence, note? }`: `licence` is
-        required (a body with only `revision`, or `revision` and `note`, is 400); inside `licence`, an absent key keeps the stored
-        value and `null` clears it. `note` goes to the audit row only.
+        are 404 `not_found`), an admin may edit any. Allowed in every state, including `withdrawn`. Strict body
+        `{ revision, licence?, description?, note? }` with at least ONE of `licence` and `description` (a body with only `revision`,
+        or `revision` and `note`, is 400); inside `licence`, an absent key keeps the stored value and `null` clears it. `description`
+        is a string (trimmed, CRLF becomes LF, 1 to 2000 code points, newlines allowed, every other control character is 400) or
+        `null` to clear it; it is staff-only and never in `ImageRef`, `GET /v1/media` or `GET /v1/public/media`. A description edit
+        follows the same new-version rule as a licence edit and is part of the change detection, the no-op check and the audit
+        `changes`. A new version copies the draft's rights statement; an edit never changes a statement. `note` goes to the audit row only.
 
         The edit always targets the DRAFT version. When `draftVersion` equals `publishedVersion` (no newer upload), the edit creates a
         NEW draft version: the same file (sha256, type, size, dimensions), `version` + 1 and the edited licence; `draftVersion`
@@ -2504,21 +2522,23 @@ paths:
       operationId: uploadMediaVersion
       summary: Upload a new file version of an item
       description: |
-        Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer adds versions only to their own items
-        (others are 404 `not_found`). Allowed in every state, including `withdrawn` (the owner and admins may add a version to a
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies). OWNER ONLY (user ruling 2026-11-04): another photographer's
+        item is 404 `not_found`, and an admin who is not the owner gets 403 `forbidden`. Allowed in every state, including `withdrawn` (the owner may add a version to a
         withdrawn item; it can be published again). The body is the raw image exactly as for `POST /v1/admin/media` (same limits,
         413, 415, sniffing and 422 `media_invalid`), plus the item `revision` as a query parameter (fence: stale is 409
         `version_conflict`). The new file becomes the draft version with an empty licence to fill in; the published version and its
-        credit stay live until an admin publishes.
+        credit stay live until an admin publishes. The new version copies the previous draft's `description` (the licence starts
+        empty) and takes its own rights statement from `X-Rights-Statement` (400 when missing or unknown, checked before the key lookup).
 
         Requires an `Idempotency-Key`. The key lookup runs FIRST: it precedes the `revision` fence, so an identical retry still
         replays after the item's `revision` has moved on. A replay needs the same operation (version upload, not create), the same
-        `mediaId` and the same sha256, and answers 200 with the item as stored now (current state; nothing new is written). Anything
-        else with that key (another operation, another `mediaId`, other bytes) is 422 `idempotency_key_reused`. A new version bumps
+        `mediaId`, the same sha256 and the same `X-Rights-Statement`, and answers 200 with the item as stored now (current state; nothing new is written). Anything
+        else with that key (another operation, another `mediaId`, other bytes, another statement) is 422 `idempotency_key_reused`. A new version bumps
         `revision`; one audit row. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
         - $ref: "#/components/parameters/MediaIdempotencyKey"
+        - $ref: "#/components/parameters/MediaRightsStatementHeader"
         - name: revision
           in: query
           required: true
@@ -2559,6 +2579,56 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/MediaStorageUnavailable" }
 
+  /v1/admin/media/{mediaId}/rights:
+    put:
+      tags: [media, admin]
+      operationId: stateMediaRights
+      summary: State the rights for a draft that has none
+      description: |
+        For a draft with no rights statement yet (a photo imported from the old website review queue, which carries
+        `d1_private_review`, or a version from before statements existed). Needs an ACTIVE `photographer` role. OWNER ONLY: another
+        photographer's item is 404 `not_found`; an admin who is not the owner gets 403 `forbidden`. Strict body
+        `{ revision, statement }`, `statement` being `v1_own` or `v1_authorised` (the same wording and consent as the upload
+        header; `d1_private_review` is 400). Order: role, ownership, the `revision` fence (409 `version_conflict`), then eligibility:
+        the draft's statement must be absent or `d1_private_review` AND the draft must never have been published (not the
+        published version and no `publishedAt`), else 409 `rights_already_stated`. Written to the draft in place (no new version),
+        bumps `revision`, one `media_rights` audit row. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaRightsRequest" }
+      responses:
+        "200":
+          description: The item as it is now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "409":
+          description: |
+            `version_conflict`: `revision` is stale. `rights_already_stated`: the draft already has a `v1_*` statement or was published
+            once. Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict, rights_already_stated]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/admin/media/{mediaId}/publish:
     post:
       tags: [media, admin]
@@ -2566,7 +2636,8 @@ paths:
       summary: Publish the draft version
       description: |
         Admin only. Makes the draft version the published one (`state` `published`, `publishedVersion` = `draftVersion`); its
-        licence is frozen with it. The draft's licence must name a licence and, when `creditRequired`, a credit: otherwise 422
+        licence is frozen with it. The draft's licence must name a licence and, when `creditRequired`, a credit, and the draft must carry
+        a `v1_own` or `v1_authorised` rights statement (an imported or pre-statement draft needs `PUT .../rights` first): otherwise 422
         `content_invalid`. Publishing a draft that is already the published version is 409 `nothing_to_publish`. Fenced by `revision`
         (stale is 409 `version_conflict`). Bumps `revision`; one audit row. Answers 200, not 201. Exempt from the client version gate.
       parameters:
@@ -2602,7 +2673,7 @@ paths:
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
-          description: "`content_invalid`: the draft's licence has no `licenceName`, or `creditRequired` is true and `credit` is empty. Nothing was written."
+          description: "`content_invalid`: the draft's licence has no `licenceName`, `creditRequired` is true and `credit` is empty, or the draft has no `v1_*` rights statement. Nothing was written."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -2862,6 +2933,20 @@ components:
         `idempotency_key_reused`. Mint a new key per new upload.
       schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
 
+    MediaRightsStatementHeader:
+      name: X-Rights-Statement
+      in: header
+      required: true
+      description: |
+        The uploader's rights statement for this file (wording v1, shown by the website): `v1_own` ("I took this photo and hold the
+        rights to it.") or `v1_authorised` ("I'm authorised by the person or organisation that holds the rights."). Missing or any
+        other value (including `d1_private_review`, which only the D1 import command sets) is 400 `invalid_request`, decided before
+        the `Idempotency-Key` lookup. Sending it is the uploader's consent: "I confirm this is true, and I agree that Airplane Games
+        may publish this photo, after review, under the licence and credit I give for it." Stored on the new file version with the
+        caller as `statedBy` and the database time as `statedAt`. A replay of an `Idempotency-Key` must send the same statement
+        (else 422 `idempotency_key_reused`).
+      schema: { type: string, enum: [v1_own, v1_authorised] }
+
     TripId:
       name: tripId
       in: path
@@ -2941,7 +3026,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: Signed in, but without the required ACTIVE role in `account_roles`, or the role needs a verified email and the token's is not (Backend ADR-0002).
+      description: Signed in, but without the required ACTIVE role in `account_roles`, or the role needs a verified email and the token's is not (Backend ADR-0002); or an admin who does not own the item on an owner-only route (new file version, rights statement).
       headers:
         X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -3197,6 +3282,7 @@ components:
                 - unknown_item_ids
                 - version_conflict
                 - nothing_to_publish
+                - rights_already_stated
                 - content_invalid
                 - ugs_link_conflict
                 - storage_unavailable
@@ -4633,10 +4719,33 @@ components:
         sourceUrl: { type: [string, "null"], maxLength: 2048, pattern: "^https?://" }
         attributionText: { type: [string, "null"], maxLength: 1000 }
         creditRequired: { type: boolean }
+    MediaRights:
+      type: object
+      additionalProperties: false
+      required: [statement, statedAt]
+      description: |
+        The uploader's rights statement for one file version (staff views only; never in an `ImageRef`). `statedBy` (the stater's
+        principal) is present ONLY in responses to a caller who holds the `admin` role.
+      properties:
+        statement:
+          type: string
+          enum: [v1_own, v1_authorised, d1_private_review]
+          description: |
+            `v1_own` and `v1_authorised` are stated through the API (wording v1). `d1_private_review` marks a photo imported from the
+            old website review queue; it cannot be published until the owner states `v1_own` or `v1_authorised` (`PUT .../rights`).
+        statedAt: { type: string, format: date-time, description: Database time of the statement (for an import, the source's creation time). }
+        statedBy: { type: string, minLength: 1, maxLength: 256, description: Admin callers only; absent otherwise. }
+    MediaRightsRequest:
+      type: object
+      additionalProperties: false
+      required: [revision, statement]
+      properties:
+        revision: { type: integer, minimum: 1, maximum: 2147483647 }
+        statement: { type: string, enum: [v1_own, v1_authorised] }
     MediaVersion:
       type: object
       additionalProperties: false
-      required: [version, sha256, contentType, byteSize, width, height, licence, publishedAt, createdAt]
+      required: [version, sha256, contentType, byteSize, width, height, licence, description, rights, publishedAt, createdAt]
       description: |
         One uploaded file of a media item, with its own licence. The storage path is never returned. Two versions may share the same
         file: a licence edit on a published item creates a new version (version + 1) with the same sha256, type, size and dimensions.
@@ -4648,6 +4757,10 @@ components:
         width: { type: integer, minimum: 1, maximum: 4096 }
         height: { type: integer, minimum: 1, maximum: 4096 }
         licence: { $ref: "#/components/schemas/MediaLicence" }
+        description: { type: [string, "null"], minLength: 1, maxLength: 2000, description: Staff-only photo description; newlines allowed. Never in an `ImageRef`. }
+        rights:
+          oneOf: [{ $ref: "#/components/schemas/MediaRights" }, { type: "null" }]
+          description: The rights statement; null only for versions from before statements existed (migration 0019).
         publishedAt: { type: [string, "null"], format: date-time, description: When this version first went live (kept when it is withdrawn and published again); null if it never did. }
         createdAt: { type: string, format: date-time }
     MediaItem:
@@ -4746,15 +4859,22 @@ components:
     MediaEditRequest:
       type: object
       additionalProperties: false
-      required: [revision, licence]
+      required: [revision]
+      anyOf:
+        - required: [licence]
+        - required: [description]
       description: |
-        Edits the DRAFT version's licence; the published version and its credit stay live until an admin publishes. `licence` is
-        required: `{ revision }` alone and `{ revision, note }` are 400. When the draft equals the published version the edit
+        Edits the DRAFT version's licence and/or description; the published version and its credit stay live until an admin publishes.
+        At least one of `licence` and `description` is required: `{ revision }` alone and `{ revision, note }` are 400. When the draft equals the published version the edit
         creates a new draft version (same file, version + 1); otherwise it edits the draft in place, except that a draft which was live once (an item now withdrawn) gets
         version + 1 as well. `note` goes to the audit row only.
       properties:
         revision: { type: integer, minimum: 1, maximum: 2147483647 }
         licence: { $ref: "#/components/schemas/MediaLicenceUpdate" }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+          description: CRLF becomes LF; newlines are the only control characters allowed (any other, leading or trailing included, is 400); then trimmed to 1 to 2000 code points. `null` clears it.
         note: { type: string, minLength: 1, maxLength: 500 }
     ContentItemMediaRequest:
       type: object

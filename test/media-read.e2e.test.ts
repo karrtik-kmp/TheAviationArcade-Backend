@@ -67,7 +67,7 @@ async function actor(role: "photographer" | "admin" | null): Promise<Actor> {
 type Item = { id: string; state: string; revision: number; draftVersion: number; publishedVersion: number | null; owner?: string; draft: Record<string, any> };
 
 const create = (who: Actor, bytes = uniquePng()) =>
-  request(withCdn.server).post(PATH).set(who.auth).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).send(bytes);
+  request(withCdn.server).post(PATH).set(who.auth).set("Content-Type", "image/png").set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own").send(bytes);
 const list = (who: Actor, query = "", b = withCdn) => request(b.server).get(`${PATH}${query}`).set(who.auth);
 const get = (who: Actor, id: string, query = "", b = withCdn) => request(b.server).get(`${PATH}/${id}${query}`).set(who.auth);
 const idOf = (id: string) => Number(id.slice(4));
@@ -235,7 +235,7 @@ describe("GET /v1/admin/media", () => {
         .post(`${PATH}/${newVersion!.id}/versions?revision=${published[2]!.revision}`)
         .set(photographer.auth)
         .set("Content-Type", "image/png")
-        .set("Idempotency-Key", newKey())
+        .set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own")
         .send(uniquePng());
       expect(version.status).toBe(201);
       const gone = await request(withCdn.server).post(`${PATH}/${withdrawn!.id}/withdraw`).set(admin.auth).send({ revision: published[3]!.revision });
@@ -308,7 +308,7 @@ describe("GET /v1/admin/media/{mediaId}", () => {
       .post(`${PATH}/${item!.id}/versions?revision=${item!.revision}`)
       .set(who.auth)
       .set("Content-Type", "image/png")
-      .set("Idempotency-Key", newKey())
+      .set("Idempotency-Key", newKey()).set("X-Rights-Statement", "v1_own")
       .send(second);
     expect(v2.status).toBe(201);
 
