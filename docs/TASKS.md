@@ -65,25 +65,29 @@ Needs App Store Connect / Play Console access and credentials. First Class Pass 
 consumables, Status Point boosts (refund reverses only an unused boost; confirm "used"), Apple ASSN v2 and
 Google RTDN. Design in ARCHITECTURE.md; port and slice in `../docs/briefs/backend.md` S8.
 
-Planned slices: P0 purchase contract in `openapi.yaml` (`x-planned`, incl. `store_unavailable`) → P1 migration
-(`store_transactions`, `store_subscriptions`, `store_notifications`, ledger-kind CHECKs) → P2 purchase route +
-Apple verifier (`@apple/app-store-server-library`) → P3 Google verifier + acknowledge → P4 ASSN v2 / RTDN
-subscription lifecycle → P5 Status Point boosts. P0–P1 need no outside input; P2 needs an Apple sandbox key and
-one sandbox product.
+**Wave P (in progress 2026-11-04):** plan [plans/purchases.md](plans/purchases.md), reviewed (senior-lead,
+backend-expert, game-domain-expert). Staff-editable catalog seeded with the client's catalog under placeholder store ids
+(`demo`), `POST /v1/purchases`, `GET /v1/me/entitlements`, fake store verifier (local/test only), contract from
+`../docs/briefs/commerce.md`. User rulings 2026-11-04: R1 demo plans now, editable; R2 First Class +50% stays ON (Unity
+to align); R3 adopt the commerce brief incl. "no account token → first verified caller owns"; R4 account deletion is
+final. Next waves: P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
+ads and Pass hint grants → P5 Status Point boosts → final store ids.
 
 **Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**
 
-- **IAP-1 product catalog.** For each product: store product id, price tier, and exactly what it grants.
-  Miles top-ups (how many packs, Miles each). Status Point boosts (how many, SP each). First Class Pass (monthly,
-  yearly, both; free trial or intro price; family sharing). Nothing is sold until this exists.
+- **IAP-1 product catalog — settled on the Unity side** (CF-33, BLK-13, `Contracts/products.v1.json`): 5 hints
+  $0.99, 15 hints $2.49, Pass monthly $2.99, yearly $24.99; no Miles sold. Still open: final store ids (Unity Q4),
+  free trial (BLK-17), Family Sharing (Unity default D7 = off). (Corrected 2026-11-04; the first version of this list
+  wrongly treated the whole catalog as missing.)
 - **IAP-2 "used" boost.** Refunds reverse only an unused boost (ruling 2026-10-27). Is a boost "used" when
   bought, when the player applies it, or when its SP certify a new rank?
 - **IAP-3 bought SP.** Do purchased Status Points count toward rank promotion exactly like earned SP
   (`points-progression.md` Q5)? Can a boost skip a rank?
-- **IAP-4 First Class multiplier.** Does +50% stack with the Perfect Streak Miles bonus (Q2), and does it apply
+- **IAP-4 First Class multiplier.** User ruling 2026-11-04 (R2): the +50% stays on. Still for Josh (Unity CQ1): does +50% stack with the Perfect Streak Miles bonus (Q2), and does it apply
   before or after the Pleasure Cruise 10 SP/Miles cap (Q4)?
-- **IAP-5 First Class daily hints.** "3 free daily hints": granted per local day, do unused ones carry over, and
-  do they stack with the bank or sit apart?
+- **IAP-5 First Class hints — settled on the Unity side:** +1 hint per day, banked, no expiry (BLK-14 / CF-30); a
+  bonus hint every 2 Trips with the Pass, every 4 for everyone (BLK-24, closed). The deck's "3 free daily hints" is
+  superseded. Built with the ads / Pass-grant wave (commerce brief U7).
 - **IAP-6 lapse and refund.** On a First Class refund or lapse, are Miles already earned under +50% kept? (Design
   assumption: kept; only future Rounds lose the multiplier.)
 - **Owner (user) inputs:** App Store Connect API key (.p8, Key ID, Issuer ID), Team ID, the app's Apple ID;
