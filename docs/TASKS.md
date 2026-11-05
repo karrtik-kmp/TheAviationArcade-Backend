@@ -89,8 +89,8 @@ sell Miles packs", reversing R1's "No Miles are sold"):** kind `miles_pack` (`mi
 `aa.miles.25000`, placeholders, CQ7), `granted_miles` snapshot, Miles ledger kind `store_purchase`, `StorePurchase.grantedMiles`,
 staff `grant.type: "miles"`; consumable guard (a hint or Miles pack whose verified transaction has an expiry stays
 `pending`); staff fingerprint for every Google consumable. ASSUMPTION tests: no First Class +50% on bought Miles; bought Miles
-never touch Status Points, ranks, Trip counters or Field Awards. Open for P4: Miles-pack refund policy (clamp at 0 like D6, or
-keep). Reviews: senior-lead, backend-expert, game-domain-expert (plan, all "approve with changes"), code-reviewer (diff, "ship after fixes": staff list text, a spec/code kind-enum test, the consumable guard narrowed to the expiry because Apple gives consumables an original id; all fixed).
+never touch Status Points, ranks, Trip counters or Field Awards. P4 refunds (user ruling R5, 2026-11-05): a refunded Miles pack takes back only unspent
+Miles, never below 0. Reviews: senior-lead, backend-expert, game-domain-expert (plan, all "approve with changes"), code-reviewer (diff, "ship after fixes": staff list text, a spec/code kind-enum test, the consumable guard narrowed to the expiry because Apple gives consumables an original id; all fixed).
 Verified: typecheck clean; `npm test` 781; `npm run test:e2e` 37 files / 1032; second `db:generate` no changes; `contracts/` unchanged. Next waves: P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
 ads and Pass hint grants → P5 Status Point boosts → final store ids.
 

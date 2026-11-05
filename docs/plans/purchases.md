@@ -338,8 +338,11 @@ changed CHECK as DROP + ADD (as in 0009, 0019, 0020); existing rows have NULL in
 
 ### Open for later (not P-E)
 
-- **Miles-pack refunds** (P4): claw back clamped at 0 like D6, or never? Bought Miles can be turned into hints at once through
-  the Miles hint pack. Needs a user or client ruling before P4; D6 is not copied silently.
+- **Miles-pack refunds** (P4). **User ruling R5 (2026-11-05):** "the refund will not take place if the Miles had already been
+  spent." Read as: a store refund of a Miles pack takes back only Miles the player still holds, at most the pack amount
+  (`miles_ledger` kind for the reversal, debit `min(granted_miles, players.miles)`), so the balance never goes below 0 and
+  spent Miles (including Miles turned into hints) are never taken. The store refunds the money regardless; the backend only
+  decides the clawback.
 
 ### Client questions (sent to the Unity session for `CLIENT_CONTENT_IMPORT.md` "Purchases")
 
@@ -357,8 +360,181 @@ apply to bought Miles (backend: no); a refunded Miles pack (clamp at 0, or keep)
 One implementer (the slices share schema and grant code). Verification: `npm run typecheck`, `npm test`, `npm run test:e2e`
 from PowerShell, one full run.
 
+## Wave P2-P3: Apple and Google verifiers (approved with changes, revised, 2026-11-05)
+
+User 2026-11-05: "create the app store connect and sandbox setup and proceed; the service account and pub sub topic will be set
+in a few minutes." The console steps are the owner's (`docs/setup/store-credentials.md`); this wave builds both adapters behind
+the existing `StoreVerifier` port so they run as soon as the values arrive. No route, schema or migration change; contract
+description edits only (0.22.1). Notifications, refunds (R5) and the acknowledge sweeper stay in P4 (public HTTPS URL).
+Research 2026-11-05 (researcher, primary sources). Reviews: senior-lead, backend-expert, devops-expert, all "approve with
+changes"; every finding is folded in below.
+
+### The rule this wave is built around
+
+`invalid` (422) makes the app **finish** the store transaction: if the player paid, they lose it. So **`invalid` only when the
+store itself says the purchase is bad** (the token or transaction does not exist in either place we can look, it was cancelled,
+or the product differs from what the app claimed). Every failure that can be ours (credentials, package or bundle setting, root
+certificate, clock, OCSP, network, an unexpected shape, a catalog mistake) is `transient` (503, the app keeps it pending) plus an
+error log naming the setting. A forged token getting `transient` only makes the forger's own client retry.
+
+Sandbox and test purchases **grant in production**, as decided by the user on 2026-10-27 (ARCHITECTURE "Purchases"); every row
+records `environment`. No switch. Family Sharing is off for the Pass (D7).
+
+### Slice P2-0 (lead, first): port, config, composite
+
+- Port (`src/purchases/store-verifier.ts`): `verify(reference, context, signal)` with `context = { kind: StoreProductKind }`
+  (the catalog kind; the service reads the product before verifying, outside any transaction, with no lock, and keeps the
+  in-transaction re-read: `kind` is immutable after create). An unknown or unsellable product answers `pending` **before any store
+  call, for both stores**, returning the player's live view (read without lock + `withLiveStreak`). `VerifiedTransaction` gains
+  `acknowledged: boolean | null` (Google's verify-time state; null for Apple and the fake) and `storeToken: string | null` (the
+  Google purchase token that acknowledge uses; never `originalRef`). Comments updated: Google `originalRef` = this purchase token
+  (P4 decides linked-token chains). Fake and none adapters updated.
+- Config (`src/config/config.module.ts`): `STORE_VERIFIER=none|fake|stores`.
+  - Apple set, all or none: `APPLE_BUNDLE_ID`, `APPLE_IAP_KEY_ID` (10 upper-case letters or digits), `APPLE_IAP_ISSUER_ID` (UUID),
+    `APPLE_APP_APPLE_ID` (positive integer; the production verifier needs it in every APP_ENV), and exactly one of
+    `APPLE_IAP_KEY_FILE` (path) or `APPLE_IAP_KEY` (PEM with `\n` escapes, as `DATABASE_CA_CERT`).
+  - Google set, all or none: `GOOGLE_PLAY_PACKAGE_NAME` (Android package syntax) and exactly one of
+    `GOOGLE_PLAY_SERVICE_ACCOUNT_FILE` or `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`.
+  - `stores` needs at least one store set. Any `APPLE_IAP_*` / `APPLE_APP_*` / `GOOGLE_PLAY_*` setting with another
+    `STORE_VERIFIER` is a config error (the Bunny stray-settings rule). `stores` with a `demo-` project is refused unless
+    `APP_ENV=test` (the UGS rule shape). Production also needs `STORE_ENABLED=apple,google` (any non-empty subset) matching the
+    configured stores, so a forgotten store fails at start instead of leaving purchases pending.
+  - Keys load at start: the `.p8` imports as an ES256 PKCS#8 key; the JSON has `type: service_account`, `client_email`,
+    `private_key_id` and a `private_key` that imports as RS256. A key path inside the repo working directory is refused. Every
+    read, parse and import error is rethrown as `Invalid environment configuration: <SETTING>` with **no cause and no file
+    content** (V8 `JSON.parse` messages quote input). One start-up line names the enabled stores, the Apple Key ID and the
+    Google service-account email; never paths or contents.
+- Composite (`src/purchases/stores-verifier.ts`): dispatches on `reference.store`; a store not configured → `transient` + one
+  error log per minute. `src/purchases/purchases.module.ts` wiring. `vitest.e2e.config.ts` strips `APPLE_*`, `GOOGLE_PLAY_*`,
+  `STORE_VERIFIER` and `STORE_ENABLED` from the loaded `.env` (as it strips `UGS_*`), so tests never read real keys.
+- Ignore files: `.gitignore` and `.dockerignore` add `*.p8`, `AuthKey_*`, `/secrets/` and `*-[0-9a-f][0-9a-f][0-9a-f]*.json`-style
+  Google key names (`<project>-<12 hex>.json`); `.env.example` lists every key, empty.
+- Adapters never throw to the service: they return results. Logs from the purchase path carry only store, environment, HTTP
+  status, Apple error code or Google `error.errors[0].reason`, productId, outcome, latency and a 12-hex hash of the transaction id
+  or token. Never the access token, a signed JWT, the OAuth response, request URLs or headers. The service's two
+  `error.message` log sites (`purchases.service.ts:86`, `:210`) log the error class and a fixed text instead.
+
+### Apple adapter (P2, implementer A): `src/purchases/apple-store-verifier.ts`
+
+- Library `@apple/app-store-server-library` **3.1.0** (2026-05-06; CJS, Node >= 22). Prove the named ESM import on the built
+  output (`nest build`, then `node dist/main.js` loads the adapter), not only under vitest; run `npm run typecheck` right after
+  install (the library pulls `@types/node` 25 against our pinned 24).
+- Cancellation: the library's `node-fetch` calls take no signal and time out at 30 s. Subclass `AppStoreServerAPIClient` and
+  override its protected fetch method to use global `fetch` with the caller's signal (check the 3.1.0 source, not main), and race
+  every library call against the signal: an abort is `transient` at once.
+- `verify`: `getTransactionInfo(transactionId)` on **production first, then sandbox on `TRANSACTION_ID_NOT_FOUND` (4040010)**;
+  decode `signedTransactionInfo` with the `SignedDataVerifier` of the environment that answered. Only PRODUCTION and SANDBOX
+  verifiers are ever built (LOCAL_TESTING and XCODE skip signature checks). `enableOnlineChecks: true` in production code
+  (OCSP; `RETRYABLE_VERIFICATION_FAILURE` is transient), injectable for tests.
+- Not found in both environments: if the client sent `jws` and it verifies with the real `SignedDataVerifier` (Apple chain) for
+  the same `transactionId`, answer `transient` (Apple's API can lag a fresh purchase); otherwise `invalid`. The grant still comes
+  only from the API answer.
+- Root certificates: `certs/apple/AppleRootCA-G3.cer` (DER, from apple.com/certificateauthority), plus any other root the 3.1.0
+  docs name. `certs/apple/README.md` records file, SHA-256, source, a second source the hash was checked against, date and
+  expiry; a unit test hashes each file against the README. The folder resolves from the module location (`new
+  URL("../../certs/apple/", import.meta.url)`), and the `Dockerfile` runtime stage copies `certs/`.
+- After decoding: `transactionId` must equal the one asked (else `invalid`); `productId` must equal the reference's (else
+  `invalid`, as today). `bundleId` ≠ config → `transient` + log (our setting). `type`: verify the library's enum strings;
+  auto-renewable subscription → `originalRef = originalTransactionId`, `expiresAt = expiresDate`; consumable → both null;
+  non-consumable / non-renewing → `transient` + log (catalog mismatch). `accountToken = appAccountToken ?? null`, `purchasedAt =
+  purchaseDate`, `revoked = revocationDate !== undefined`, `environment` from the payload, `orderId = null`, `acknowledged =
+  null`, `storeToken = null`. An expired Pass renewal is `valid` (the grant's `MAX` makes it harmless).
+- Errors: every `VerificationException` → `transient` + log with its status; `APIException` 4000006 (invalid id) → `invalid`;
+  401 / 403 → `transient` + log naming the key settings; 429, 5xx, any `*_RETRYABLE` code, network, abort → `transient`;
+  `retryAfter` is in **seconds** → `retryAfterMs = retryAfter * 1000`.
+- `acknowledge`: Apple has no server finish step → `ok`.
+
+### Google adapter (P3, implementer B): `src/purchases/google-store-verifier.ts`
+
+- No new dependency: global `fetch` to `https://androidpublisher.googleapis.com/androidpublisher/v3`, with an OAuth access token
+  from a service-account JWT (RS256 via **jose**; header `kid = private_key_id`; `iat` 30 s in the past, `exp = iat + 3600`)
+  exchanged at the fixed `https://oauth2.googleapis.com/token` (never the key file's `token_uri`), scope
+  `https://www.googleapis.com/auth/androidpublisher`. Verify the flow against the current Google OAuth docs.
+- Token cache: single-flight (one in-flight promise shared by concurrent callers), never caches a failure, refreshes 60 s before
+  expiry, the exchange runs under its own 5 s timeout (each caller races its own signal), and a 401 from androidpublisher drops
+  the cached token. Any exchange failure → `transient` + log.
+- Endpoint from `context.kind`: consumables → `purchases.productsv2.getproductpurchasev2`, Pass → `purchases.subscriptionsv2.get`.
+  On 404 / 400 from the chosen endpoint, ask **the other one once**: a 200 there is mapped from that shape and the existing
+  catalog guards answer `pending` with an error log. `invalid` only when **both** endpoints answer 404 / 410 with a token-level
+  `reason` (recorded as fixtures; ASSUMPTION test until the first real sandbox call confirms the strings). Any other 400, 401, 403
+  (permissions take up to a day), 429, 5xx, network or abort → `transient` + log naming `GOOGLE_PLAY_PACKAGE_NAME` where relevant.
+- One-time mapping: `purchaseStateContext.purchaseState` `PURCHASED` → valid, `PENDING` → `transient`, `CANCELLED` → `invalid`.
+  Exactly one line item with the reference's `productId` and `quantity` 1, else `transient` + log (never one pack for N paid;
+  multi-quantity stays off in Play Console). Parse `productLineItem` / `productLineItems` defensively. `transactionRef =
+  purchaseToken`, `storeToken = purchaseToken`, `orderId` (may be absent), `accountToken = obfuscatedExternalAccountId ?? null`,
+  `purchasedAt = purchaseCompletionTime` (absent while PURCHASED → `transient`), `environment = testPurchaseContext ? "sandbox" :
+  "production"`, `revoked = refundableQuantity === 0` (verify against a refunded sandbox purchase), `acknowledged =
+  acknowledgementState === "ACKNOWLEDGED"`, `originalRef = null`, `expiresAt = null`.
+- Subscription mapping (`SUBSCRIPTION_STATE_*` strings): `ACTIVE`, `IN_GRACE_PERIOD`, `CANCELED`, `EXPIRED`, `ON_HOLD`, `PAUSED` →
+  `valid` with the line item's `expiryTime` (a past expiry grants nothing now: the grant's `MAX` / `GREATEST` keeps it harmless,
+  and it records ownership, as Apple does); `PENDING`, `PENDING_PURCHASE_CANCELED`, `UNSPECIFIED` and any unknown state →
+  `transient` + log. The line item for the reference's product: `transactionRef = orderId = lineItems[].latestSuccessfulOrderId`
+  (absent → `transient` + log; never the token, which would turn every renewal into a replay); `originalRef = storeToken =
+  purchaseToken`; `accountToken = externalAccountIdentifiers.obfuscatedExternalAccountId ?? null`; `purchasedAt = startTime`
+  (stored for audit only; the expiry drives the Pass); `environment = testPurchase ? "sandbox" : "production"`; `acknowledged`
+  from `acknowledgementState`. `linkedPurchaseToken` is logged (hashed) and left for P4; until then a downgrade can over-grant up
+  to the old expiry (documented).
+- `acknowledge` after commit (D3: the backend acknowledges, the client consumes consumables): skip when `acknowledged` is true;
+  one-time `purchases.products.acknowledge`, subscription `purchases.subscriptions.acknowledge`, both on `storeToken`.
+- Pass safety without a sweeper: if acknowledging a **not yet acknowledged Google Pass** comes back `transient`, the service
+  answers 503 (the grant is committed; the resend is a replay, which acknowledges again; nothing is granted twice). Consumables
+  stay 200 (the client's consume also acknowledges). Unity is asked to confirm its finish acknowledges subscriptions.
+
+### Contract 0.22.1 (descriptions only)
+
+`POST /v1/purchases`: 503 can follow a committed Google Pass grant whose acknowledge failed (resend is a replay); a hint or Miles
+pack bought in a quantity other than 1 stays pending; sandbox purchases grant and are recorded `sandbox`. `.env` keys documented in
+README, not in the contract.
+
+### Tests (no network)
+
+- Adapters take an injectable `fetch` (Google) or client / verifier factory (Apple). jsrsasign pinned exactly as a
+  devDependency (not imported transitively) generates root, intermediate and leaf with Apple's marker OIDs
+  (1.2.840.113635.100.6.2.1, 1.2.840.113635.100.6.11.1; confirm in the 3.1.0 source), validity covering `signedDate`; tests run
+  the real `SignedDataVerifier` in SANDBOX / PRODUCTION with online checks off.
+- Apple: fallback production → sandbox; not-found in both with and without a valid `jws`; every exception and API code above;
+  bundle, product and transaction mismatches; revoked; consumable, Pass, other types; `retryAfter` seconds; abort; a foreign
+  root → `transient`; cert hashes match the README.
+- Google: fixtures from the official reference for both shapes and every state; the other-endpoint retry both ways (Pass id
+  marked consumable and the reverse → `pending` through the real service); every HTTP status and reason; quantity; missing
+  order id or completion time; token cache (two parallel calls → one exchange, a failed exchange retried, a 401 invalidates);
+  acknowledge skip; the Pass 503-after-commit path and its replay; another player sending the same subscription token after a
+  renewal → 409.
+- Config: every rule above on both sides, including a corrupt key file whose bytes never appear in the error.
+- e2e: `STORE_VERIFIER=stores` (APP_ENV=test) with neither store set → 503 for both; the composite with a stubbed Google fetch
+  grants through the real service.
+- **Not proven by this wave:** a real store call. The first real sandbox purchase needs the owner's keys, a device build and a
+  backend the device can reach with a real Firebase project; where that runs is a user decision (below).
+
+### Monitoring (log-only until a host exists)
+
+Structured events `purchase.verify` (store, environment, outcome and reason, Apple code or Google reason, latency, sandbox
+fallback used), `purchase.acknowledge` (outcome) and `google.token.exchange` (failures). Alerts once hosted: any 401 / 403 from a
+store, transient share above a threshold over 15 minutes, a Google purchase unacknowledged after 24 h, sandbox grants in
+production beyond App Review.
+
+### Open for the user
+
+- Where the first real sandbox purchase runs: a local backend with the real Firebase project (an exception to "local uses only
+  `demo-airplane-games`") on a LAN address the device reaches, or wait for hosting.
+- Store product ids are permanent in both stores: create the products only with final ids (Unity Q4), or declare the current
+  ids final.
+- Play and Pub/Sub project: a separate Cloud project is recommended over the Firebase auth project.
+
+### Ownership
+
+| Who | Files |
+|---|---|
+| Lead, slice P2-0 (first) | `src/purchases/store-verifier.ts`, `fake-store-verifier.ts`, `none-store-verifier.ts`, `stores-verifier.ts`, `purchases.module.ts`, `purchases.service.ts`, `src/config/config.module.ts`, `test/config.test.ts`, `vitest.e2e.config.ts`, `.gitignore`, `.dockerignore`, `.env.example`, `Dockerfile` |
+| Implementer A (Apple, after P2-0) | `src/purchases/apple-store-verifier.ts`, `certs/apple/*`, `test/apple-store-verifier.test.ts`, `package.json` + lockfile (`@apple/app-store-server-library` 3.1.0, devDependency jsrsasign, both exact) |
+| Implementer B (Google, after P2-0) | `src/purchases/google-store-verifier.ts`, `test/google-store-verifier.test.ts`, `test/fixtures/google-play/*` |
+| Lead (integration) | the e2e cases, the service's Pass 503-after-commit path, `docs/openapi.yaml` 0.22.1, README, ARCHITECTURE, TASKS, `docs/setup/store-credentials.md`, messages to Unity |
+
+Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShell, one full run; `nest build` + start with Apple
+configured from a throwaway test key proves the import.
+
 ## Next waves
 
 P-E Miles packs (monetization U11, built) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
-RTDN, refunds (hint clawback clamped at 0, D6; Miles-pack refund policy needs a ruling), grace/expiry, Get Notification History → ads + Pass hint grants (brief) →
+RTDN, refunds (hint clawback clamped at 0, D6; Miles-pack clawback of unspent Miles only, R5), grace/expiry, Get Notification History → ads + Pass hint grants (brief) →
 P5 SP boosts → final store ids replace the demo rows.
