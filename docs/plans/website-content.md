@@ -356,7 +356,7 @@ history.pop()`. Audit `release_restore` `{ release, replaced, sequence }`.
 
 ---
 
-## W4: Admin audit read (API 0.25.0, no migration; WC-4)
+## W4: Admin audit read (API 0.26.0, no migration; WC-4)
 
 **Route:** `GET /v1/admin/audit` in `src/admin/admin.controller.ts` (`@Roles("admin")`, lines 7-15) + new `src/admin/audit-read.ts`.
 No query parameters (any key → 400). 200 `{ events: [{ id, entity, action, actor, detail, createdAt }] }`, newest 50 by `id DESC`;

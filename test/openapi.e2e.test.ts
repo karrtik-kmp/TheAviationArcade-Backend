@@ -10,7 +10,7 @@ import { parse } from "yaml";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { ERROR_CODES } from "../src/common/errors.js";
-import { STORE_PRODUCT_KINDS } from "../src/db/enums.js";
+import { ADMIN_AUDIT_ACTIONS, STORE_PRODUCT_KINDS } from "../src/db/enums.js";
 import { SEED_COMMERCIAL_CARD_KEYS } from "../src/rules/aircraft-tags.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
@@ -182,6 +182,10 @@ describe("openapi contract parity", () => {
 
   it("store product kinds match src/db/enums", () => {
     expect([...spec.components.schemas.StoreProductKind.enum].sort()).toEqual([...STORE_PRODUCT_KINDS].sort());
+  });
+
+  it("audit actions match src/db/enums", () => {
+    expect([...spec.components.schemas.AuditEvent.properties.action.enum].sort()).toEqual([...ADMIN_AUDIT_ACTIONS].sort());
   });
 
   it("every path response and status code is declared (no route lacks a 2xx)", () => {
@@ -455,6 +459,25 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", unknownModule.body);
     rejects("ImportInvalid", { error: invalid.body.error });
     rejects("AdminMe", { principal: "x", staff: false });
+
+    const detail = (extra: object) => JSON.stringify({ mediaId: "med-1", ...extra });
+    await sql.query(
+      `INSERT INTO admin_audit (actor, action, target, detail, created_at) VALUES
+         ('operator:josh', 'media_import', 'med-1', $1::jsonb, now()),
+         ('firebase:demo-airplane-games:pat', 'media_edit', 'med-1', $2::jsonb, now())`,
+      [detail({ sourceId: "d1-1", rightsEvidence: "Mine; mail me" }), detail({ changes: { credit: { from: null, to: "P" } }, note: "Secret note" })],
+    );
+    const audit = await request(server).get("/v1/admin/audit").set(staff);
+    expect(audit.status).toBe(200);
+    check("AuditEventList", audit.body);
+    const [editEvent, importEvent] = audit.body.events;
+    expect(editEvent.detail).toMatchObject({ noteLength: 11 });
+    expect(importEvent.detail).toMatchObject({ rightsEvidenceLength: 13 });
+    expect(JSON.stringify(audit.body)).not.toMatch(/Secret note|mail me/);
+    const auditBad = await request(server).get("/v1/admin/audit?limit=1").set(staff);
+    expect(auditBad.status).toBe(400);
+    check("Error", auditBad.body);
+    rejects("AuditEventList", { events: [{ ...editEvent, action: "not_an_action" }] });
   });
 
   it("Miles packs: a real purchase response, the product lists and a staff row validate against the spec", async () => {

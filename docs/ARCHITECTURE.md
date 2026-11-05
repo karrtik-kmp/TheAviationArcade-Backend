@@ -263,6 +263,12 @@ per-use usage offers). The public `GET /v1/public/plane-of-the-day?timeZone=` (n
 the server computes the viewer's day from an IANA zone (offset zones refused, never past the UTC+14 date); the public credit
 is the media version's frozen licence credit. Several features per date are allowed.
 
+## Admin audit read (W4, API 0.26.0, built 2026-11-05)
+
+`GET /v1/admin/audit` (admin only) returns the newest 50 `admin_audit` rows for the website's audit desk. The actor is the stored
+principal (the backend never stores names or emails in audit rows). Photographer free text that lives only in audit rows is shown
+as a length: `media_import.rightsEvidence` and `media_edit.note`. No paging or filters.
+
 ## Purchases (design for the purchases slice)
 
 **As built, wave P (2026-11-04, API 0.20.0; plan `docs/plans/purchases.md`, contract from `../docs/briefs/commerce.md`).**

@@ -681,8 +681,8 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 66 guarded routes (incl. 46 admin (3 of them the editorial desks, 1 the Military preparation, 4 the Military releases), 3 trips, 2 content, the Logbook, 2 role routes, 1 media read, 2 purchases, 1 store catalog) plus four public routes (two health, the guest media read, the Plane of the Day read).
-    expect(routes.length).toBe(70);
+    // Guard against the enumeration silently finding nothing: 67 guarded routes (incl. 47 admin (3 of them the editorial desks, 1 the Military preparation, 4 the Military releases, 1 the audit read), 3 trips, 2 content, the Logbook, 2 role routes, 1 media read, 2 purchases, 1 store catalog) plus four public routes (two health, the guest media read, the Plane of the Day read).
+    expect(routes.length).toBe(71);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military").replace(":name", "field-awards").replace(":version", "1").replace(":principal", "firebase:demo-airplane-games:x").replace(":role", "admin");
       const response = await send(method, concrete, {});

@@ -1,10 +1,26 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.25.0
+  version: 0.26.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.26.0 (admin audit read, wave W4; docs/plans/website-content.md, ruling WC-4; staff-only, no change for the game, no migration).**
+    Built: `GET /v1/admin/audit` (admin only; a photographer is 403). No query parameters: any key is 400 (`invalid_request`).
+    200 `{ events }`: the newest 50 `admin_audit` rows, newest first (by row id, descending); there is no paging and no filter.
+    An event is `{ id, entity, action, actor, detail, createdAt }`. `id` is `aud-<n>` (the opaque row id, in the style of `med-` and
+    `ed-`; it only ever grows); `entity` is the row's `target` (a principal, a media id, a module, a product id or an editorial kind,
+    by action); `action` is one of `ADMIN_AUDIT_ACTIONS`; `actor` is the stored actor string as-is, a principal
+    (`firebase:<project>:<uid>`) or `operator:<os user>` or `system:signup`, **never an email or a name** (the website may map
+    principals to names). `detail` is the stored detail, passed through unchanged except for TWO projections, each pinned to its action:
+    `media_import` shows `rightsEvidenceLength` instead of `rightsEvidence` (photographer free text that may hold contact details),
+    and `media_edit` shows `noteLength` instead of `note` (the owning photographer's note, which lives only in the audit row); both
+    are lengths in code points. **Free text passes through to admins, and a photographer typed some of it:** on `media_edit` (the
+    route is photographer-owned) `changes.description`, `changes.credit`, `changes.attributionText`, `changes.sourceUrl` and
+    `changes.licenceUrl` are typed by the owning photographer (admins already see these values on the media read); staff typed
+    `note` on role and content writes, `changes.description` on `content_publish`, `diff` values on content and store edits, and
+    `fileName` on imports. `rightsStatement` is an enum value, not free text. New schemas `AuditEvent` and `AuditEventList`.
 
     **Changelog 0.25.0 (Military releases, wave W3 commit 2; docs/plans/website-content.md). Releases are RECORDED, NOT DELIVERED: no player route reads them, nothing deals from them, the manifest does not carry them, and a Military release reaches no player.**
     Built (admin only; the `aircraft-identifier-military` module only, any other module is 404): `GET /v1/admin/content/{module}/releases`,
@@ -1817,6 +1833,35 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AdminMe" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/audit:
+    get:
+      tags: [admin]
+      operationId: listAdminAudit
+      summary: Audit desk (newest 50 events)
+      description: |
+        Admin only (a photographer is 403). No query parameters: any key is 400 `invalid_request`. The newest 50 `admin_audit` rows,
+        newest first; no paging, no filter. `actor` is the stored principal string and never an email or a name. `detail` is the
+        stored detail unchanged except for two projections: a `media_import` row shows `rightsEvidenceLength` instead of
+        `rightsEvidence`, and a `media_edit` row shows `noteLength` instead of `note` (code points). Other free text passes
+        through to admins: on `media_edit` the owning photographer typed `changes.description`, `changes.credit`,
+        `changes.attributionText`, `changes.sourceUrl` and `changes.licenceUrl`; staff typed `note` on role and content writes,
+        `changes.description` on `content_publish`, `diff` values and `fileName`. `actor` is a principal, never an email or a name.
+        Exempt from the client version gate.
+      responses:
+        "200":
+          description: The newest audit events.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditEventList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -4457,6 +4502,38 @@ components:
           uniqueItems: true
           description: The caller's ACTIVE roles from `account_roles`, in the order player, photographer, admin (Backend ADR-0002).
           items: { type: string, enum: [player, photographer, admin] }
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, entity, action, actor, detail, createdAt]
+      properties:
+        id: { type: string, pattern: "^aud-[1-9][0-9]*$", description: Opaque row id; newer events have a larger number. }
+        entity: { type: string, description: "The row's `target`: a principal, a media id, a module, a product id or an editorial kind, by action." }
+        action:
+          type: string
+          description: One of the audit actions; the list is pinned to `ADMIN_AUDIT_ACTIONS` by a test.
+          enum: [content_import, content_publish, content_edit, content_retire, content_restore, role_request, role_approve, role_reject, role_grant, role_revoke, role_block, role_unblock, role_email_edit, media_upload, media_version, media_edit, media_publish, media_withdraw, content_media_link, media_rights, media_import, store_product_create, store_product_edit, store_product_retire, store_product_restore, editorial_create, editorial_save, content_prepare, release_create, release_activate, release_restore]
+        actor: { type: string, description: "The stored actor string as-is: `firebase:<project>:<uid>`, `operator:<os user>` or `system:signup`. Never an email or a name." }
+        detail:
+          type: object
+          additionalProperties: true
+          description: |
+            The stored detail, shaped by `action`. Passed through unchanged except for two projections: `media_import` shows
+            `rightsEvidenceLength` instead of `rightsEvidence`, `media_edit` shows `noteLength` instead of `note` (code points). Other
+            free text reaches admins: on `media_edit` the owning photographer typed `changes.description`, `changes.credit`,
+            `changes.attributionText`, `changes.sourceUrl` and `changes.licenceUrl`; staff typed `note` (role and content writes),
+            `changes.description` (`content_publish`), `diff` values and `fileName`.
+        createdAt: { type: string, format: date-time }
+    AuditEventList:
+      type: object
+      additionalProperties: false
+      required: [events]
+      properties:
+        events:
+          type: array
+          maxItems: 50
+          description: Newest first (row id descending).
+          items: { $ref: "#/components/schemas/AuditEvent" }
     RoleState:
       type: string
       description: "`blocked` applies to `photographer` rows only; only `active` grants anything."
