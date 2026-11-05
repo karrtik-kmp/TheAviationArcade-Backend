@@ -1,4 +1,4 @@
-// Seed the demo store catalog (the client's four products with placeholder store ids; src/store/demo-products.ts).
+// Seed the demo store catalog (the client's four products plus the two placeholder Miles packs, with placeholder store ids; src/store/demo-products.ts).
 //
 // Run `npm run store:seed-demo` (it builds first). Refused when APP_ENV=production. Idempotent: it inserts only the missing rows
 // (ON CONFLICT DO NOTHING) and never edits an existing one, so staff changes survive. It never prints the database password.

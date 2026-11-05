@@ -131,12 +131,30 @@ export class PurchasesService {
     const { tx, player, now } = locked;
     const product = await findProduct(tx, transaction.productId);
     if (!product || !isSellable(product, this.config.appEnv)) return { value: { kind: "pending" } };
-    const isPass = product.kind === "first_class_pass";
     // Real stores always give a subscription its chain and expiry. A Pass product whose verified transaction has neither is a
     // staff catalog mistake (a hint pack's store id marked Pass), not a bad receipt: nothing is written, the app keeps it pending.
-    if (isPass && (!transaction.originalRef || !transaction.expiresAt)) {
-      this.logger.error(`catalog product ${product.productId} is first_class_pass but the verified ${transaction.store} transaction has no expiry or original reference`);
-      return { value: { kind: "pending" } };
+    // The reverse is the same mistake: a consumable (hint or Miles pack) whose transaction has an expiry or a chain is a
+    // subscription id marked consumable, and every renewal would pay again.
+    switch (product.kind) {
+      case "first_class_pass":
+        if (!transaction.originalRef || !transaction.expiresAt) {
+          this.logger.error(`catalog product ${product.productId} is first_class_pass but the verified ${transaction.store} transaction has no expiry or original reference`);
+          return { value: { kind: "pending" } };
+        }
+        break;
+      case "hint_pack":
+      case "miles_pack":
+        // Only the expiry marks a subscription: Apple also gives consumables an originalTransactionId (equal to transactionId),
+        // so an original reference alone must never block a consumable grant.
+        if (transaction.expiresAt) {
+          this.logger.error(`catalog product ${product.productId} is ${product.kind} but the verified ${transaction.store} transaction has an expiry`);
+          return { value: { kind: "pending" } };
+        }
+        break;
+      default: {
+        const unhandled: never = product.kind;
+        throw new Error(`No purchase guard for kind ${String(unhandled)}`);
+      }
     }
 
     if (transaction.accountToken !== null) {
@@ -152,19 +170,36 @@ export class PurchasesService {
     // A replay carries no change, so players.version does not move.
     if (claim.kind === "replay") return { value: { kind: "granted", replayed: true, record: claim.row } };
 
-    if (!isPass) {
-      const hints = claim.row.grantedHints;
-      if (hints === null) throw new Error("A hint pack grant has no hint count.");
-      return {
-        value: { kind: "granted", replayed: false, record: claim.row },
-        change: { postings: [{ account: "hints", kind: "store_purchase", ref: `${transaction.store}:${transaction.transactionRef}`, delta: hints }] },
-      };
+    const ref = `${transaction.store}:${transaction.transactionRef}`;
+    switch (product.kind) {
+      case "hint_pack": {
+        const hints = claim.row.grantedHints;
+        if (hints === null) throw new Error("A hint pack grant has no hint count.");
+        return {
+          value: { kind: "granted", replayed: false, record: claim.row },
+          change: { postings: [{ account: "hints", kind: "store_purchase", ref, delta: hints }] },
+        };
+      }
+      case "miles_pack": {
+        // Exact Miles, no First Class +50% (that perk lives in scoreRound only); players.miles changes, nothing else does.
+        const miles = claim.row.grantedMiles;
+        if (miles === null) throw new Error("A Miles pack grant has no Miles amount.");
+        return {
+          value: { kind: "granted", replayed: false, record: claim.row },
+          change: { postings: [{ account: "miles", kind: "store_purchase", ref, delta: miles }] },
+        };
+      }
+      case "first_class_pass": {
+        const owned = await claimSubscription(tx, { playerId: player.id, product, transaction, expiresAt: transaction.expiresAt as Date, now });
+        if (!owned) throw new PurchaseRollback({ kind: "owned_by_other" });
+        const firstClassUntil = await recomputeFirstClassUntil(tx, player.id);
+        return { value: { kind: "granted", replayed: false, record: claim.row }, change: { firstClassUntil } };
+      }
+      default: {
+        const unhandled: never = product.kind;
+        throw new Error(`No grant for kind ${String(unhandled)}`);
+      }
     }
-
-    const owned = await claimSubscription(tx, { playerId: player.id, product, transaction, expiresAt: transaction.expiresAt as Date, now });
-    if (!owned) throw new PurchaseRollback({ kind: "owned_by_other" });
-    const firstClassUntil = await recomputeFirstClassUntil(tx, player.id);
-    return { value: { kind: "granted", replayed: false, record: claim.row }, change: { firstClassUntil } };
   }
 
   private async acknowledge(transaction: VerifiedTransaction): Promise<void> {

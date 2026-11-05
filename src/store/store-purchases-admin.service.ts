@@ -20,8 +20,8 @@ export type PurchaseFilters = {
   orderId?: string | undefined;
 };
 
-/** What was granted. Closed per contract version (a new type, Miles next, arrives with a version bump); a consumer still shows an unknown type raw. */
-export type StaffGrant = { type: "hints"; hints: number } | { type: "first_class_pass"; until: string };
+/** What was granted. Closed per contract version (a new type arrives with a version bump); a consumer still shows an unknown type raw. */
+export type StaffGrant = { type: "hints"; hints: number } | { type: "miles"; miles: number } | { type: "first_class_pass"; until: string };
 
 export type StaffStorePurchase = {
   id: number;
@@ -113,11 +113,28 @@ function grantOf(row: StoreTransactionRow): StaffGrant {
   switch (kind) {
     case "hint_pack":
       return { type: "hints", hints: row.grantedHints as number };
+    case "miles_pack":
+      return { type: "miles", miles: row.grantedMiles as number };
     case "first_class_pass":
       return { type: "first_class_pass", until: (row.grantedUntil as Date).toISOString() };
     default: {
       const unhandled: never = kind;
       throw new Error(`No staff grant mapping for kind ${String(unhandled)}`);
+    }
+  }
+}
+
+/** A consumable (hint or Miles pack) has no chain: its Google transaction reference is the purchase token. A Pass is not. */
+function isConsumable(kind: StoreProductKind): boolean {
+  switch (kind) {
+    case "hint_pack":
+    case "miles_pack":
+      return true;
+    case "first_class_pass":
+      return false;
+    default: {
+      const unhandled: never = kind;
+      throw new Error(`No consumable rule for kind ${String(unhandled)}`);
     }
   }
 }
@@ -135,9 +152,9 @@ function purchaseView(row: StoreTransactionRow): StaffStorePurchase {
     transactionId: apple ? maskFakeRef(row.transactionRef) : null,
     originalTransactionId: apple ? maskFakeRef(row.originalRef) : null,
     orderId: row.orderId,
-    // Google one-time: the transaction reference is the purchase token. A Google Pass transaction reference is an order id, so only
+    // Google one-time (hint or Miles pack): the transaction reference is the purchase token. A Google Pass transaction reference is an order id, so only
     // the chain's first token (`original_ref`) is fingerprinted. The raw token is never returned.
-    tokenFingerprint: !apple && row.kind === "hint_pack" ? fingerprint(row.transactionRef) : null,
+    tokenFingerprint: !apple && isConsumable(row.kind) ? fingerprint(row.transactionRef) : null,
     originalFingerprint: !apple && row.originalRef !== null ? fingerprint(row.originalRef) : null,
     purchasedAt: row.purchasedAt.toISOString(),
     grant,

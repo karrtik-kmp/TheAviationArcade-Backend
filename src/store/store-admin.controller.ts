@@ -31,6 +31,7 @@ const putBody = z.strictObject({
         }),
     ),
   hints: z.number().int().min(1).max(1000).optional(),
+  miles: z.number().int().min(1).max(1_000_000).optional(),
   passPeriod: z.enum(STORE_PASS_PERIODS).optional(),
   demo: z.boolean(),
 });
@@ -67,7 +68,7 @@ export class StoreAdminController {
   async put(
     @Principal() principal: string,
     @Param("productId") productId: string,
-    @Body(new ZodValidationPipe(putBody, "Expected { version?, kind, title, hints?, passPeriod?, demo } and nothing else.")) body: PutBody,
+    @Body(new ZodValidationPipe(putBody, "Expected { version?, kind, title, hints?, miles?, passPeriod?, demo } and nothing else.")) body: PutBody,
     @Res({ passthrough: true }) res: Response,
   ) {
     if (!PRODUCT_ID_PATTERN.test(productId)) {

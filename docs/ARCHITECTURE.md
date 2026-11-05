@@ -248,7 +248,12 @@ never cascaded), so a receipt can never be granted twice, even after its owner's
 `src/purchases/purchase-grant.ts` writes the two purchase tables (balance guard). Not built yet: Apple/Google adapters,
 notifications, acknowledge sweeper, refunds, `store_notifications` (P2-P4). Staff read (P-D, API 0.21.0): a purchase list paged
 on `id DESC` with a filter-bound cursor and exact lookups, and one player's entitlements from a READ ONLY snapshot; Google purchase
-tokens are shown only as a 12-hex fingerprint and the `commerceToken` is never in a staff view. The bullets below remain the target design.
+tokens are shown only as a 12-hex fingerprint and the `commerceToken` is never in a staff view. Miles packs (P-E, API 0.22.0,
+migration 0021, user ruling U11 reversing R1's "No Miles are sold"): kind `miles_pack` (`miles` 1..1,000,000), snapshotted as
+`granted_miles` and posted as Miles ledger kind `store_purchase` (ref `<store>:<transactionRef>`); bought Miles change
+`players.miles` only (never Status Points, ranks, Trip counters or Field Awards) and get no First Class +50% (ASSUMPTION tests).
+A consumable whose verified transaction carries an expiry is a catalog mistake and stays `pending`. The bullets below
+remain the target design.
 
 - Client sends only a store reference (Apple `transactionId`, Google `purchaseToken` + `productId`).
   Server re-fetches from the store, checks bundle/package, catalog product, ownership token
@@ -258,7 +263,7 @@ tokens are shown only as a 12-hex fingerprint and the `commerceToken` is never i
   `products.get`, acknowledge/consume) with a service-account token.
 - Tables: `store_transactions` (unique per store transaction; idempotent credits), `store_subscriptions`
   (owner set once, status incl. grace/billing-retry/revoked, `last_event_at` ordering guard),
-  `store_notifications` (dedupe). Later `miles_ledger` with unique refs.
+  `store_notifications` (dedupe). Consumable credits go through the hint and Miles ledgers (unique per player, kind, ref).
 - `players.first_class_until` is only ever **recomputed** from active/grace subscriptions inside the
   player-locked transaction — the single write path. Consumable credits follow the `completeRound` pattern.
 - Notifications: Apple ASSN v2 (signed, re-fetch status, handle renew/grace/expire/refund/revoke) and

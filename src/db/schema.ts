@@ -265,7 +265,7 @@ export const milesLedger = pgTable(
     uniqueIndex("miles_ledger_idempotency").on(t.playerId, t.kind, t.ref),
     index("miles_ledger_player_time").on(t.playerId, t.createdAt),
     check("miles_ledger_delta_check", sql`${t.delta} <> 0`),
-    check("miles_ledger_kind_check", sql`${t.kind} IN ('round_award', 'hint_pack')`),
+    check("miles_ledger_kind_check", sql`${t.kind} IN ('round_award', 'hint_pack', 'store_purchase')`),
   ],
 );
 
@@ -905,6 +905,8 @@ export const storeProducts = pgTable(
     kind: text("kind").$type<StoreProductKind>().notNull(),
     // hint_pack only (1..1000), else NULL.
     hints: integer("hints"),
+    // miles_pack only (1..1,000,000), else NULL.
+    miles: integer("miles"),
     // first_class_pass only, else NULL.
     passPeriod: text("pass_period").$type<StorePassPeriod>(),
     title: text("title").notNull(),
@@ -917,15 +919,15 @@ export const storeProducts = pgTable(
   },
   (t) => [
     check("store_products_product_id_check", sql`${t.productId} ~ '^[a-z0-9][a-z0-9._]{0,99}$'`),
-    check("store_products_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass')`),
+    check("store_products_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass', 'miles_pack')`),
     check("store_products_pass_period_check", sql`${t.passPeriod} IN ('P1M', 'P1Y')`),
     check("store_products_status_check", sql`${t.status} IN ('active', 'retired')`),
     check("store_products_title_check", sql`length(${t.title}) BETWEEN 1 AND 100`),
     check("store_products_version_check", sql`${t.version} >= 1`),
-    // A hint pack has a hint count and no period; a Pass has a period and no hint count. (`hints IS NOT NULL` is explicit: a NULL BETWEEN would pass a CHECK.)
+    // A hint pack has a hint count only; a Miles pack a Miles amount only; a Pass a period only. (`IS NOT NULL` is explicit: a NULL BETWEEN would pass a CHECK.)
     check(
       "store_products_kind_rule_check",
-      sql`(${t.kind} = 'hint_pack' AND ${t.hints} IS NOT NULL AND ${t.hints} BETWEEN 1 AND 1000 AND ${t.passPeriod} IS NULL) OR (${t.kind} = 'first_class_pass' AND ${t.hints} IS NULL AND ${t.passPeriod} IS NOT NULL)`,
+      sql`(${t.kind} = 'hint_pack' AND ${t.hints} IS NOT NULL AND ${t.hints} BETWEEN 1 AND 1000 AND ${t.miles} IS NULL AND ${t.passPeriod} IS NULL) OR (${t.kind} = 'miles_pack' AND ${t.miles} IS NOT NULL AND ${t.miles} BETWEEN 1 AND 1000000 AND ${t.hints} IS NULL AND ${t.passPeriod} IS NULL) OR (${t.kind} = 'first_class_pass' AND ${t.hints} IS NULL AND ${t.miles} IS NULL AND ${t.passPeriod} IS NOT NULL)`,
     ),
   ],
 );
@@ -945,7 +947,7 @@ export const storeAccounts = pgTable("store_accounts", {
 
 /**
  * One verified store transaction, granted once. UNIQUE (store, transaction_ref) is the idempotency key across every player: the
- * second claimant of a reference is refused. `granted_hints` / `granted_until` snapshot what was granted, so a later catalog edit
+ * second claimant of a reference is refused. `granted_hints` / `granted_miles` / `granted_until` snapshot what was granted, so a later catalog edit
  * never changes a past grant. Apple: transaction_ref = transactionId, original_ref = originalTransactionId. Written only by
  * src/purchases/purchase-grant.ts inside PlayerBalance.update.
  */
@@ -968,6 +970,7 @@ export const storeTransactions = pgTable(
     originalRef: text("original_ref"),
     purchasedAt: timestamp("purchased_at", { withTimezone: true }).notNull(),
     grantedHints: integer("granted_hints"),
+    grantedMiles: integer("granted_miles"),
     grantedUntil: timestamp("granted_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -975,12 +978,13 @@ export const storeTransactions = pgTable(
     uniqueIndex("store_transactions_store_ref").on(t.store, t.transactionRef),
     index("store_transactions_player").on(t.playerId),
     check("store_transactions_store_check", sql`${t.store} IN ('apple', 'google')`),
-    check("store_transactions_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass')`),
+    check("store_transactions_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass', 'miles_pack')`),
     check("store_transactions_environment_check", sql`${t.environment} IN ('production', 'sandbox', 'fake')`),
     check("store_transactions_granted_hints_check", sql`${t.grantedHints} IS NULL OR ${t.grantedHints} > 0`),
+    check("store_transactions_granted_miles_check", sql`${t.grantedMiles} IS NULL OR ${t.grantedMiles} > 0`),
     check(
       "store_transactions_kind_rule_check",
-      sql`(${t.kind} = 'hint_pack' AND ${t.grantedHints} IS NOT NULL AND ${t.grantedUntil} IS NULL AND ${t.originalRef} IS NULL) OR (${t.kind} = 'first_class_pass' AND ${t.grantedHints} IS NULL AND ${t.grantedUntil} IS NOT NULL AND ${t.originalRef} IS NOT NULL)`,
+      sql`(${t.kind} = 'hint_pack' AND ${t.grantedHints} IS NOT NULL AND ${t.grantedMiles} IS NULL AND ${t.grantedUntil} IS NULL AND ${t.originalRef} IS NULL) OR (${t.kind} = 'miles_pack' AND ${t.grantedMiles} IS NOT NULL AND ${t.grantedHints} IS NULL AND ${t.grantedUntil} IS NULL AND ${t.originalRef} IS NULL) OR (${t.kind} = 'first_class_pass' AND ${t.grantedHints} IS NULL AND ${t.grantedMiles} IS NULL AND ${t.grantedUntil} IS NOT NULL AND ${t.originalRef} IS NOT NULL)`,
     ),
   ],
 );

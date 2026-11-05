@@ -10,12 +10,13 @@ import { adminAudit, storeProducts } from "../db/schema.js";
 import type { StoreProductRow } from "../db/schema.js";
 import { isListed } from "./catalog.js";
 
-export type ListedProduct = { productId: string; kind: StoreProductKind; hints?: number; passPeriod?: StorePassPeriod };
+export type ListedProduct = { productId: string; kind: StoreProductKind; hints?: number; miles?: number; passPeriod?: StorePassPeriod };
 
 export type AdminProduct = {
   productId: string;
   kind: StoreProductKind;
   hints: number | null;
+  miles: number | null;
   passPeriod: StorePassPeriod | null;
   title: string;
   demo: boolean;
@@ -29,6 +30,7 @@ export type ProductWrite = {
   kind: StoreProductKind;
   title: string;
   hints?: number | undefined;
+  miles?: number | undefined;
   passPeriod?: StorePassPeriod | undefined;
   demo: boolean;
 };
@@ -41,6 +43,7 @@ export function adminView(row: StoreProductRow): AdminProduct {
     productId: row.productId,
     kind: row.kind,
     hints: row.hints,
+    miles: row.miles,
     passPeriod: row.passPeriod,
     title: row.title,
     demo: row.demo,
@@ -56,6 +59,7 @@ function listedView(row: StoreProductRow): ListedProduct {
     productId: row.productId,
     kind: row.kind,
     ...(row.hints !== null ? { hints: row.hints } : {}),
+    ...(row.miles !== null ? { miles: row.miles } : {}),
     ...(row.passPeriod !== null ? { passPeriod: row.passPeriod } : {}),
   };
 }
@@ -91,16 +95,32 @@ export class StoreCatalogService {
     body: ProductWrite,
     appEnv: AppEnv,
   ): Promise<{ created: boolean; product: AdminProduct }> {
-    if (body.kind === "hint_pack" && (body.hints === undefined || body.passPeriod !== undefined)) {
-      throw new ApiError(422, "content_invalid", "A hint pack needs hints (1 to 1000) and no passPeriod. Nothing was changed.");
-    }
-    if (body.kind === "first_class_pass" && (body.passPeriod === undefined || body.hints !== undefined)) {
-      throw new ApiError(422, "content_invalid", "A First Class Pass needs passPeriod and no hints. Nothing was changed.");
+    switch (body.kind) {
+      case "hint_pack":
+        if (body.hints === undefined || body.miles !== undefined || body.passPeriod !== undefined) {
+          throw new ApiError(422, "content_invalid", "A hint pack needs hints (1 to 1000) and no miles or passPeriod. Nothing was changed.");
+        }
+        break;
+      case "miles_pack":
+        if (body.miles === undefined || body.hints !== undefined || body.passPeriod !== undefined) {
+          throw new ApiError(422, "content_invalid", "A Miles pack needs miles (1 to 1000000) and no hints or passPeriod. Nothing was changed.");
+        }
+        break;
+      case "first_class_pass":
+        if (body.passPeriod === undefined || body.hints !== undefined || body.miles !== undefined) {
+          throw new ApiError(422, "content_invalid", "A First Class Pass needs passPeriod and no hints or miles. Nothing was changed.");
+        }
+        break;
+      default: {
+        const unhandled: never = body.kind;
+        throw new Error(`No pairing rule for kind ${String(unhandled)}`);
+      }
     }
     if (version === undefined && body.demo && appEnv === "production") {
       throw new ApiError(422, "content_invalid", "A demo product cannot be created in production. Nothing was changed.");
     }
     const hints = body.hints ?? null;
+    const miles = body.miles ?? null;
     const passPeriod = body.passPeriod ?? null;
     // Expected refusals are returned, not thrown, so the connection goes back to the pool instead of being destroyed.
     const outcome = await this.database.withTransaction(async (tx): Promise<Outcome> => {
@@ -108,7 +128,7 @@ export class StoreCatalogService {
       if (version === undefined) {
         const [inserted] = await tx
           .insert(storeProducts)
-          .values({ productId, kind: body.kind, hints, passPeriod, title: body.title, demo: body.demo, status: "active", createdAt: now, updatedAt: now })
+          .values({ productId, kind: body.kind, hints, miles, passPeriod, title: body.title, demo: body.demo, status: "active", createdAt: now, updatedAt: now })
           .onConflictDoNothing()
           .returning();
         if (!inserted) {
@@ -120,6 +140,7 @@ export class StoreCatalogService {
           kind: body.kind,
           title: body.title,
           hints,
+          miles,
           passPeriod,
           demo: body.demo,
         });
@@ -137,11 +158,12 @@ export class StoreCatalogService {
       const diff: Field[] = [];
       if (stored.title !== body.title) diff.push({ field: "title", from: stored.title, to: body.title });
       if (stored.hints !== hints) diff.push({ field: "hints", from: stored.hints, to: hints });
+      if (stored.miles !== miles) diff.push({ field: "miles", from: stored.miles, to: miles });
       if (stored.passPeriod !== passPeriod) diff.push({ field: "passPeriod", from: stored.passPeriod, to: passPeriod });
       if (diff.length === 0) return { ok: true, created: false, row: stored };
       const [row] = await tx
         .update(storeProducts)
-        .set({ title: body.title, hints, passPeriod, version: sql`${storeProducts.version} + 1`, updatedAt: now })
+        .set({ title: body.title, hints, miles, passPeriod, version: sql`${storeProducts.version} + 1`, updatedAt: now })
         .where(and(eq(storeProducts.productId, productId), eq(storeProducts.version, stored.version)))
         .returning();
       if (!row) throw new Error("Product update was not stored."); // the row lock makes this unreachable

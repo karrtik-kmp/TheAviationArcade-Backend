@@ -11,7 +11,7 @@ import { fakeReference } from "../src/purchases/fake-store-verifier.js";
 import { setTestDatabaseClockSkew } from "../src/database/clock.js";
 import { fingerprint } from "../src/store/store-purchases-admin.service.js";
 import { clearRoles, demoPrincipal, seedAdmins, seedRole } from "./roles-helpers.js";
-import { DEMO_HINT_15, DEMO_HINT_5, DEMO_PASS_MONTHLY, DEMO_PASS_YEARLY, seedDemoProducts } from "./store-helpers.js";
+import { DEMO_HINT_15, DEMO_HINT_5, DEMO_MILES_25000, DEMO_MILES_5000, DEMO_PASS_MONTHLY, DEMO_PASS_YEARLY, seedDemoProducts } from "./store-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
 // Wave P-D: GET /v1/admin/store/purchases and GET /v1/admin/store/players/{principal}/entitlements (docs/plans/purchases.md).
@@ -64,10 +64,11 @@ type Tx = {
   store?: "apple" | "google";
   ref?: string;
   productId?: string;
-  kind?: "hint_pack" | "first_class_pass";
+  kind?: "hint_pack" | "miles_pack" | "first_class_pass";
   orderId?: string | null;
   originalRef?: string | null;
   hints?: number;
+  miles?: number;
   until?: Date;
   environment?: "production" | "sandbox" | "fake";
 };
@@ -76,19 +77,20 @@ type Tx = {
 async function addTx(principal: string, t: Tx = {}): Promise<number> {
   const kind = t.kind ?? "hint_pack";
   const res = await sql.query(
-    `INSERT INTO store_transactions (store, transaction_ref, player_id, product_id, kind, environment, order_id, original_ref, purchased_at, granted_hints, granted_until)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10) RETURNING id`,
+    `INSERT INTO store_transactions (store, transaction_ref, player_id, product_id, kind, environment, order_id, original_ref, purchased_at, granted_hints, granted_until, granted_miles)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11) RETURNING id`,
     [
       t.store ?? "apple",
       t.ref ?? `tx-${randomUUID()}`,
       principal,
-      t.productId ?? (kind === "hint_pack" ? DEMO_HINT_5 : DEMO_PASS_MONTHLY),
+      t.productId ?? (kind === "hint_pack" ? DEMO_HINT_5 : kind === "miles_pack" ? DEMO_MILES_5000 : DEMO_PASS_MONTHLY),
       kind,
       t.environment ?? "sandbox",
       t.orderId ?? null,
       kind === "first_class_pass" ? (t.originalRef ?? `orig-${randomUUID()}`) : null,
       kind === "hint_pack" ? (t.hints ?? 5) : null,
       kind === "first_class_pass" ? (t.until ?? new Date(Date.now() + 30 * DAY)) : null,
+      kind === "miles_pack" ? (t.miles ?? 5000) : null,
     ],
   );
   return Number(res.rows[0].id);
@@ -354,6 +356,36 @@ describe("GET /v1/admin/store/purchases", () => {
       expect(p).not.toHaveProperty("commerceToken");
       expect(p).not.toHaveProperty("playerId");
     }
+  });
+
+  it("a Miles pack row's grant is { type: miles, miles }; a Google Miles row has a token fingerprint and an Apple one does not", async () => {
+    const principal = await newPlayer();
+    const googleToken = `google-miles-token-${randomUUID()}`;
+    const appleRef = `apple-miles-${randomUUID()}`;
+    await addTx(principal, { store: "apple", kind: "miles_pack", ref: appleRef });
+    await addTx(principal, { store: "google", kind: "miles_pack", ref: googleToken, productId: DEMO_MILES_25000, miles: 25000 });
+    const res = await list(q({ player: principal }));
+    expect(res.status).toBe(200);
+    const [google, apple] = res.body.purchases;
+    expect(apple).toMatchObject({
+      store: "apple",
+      kind: "miles_pack",
+      productId: DEMO_MILES_5000,
+      transactionId: appleRef,
+      tokenFingerprint: null,
+      originalFingerprint: null,
+      grant: { type: "miles", miles: 5000 },
+    });
+    expect(google).toMatchObject({
+      store: "google",
+      kind: "miles_pack",
+      productId: DEMO_MILES_25000,
+      transactionId: null,
+      tokenFingerprint: fingerprint(googleToken),
+      originalFingerprint: null,
+      grant: { type: "miles", miles: 25000 },
+    });
+    expect(JSON.stringify(res.body)).not.toContain(googleToken);
   });
 
   it("Google rows never contain the raw purchase token (or the original token) anywhere in the response", async () => {

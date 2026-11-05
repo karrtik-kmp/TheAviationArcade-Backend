@@ -137,7 +137,7 @@ All endpoints except health and the guest media read (`GET /v1/public/media`) ne
 | POST | `/v1/rounds/:id/result` | `{ finished, errorCount, usedHint, timeRemainingFraction, aircraftKey, answerMs, attempts }`. Scores and banks it from the segment's own Perfect Streak; moves the day streak (+1 hint on every 7th consecutive local day, `hintGrants`). Flight facts that break a module rule are 400 and bank nothing. An `Idempotency-Key` header is accepted and ignored (the Round id is the key) |
 | POST | `/v1/rounds/:id/hint` | No body. Spends the Round's one hint; a repeat is a free 200 replay. 409 `insufficient_hints`. A paid hint always scores as used |
 | POST | `/v1/shop/miles-hint-pack` | No body, `Idempotency-Key` header. 5,000 Miles → 10 hints; same key replays. 409 `insufficient_miles` |
-| GET | `/v1/store/products` | The store catalog the app may sell: `productId`, `kind` (`hint_pack` / `first_class_pass`), `hints` or `passPeriod`. No titles or prices (the store shows localized prices) |
+| GET | `/v1/store/products` | The store catalog the app may sell: `productId`, `kind` (`hint_pack` / `miles_pack` / `first_class_pass`), `hints`, `miles` or `passPeriod`. No titles or prices (the store shows localized prices) |
 | GET | `/v1/me/entitlements` | First Class Pass state and the player's `commerceToken` (created on first read). Pass it to the store as Apple `appAccountToken` / Google `obfuscatedAccountId` (32 hex) |
 | POST | `/v1/purchases` | `{ store, productId, transactionId \| purchaseToken }`. The server asks the store, then grants once (hints, or extends `firstClassUntil`). 200 `granted` / `pending`; 409 `purchase_owned_by_other`; 422 `purchase_invalid` / `purchase_revoked`; 503 `store_unavailable`. Whether to finish the store transaction: table in openapi |
 | GET, PUT, POST | `/v1/admin/store/products[/:productId[/retire\|/restore]]` | Admin: list, create/edit (optimistic `version`; `kind` and `demo` fixed), retire, restore. Audited |
@@ -250,8 +250,12 @@ the client's catalog under its placeholder store ids (flagged `demo`; demo rows 
 `APP_ENV=production`):
 
 ```
-npm run store:seed-demo     # aa.hints.5, aa.hints.15, aa.firstclass.monthly, aa.firstclass.yearly; idempotent; refused in production
+npm run store:seed-demo     # aa.hints.5, aa.hints.15, aa.miles.5000, aa.miles.25000, aa.firstclass.monthly, aa.firstclass.yearly; idempotent; refused in production
 ```
+
+Miles packs (wave P-E, kind `miles_pack`) add their exact `miles` to the balance through the Miles ledger (kind
+`store_purchase`); they never touch Status Points, ranks, Trip counters or Field Awards and get no First Class +50%. The two demo
+amounts are placeholders (client question CQ7).
 
 With `STORE_VERIFIER=fake` (local/test only) the store reference itself decides the outcome, so every path can be driven by hand
 or from a Unity dev build: `fake~<ok|invalid|transient|revoked>~<productId>~<commerceToken|none>~<purchasedAtSec>[~<expiresAtSec>]`

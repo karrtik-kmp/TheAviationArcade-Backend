@@ -61,6 +61,7 @@ const retire = (id: string, body: unknown, headers: Record<string, string> = sta
 const restore = (id: string, body: unknown, headers: Record<string, string> = staff) =>
   request(server).post(`${ADMIN}/${id}/restore`).set(headers).send(body as object);
 const pack = (over: Record<string, unknown> = {}) => ({ kind: "hint_pack", title: "Seven hints", hints: 7, demo: false, ...over });
+const milesPack = (over: Record<string, unknown> = {}) => ({ kind: "miles_pack", title: "Five thousand Miles", miles: 5000, demo: false, ...over });
 const pass = (over: Record<string, unknown> = {}) => ({ kind: "first_class_pass", title: "Weekly pass", passPeriod: "P1M", demo: false, ...over });
 
 async function stored(id: string) {
@@ -113,6 +114,37 @@ describe("create and edit", () => {
     expect(res.body).toMatchObject({ kind: "first_class_pass", hints: null, passPeriod: "P1M" });
     const list = await request(server).get("/v1/store/products").set(player);
     expect(list.body.products).toContainEqual({ productId: PASS_ID, kind: "first_class_pass", passPeriod: "P1M" });
+  });
+
+  it("creates a Miles pack (201) with miles and no hints, audits miles, and lists miles to the player", async () => {
+    const res = await put(NEW_ID, milesPack());
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ kind: "miles_pack", hints: null, miles: 5000, passPeriod: null, version: 1 });
+    const log = await audits();
+    expect(log[0].detail).toMatchObject({ version: 1, kind: "miles_pack", hints: null, miles: 5000, passPeriod: null });
+    const list = await request(server).get("/v1/store/products").set(player);
+    expect(list.body.products).toContainEqual({ productId: NEW_ID, kind: "miles_pack", miles: 5000 });
+  });
+
+  it("edits a Miles pack's miles: a diff row, version 2; the same body again changes nothing; kind stays immutable", async () => {
+    await put(NEW_ID, milesPack());
+    const res = await put(NEW_ID, milesPack({ version: 1, miles: 6000 }));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ version: 2, miles: 6000 });
+    const log = await audits();
+    expect(log).toHaveLength(2);
+    expect(log[1].detail).toMatchObject({ fromVersion: 1, version: 2, diff: [{ field: "miles", from: 5000, to: 6000 }] });
+    const same = await put(NEW_ID, milesPack({ version: 2, miles: 6000 }));
+    expect(same.status).toBe(200);
+    expect(same.body.version).toBe(2);
+    expect(await audits()).toHaveLength(2);
+    // A Miles pack cannot become a hint pack or a Pass.
+    for (const other of [pack({ version: 2 }), pass({ version: 2 })]) {
+      const refused = await put(NEW_ID, other);
+      expect(refused.status).toBe(422);
+      expect(refused.body.error.code).toBe("content_invalid");
+    }
+    expect(await stored(NEW_ID)).toMatchObject({ kind: "miles_pack", miles: 6000, version: 2 });
   });
 
   it("creating an existing id without a version is 409 version_conflict and writes nothing", async () => {
@@ -210,6 +242,22 @@ describe("validation", () => {
       expect(res.status).toBe(422);
       expect(res.body.error.code).toBe("content_invalid");
     }
+    // The three-way pairing: a Miles pack needs miles and neither hints nor passPeriod; the other kinds refuse miles.
+    for (const bad of [
+      milesPack({ miles: undefined }),
+      milesPack({ hints: 5 }),
+      milesPack({ passPeriod: "P1M" }),
+      pack({ miles: 5000 }),
+      pass({ miles: 5000 }),
+    ]) {
+      const res = await put("pbtest.bad", bad);
+      expect(res.status, JSON.stringify(bad)).toBe(422);
+      expect(res.body.error.code).toBe("content_invalid");
+    }
+    expect((await put(NEW_ID, milesPack({ miles: 0 }))).status).toBe(400);
+    expect((await put(NEW_ID, milesPack({ miles: 1_000_001 }))).status).toBe(400);
+    expect((await put(NEW_ID, milesPack({ miles: 1.5 }))).status).toBe(400);
+    expect((await put(NEW_ID, milesPack({ miles: "5000" }))).status).toBe(400);
     expect(await stored("pbtest.bad")).toBeUndefined();
     expect(await stored(NEW_ID)).toBeUndefined();
     expect(await audits()).toHaveLength(0);
@@ -283,6 +331,9 @@ describe("listings", () => {
     const byId = new Map<string, Record<string, unknown>>(res.body.products.map((p: { productId: string }) => [p.productId, p]));
     expect(byId.get(DEMO_HINT_5)).toEqual({ productId: DEMO_HINT_5, kind: "hint_pack", hints: 5 });
     expect(byId.get(DEMO_PASS_MONTHLY)).toEqual({ productId: DEMO_PASS_MONTHLY, kind: "first_class_pass", passPeriod: "P1M" });
+    // `miles` appears on Miles packs only.
+    expect(byId.get("aa.miles.5000")).toEqual({ productId: "aa.miles.5000", kind: "miles_pack", miles: 5000 });
+    expect(byId.get("aa.miles.25000")).toEqual({ productId: "aa.miles.25000", kind: "miles_pack", miles: 25000 });
     const ids = res.body.products.map((p: { productId: string }) => p.productId);
     expect(ids).toEqual([...ids].sort());
   });
@@ -330,8 +381,8 @@ const countOf = async (ids: string[]) => (await sql.query("SELECT count(*)::int 
 function freshProducts(): DemoProduct[] {
   const tag = randomUUID().replaceAll("-", "").slice(0, 12);
   return [
-    { productId: `pbtest.seed.${tag}.a`, kind: "hint_pack", hints: 3, passPeriod: null, title: "Seed A", demo: true, status: "active" },
-    { productId: `pbtest.seed.${tag}.b`, kind: "first_class_pass", hints: null, passPeriod: "P1Y", title: "Seed B", demo: true, status: "active" },
+    { productId: `pbtest.seed.${tag}.a`, kind: "hint_pack", hints: 3, miles: null, passPeriod: null, title: "Seed A", demo: true, status: "active" },
+    { productId: `pbtest.seed.${tag}.b`, kind: "first_class_pass", hints: null, miles: null, passPeriod: "P1Y", title: "Seed B", demo: true, status: "active" },
   ];
 }
 

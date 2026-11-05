@@ -21,7 +21,7 @@ export type ClaimResult =
 
 /**
  * Record the transaction under UNIQUE (store, transaction_ref). A reference another player already holds writes nothing
- * (`other`); the same player's earlier row is a replay. The snapshot (granted hints / until) comes from the catalog row as read
+ * (`other`); the same player's earlier row is a replay. The snapshot (granted hints / Miles / until) comes from the catalog row as read
  * under the lock, so a later catalog edit never changes it.
  */
 export async function claimTransaction(
@@ -30,6 +30,24 @@ export async function claimTransaction(
 ): Promise<ClaimResult> {
   const { playerId, product, transaction, now } = input;
   const isPass = product.kind === "first_class_pass";
+  let grantedHints: number | null = null;
+  let grantedMiles: number | null = null;
+  switch (product.kind) {
+    case "hint_pack":
+      if (product.hints === null) throw new Error(`Hint pack ${product.productId} has no hint count.`);
+      grantedHints = product.hints;
+      break;
+    case "miles_pack":
+      if (product.miles === null) throw new Error(`Miles pack ${product.productId} has no Miles amount.`);
+      grantedMiles = product.miles;
+      break;
+    case "first_class_pass":
+      break;
+    default: {
+      const unhandled: never = product.kind;
+      throw new Error(`No grant snapshot for kind ${String(unhandled)}`);
+    }
+  }
   const [inserted] = await tx
     .insert(storeTransactions)
     .values({
@@ -42,7 +60,8 @@ export async function claimTransaction(
       orderId: transaction.orderId,
       originalRef: isPass ? transaction.originalRef : null,
       purchasedAt: transaction.purchasedAt,
-      grantedHints: isPass ? null : product.hints,
+      grantedHints,
+      grantedMiles,
       grantedUntil: isPass ? transaction.expiresAt : null,
       createdAt: now,
     })

@@ -75,6 +75,7 @@ export class PurchasesController {
             environment: record.environment,
             purchasedAt: record.purchasedAt.toISOString(),
             grantedHints: record.grantedHints,
+            grantedMiles: record.grantedMiles,
             grantedUntil: record.grantedUntil?.toISOString() ?? null,
           },
           progress: progressView(outcome.player),

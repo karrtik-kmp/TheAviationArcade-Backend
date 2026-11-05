@@ -17,7 +17,10 @@ export type VerifiedTransaction = {
   productId: string;
   /** Idempotency key within the store. Apple: transactionId. Google one-time: purchaseToken; subscription: per-renewal orderId. */
   transactionRef: string;
-  /** Subscriptions only: the first transaction of the chain (Apple originalTransactionId; Google first purchaseToken). */
+  /**
+   * Subscriptions only: the first transaction of the chain (Apple originalTransactionId; Google first purchaseToken). Adapters set
+   * null for consumables even when the store supplies an original id (Apple does); the grant ignores it for consumables anyway.
+   */
   originalRef: string | null;
   orderId: string | null;
   /** The buyer's commerce token as the store carries it (any case, with or without hyphens), or null when absent. */

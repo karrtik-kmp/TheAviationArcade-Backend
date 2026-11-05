@@ -233,7 +233,7 @@ a verified email, on both routes; title trimming and control-character refusal.
 
 Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShell (uppercase `H:`), one full run.
 
-## Wave P-E: Miles packs (approved with changes, revised, 2026-11-05)
+## Wave P-E: Miles packs (built 2026-11-05; approved with changes, revised)
 
 User ruling U11 (2026-11-04, "both"; confirmed again 2026-11-05, "Yes, sell Miles packs"): Miles packs are store products too.
 This **reverses R1's "No Miles are sold"**; R1's catalog list otherwise stands. Source: `../docs/briefs/commerce.md` update item 1
@@ -265,8 +265,9 @@ changed CHECK as DROP + ADD (as in 0009, 0019, 0020); existing rows have NULL in
 
 - `PurchasesService.grant` and `claimTransaction` switch on `product.kind` exhaustively (`never` default) instead of `isPass`.
   The Pass pre-check stays ahead of the ownership and claim steps.
-- **Consumable guard (new):** a `hint_pack` or `miles_pack` product whose verified transaction has an `expiresAt` or an
-  `originalRef` is a catalog mistake (a subscription id marked consumable; every renewal would pay again): log an error, return
+- **Consumable guard (new):** a `hint_pack` or `miles_pack` product whose verified transaction has an `expiresAt` is a
+  catalog mistake (as built after code review: an `originalRef` alone does not count, because Apple gives consumables an
+  `originalTransactionId` too; P2 tests that an Apple consumable with `originalTransactionId == transactionId` grants) (a subscription id marked consumable; every renewal would pay again): log an error, return
   `pending`, write nothing. Mirrors the Pass guard.
 - `claimTransaction`'s `miles_pack` arm snapshots `granted_miles = product.miles` under the lock (throw if `product.miles` is
   null, like the hints guard). `grant` reads `claim.row.grantedMiles` (one source for fresh and replayed) and posts

@@ -148,6 +148,13 @@
       "when": 1793794792822,
       "tag": "0020_store_purchases",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793853186122,
+      "tag": "0021_store_miles_packs",
+      "breakpoints": true
     }
   ]
 }

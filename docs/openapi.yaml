@@ -1,10 +1,18 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.21.1
+  version: 0.22.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.22.0 (Miles packs, wave P-E; docs/plans/purchases.md; user ruling U11).** Miles packs are sold as store products: this reverses the earlier
+    "No Miles are sold". `StoreProductKind` gains `miles_pack` (the enum is closed for the game, hence the minor bump). `StoreProduct` carries `miles` (1 to 1,000,000)
+    on a `miles_pack` only; `StorePurchase` gains the required `grantedMiles` (null for any other kind). A Miles pack grants exactly its `miles`: the First Class +50%
+    does not apply to bought Miles, and a store grant changes Miles only (never Status Points, ranks, Trip counters or Field Awards). Staff: `AdminStoreProduct` and
+    `AdminStoreProductRequest` gain `miles`; `StaffStoreGrant` gains `{ type: miles, miles }`. A Miles pack (like a hint pack) whose store transaction carries an expiry (a
+    subscription) is a catalog mistake: `pending`, nothing written. Vocabulary: a Miles pack is a store product that grants Miles; the Miles hint pack
+    (`POST /v1/shop/miles-hint-pack`) spends Miles on hints. The amounts and ids of the two seeded packs are placeholders.
 
     **Changelog 0.21.1 (descriptions only; no shape or behaviour change).** Entitlements `productId` is null whenever `firstClassPass` is
     false, a lapsed Pass included. `StaffStoreSubscription.status` is the store-reported state, not re-judged against the clock: a
@@ -1189,7 +1197,8 @@ paths:
         reference of a purchase it holds; the server verifies it with the store itself (a client claim is never trusted), then grants
         exactly once. The reference is the idempotency key: the same `(store, transactionId | purchaseToken)` never grants twice, for any
         player. An `Idempotency-Key` header is accepted and ignored. Strict body, one of two shapes (below). The server computes the
-        grant from its own catalog (`GET /v1/store/products`); the body never says what to grant. A hint pack adds its hints; a First
+        grant from its own catalog (`GET /v1/store/products`); the body never says what to grant. A hint pack adds its hints; a Miles
+        pack adds its `miles` exactly (no First Class +50%; Status Points, ranks and Trip counters do not move); a First
         Class Pass extends `firstClassUntil` (the store's expiry is authoritative) and turns the +50% on.
 
         **Every answer tells the client what to do with the store transaction: finish it, or keep it pending and resend later.**
@@ -1199,6 +1208,7 @@ paths:
         | 200 `status: granted` (new, or `replayed: true`) | finish the store transaction (consume consumables) |
         | 200 `status: pending` (valid store purchase, product not in the catalog or not sellable here; nothing written) | keep pending, resend later |
         | 503 `store_unavailable` + `Retry-After` (store transient, or no verifier configured; nothing written) | keep pending, resend |
+        | 500 (server fault; the whole grant rolled back, nothing written) | keep pending, resend |
         | 409 `purchase_owned_by_other` | finish (it belongs to another account) |
         | 422 `purchase_invalid` (the store says invalid), `purchase_revoked` | finish; nothing granted |
 
@@ -1228,8 +1238,8 @@ paths:
           description: |
             `granted`: the purchase is recorded (finish the store transaction); `replayed` is true when it had been granted before.
             `pending`: the store says the purchase is valid but this server will not grant it yet (the product is not in the catalog,
-            or is a demo product in production, or the catalog marks it a First Class Pass while the store's transaction has no subscription expiry:
-            a staff catalog mistake, logged server-side); nothing was written, `storePurchase` is null: keep the store transaction pending and resend later.
+            or is a demo product in production, or the catalog and the store's transaction disagree about subscription: a First Class Pass whose
+            transaction has no expiry, or a hint pack or Miles pack whose transaction has an expiry; a staff catalog mistake, logged server-side); nothing was written, `storePurchase` is null: keep the store transaction pending and resend later.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1521,7 +1531,7 @@ paths:
       operationId: listAdminStorePurchases
       summary: Verified store purchases, newest first
       description: |
-        Admin only; read only. One row per verified store transaction (hint packs and every Pass term), newest first by `id` (insert order). Filters (all
+        Admin only; read only. One row per verified store transaction (hint packs, Miles packs and every Pass term), newest first by `id` (insert order). Filters (all
         optional, each at most once, never empty): `player` (a principal of this project), `productId`, `store`, `transactionRef` (exact transaction
         id or token as the store reported it) and `orderId` (exact). `limit` is 1 to 100 (default 50). `nextCursor` is opaque and bound to the filters it
         was made under; pass it back as `cursor` with the same filters (a changed filter, an edited or foreign cursor is 400 `invalid_request`). An unknown
@@ -4669,7 +4679,7 @@ components:
 
     StoreProductKind:
       type: string
-      enum: [hint_pack, first_class_pass]
+      enum: [hint_pack, miles_pack, first_class_pass]
     StorePassPeriod:
       type: string
       enum: [P1M, P1Y]
@@ -4692,7 +4702,8 @@ components:
       properties:
         productId: { $ref: "#/components/schemas/StoreProductId" }
         kind: { $ref: "#/components/schemas/StoreProductKind" }
-        hints: { type: integer, minimum: 1, maximum: 1000, description: Hints a `hint_pack` adds. Absent for a Pass. }
+        hints: { type: integer, minimum: 1, maximum: 1000, description: Hints a `hint_pack` adds. Absent for any other kind. }
+        miles: { type: integer, minimum: 1, maximum: 1000000, description: Miles a `miles_pack` adds. Absent for any other kind. }
         passPeriod: { $ref: "#/components/schemas/StorePassPeriod" }
     StoreProductList:
       type: object
@@ -4709,10 +4720,11 @@ components:
       properties:
         productId: { $ref: "#/components/schemas/StoreProductId" }
         kind: { $ref: "#/components/schemas/StoreProductKind" }
-        hints: { type: [integer, "null"], minimum: 1, maximum: 1000, description: Present for a `hint_pack`, null for a Pass. }
+        hints: { type: [integer, "null"], minimum: 1, maximum: 1000, description: Present for a `hint_pack`, null for any other kind. }
+        miles: { type: [integer, "null"], minimum: 1, maximum: 1000000, description: Present for a `miles_pack`, null for any other kind. }
         passPeriod:
           oneOf: [{ $ref: "#/components/schemas/StorePassPeriod" }, { type: "null" }]
-          description: Present for a Pass, null for a `hint_pack`.
+          description: Present for a Pass, null for any other kind.
         title: { type: string, minLength: 1, maxLength: 100, description: A staff label. Never shown to players. }
         demo:
           type: boolean
@@ -4734,13 +4746,15 @@ components:
       additionalProperties: false
       required: [kind, title, demo]
       description: |
-        No `version` creates, `version` edits. A `hint_pack` needs `hints` and no `passPeriod`; a `first_class_pass` needs `passPeriod`
-        and no `hints`. `kind` and `demo` are immutable once the product exists.
+        No `version` creates, `version` edits. A `hint_pack` needs `hints` and neither `miles` nor `passPeriod`; a `miles_pack` needs `miles` and
+        neither `hints` nor `passPeriod`; a `first_class_pass` needs `passPeriod` and neither `hints` nor `miles` (422 `content_invalid` otherwise).
+        `kind` and `demo` are immutable once the product exists.
       properties:
         version: { type: integer, minimum: 1, maximum: 2147483647, description: The product `version` the caller read. Omit to create. }
         kind: { $ref: "#/components/schemas/StoreProductKind" }
         title: { type: string, minLength: 1, maxLength: 100, description: Trimmed by the server first; then 1 to 100 characters (code points) with no control character (U+0000 to U+001F, U+007F to U+009F). }
         hints: { type: integer, minimum: 1, maximum: 1000 }
+        miles: { type: integer, minimum: 1, maximum: 1000000 }
         passPeriod: { $ref: "#/components/schemas/StorePassPeriod" }
         demo: { type: boolean }
     StoreProductVersionRequest:
@@ -4779,7 +4793,7 @@ components:
     StorePurchase:
       type: object
       additionalProperties: false
-      required: [store, productId, kind, environment, purchasedAt, grantedHints, grantedUntil]
+      required: [store, productId, kind, environment, purchasedAt, grantedHints, grantedMiles, grantedUntil]
       description: The recorded grant, snapshotted when it was made (a later catalog edit does not change it).
       properties:
         store: { $ref: "#/components/schemas/StoreName" }
@@ -4787,8 +4801,9 @@ components:
         kind: { $ref: "#/components/schemas/StoreProductKind" }
         environment: { type: string, enum: [production, sandbox, fake] }
         purchasedAt: { type: string, format: date-time }
-        grantedHints: { type: [integer, "null"], minimum: 1, description: Hints added by a `hint_pack`; null for a Pass. }
-        grantedUntil: { type: [string, "null"], format: date-time, description: The Pass expiry this transaction carried; null for a `hint_pack`. }
+        grantedHints: { type: [integer, "null"], minimum: 1, description: Hints added by a `hint_pack`; null for any other kind. }
+        grantedMiles: { type: [integer, "null"], minimum: 1, description: Miles added by a `miles_pack` (exactly, no First Class +50%); null for any other kind. }
+        grantedUntil: { type: [string, "null"], format: date-time, description: The Pass expiry this transaction carried; null for any other kind. }
     StorePurchaseResponse:
       type: object
       additionalProperties: false
@@ -4827,8 +4842,8 @@ components:
 
     StaffStoreGrant:
       description: |
-        What a purchase granted, snapshotted when it was made. Closed per contract version: a new grant type (the Miles wave adds `miles`) arrives
-        with a version bump of this file. A consumer must still show an unknown `type` raw at runtime and never fail.
+        What a purchase granted, snapshotted when it was made. Closed per contract version: a new grant type arrives
+        with a version bump of this file (0.22.0 added `miles`). A consumer must still show an unknown `type` raw at runtime and never fail.
       oneOf:
         - type: object
           additionalProperties: false
@@ -4836,6 +4851,12 @@ components:
           properties:
             type: { type: string, const: hints }
             hints: { type: integer, minimum: 1 }
+        - type: object
+          additionalProperties: false
+          required: [type, miles]
+          properties:
+            type: { type: string, const: miles }
+            miles: { type: integer, minimum: 1 }
         - type: object
           additionalProperties: false
           required: [type, until]
@@ -4855,14 +4876,14 @@ components:
         productId: { $ref: "#/components/schemas/StoreProductId" }
         kind:
           type: string
-          description: "OPEN: `hint_pack` or `first_class_pass` today; later waves add values. Show an unknown value raw."
+          description: "OPEN: `hint_pack`, `miles_pack` or `first_class_pass` today; later waves add values. Show an unknown value raw."
         environment: { type: string, enum: [production, sandbox, fake] }
         transactionId: { type: [string, "null"], description: "The Apple transaction id as stored. Null for Google. Fake-store (test) references have their embedded account-token segment replaced by its fingerprint." }
         originalTransactionId: { type: [string, "null"], description: The Apple original transaction id as stored (a Pass). Null otherwise. }
         orderId: { type: [string, "null"], description: The store's order id when it gave one. }
         tokenFingerprint:
           type: [string, "null"]
-          description: Google one-time purchases only (a Google Pass reference is an order id, so null there). First 12 hex digits of the SHA-256 of the purchase token; the token itself is never returned.
+          description: Google one-time purchases only (a hint pack or a Miles pack; a Google Pass reference is an order id, so null there). First 12 hex digits of the SHA-256 of the purchase token; the token itself is never returned.
         originalFingerprint:
           type: [string, "null"]
           description: Google Pass only. Same fingerprint rule for the first purchase token of the chain.

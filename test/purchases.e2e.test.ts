@@ -13,7 +13,7 @@ import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { FakeStoreVerifier, fakeReference } from "../src/purchases/fake-store-verifier.js";
 import { STORE_VERIFIER } from "../src/purchases/store-verifier.js";
 import type { StoreVerifier } from "../src/purchases/store-verifier.js";
-import { DEMO_HINT_15, DEMO_HINT_5, DEMO_PASS_MONTHLY, DEMO_PASS_YEARLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
+import { DEMO_HINT_15, DEMO_HINT_5, DEMO_MILES_25000, DEMO_MILES_5000, DEMO_PASS_MONTHLY, DEMO_PASS_YEARLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, issueRound } from "./trip-helpers.js";
 
@@ -100,13 +100,16 @@ const playerTxCount = (principal: string) => count("SELECT count(*)::int AS n FR
 const hintRows = (principal: string) => count("SELECT count(*)::int AS n FROM hint_ledger WHERE player_id = $1 AND kind = 'store_purchase'", [principal]);
 const playerRow = async (principal: string) => (await sql.query("SELECT * FROM players WHERE id = $1", [principal])).rows[0];
 
+const milesRows = (principal: string) => count("SELECT count(*)::int AS n FROM miles_ledger WHERE player_id = $1 AND kind = 'store_purchase'", [principal]);
+
 /** A fresh catalog product, so subscription chains and references of one test never meet another test's. */
-async function newProduct(kind: "hint_pack" | "first_class_pass", options: { demo?: boolean; status?: "active" | "retired" } = {}) {
-  const productId = `test.${kind === "hint_pack" ? "hints" : "pass"}.${randomUUID().replaceAll("-", "")}`;
+async function newProduct(kind: "hint_pack" | "miles_pack" | "first_class_pass", options: { demo?: boolean; status?: "active" | "retired" } = {}) {
+  const label = kind === "hint_pack" ? "hints" : kind === "miles_pack" ? "miles" : "pass";
+  const productId = `test.${label}.${randomUUID().replaceAll("-", "")}`;
   await seedProduct(sql, {
     productId,
     kind,
-    ...(kind === "hint_pack" ? { hints: 7 } : { passPeriod: "P1M" as const }),
+    ...(kind === "hint_pack" ? { hints: 7 } : kind === "miles_pack" ? { miles: 1234 } : { passPeriod: "P1M" as const }),
     ...options,
   });
   return productId;
@@ -317,6 +320,193 @@ describe("POST /v1/purchases: hint packs", () => {
     expect(winnerAfter).toMatchObject({ hints: winnerBefore.hints + 5, version: winnerBefore.version + 1 });
     expect(loserAfter).toMatchObject({ hints: loserBefore.hints, version: loserBefore.version });
     expect(await hintRows(loser.principal)).toBe(0);
+  });
+});
+
+describe("POST /v1/purchases: Miles packs", () => {
+  const MILES_ROWS = "SELECT delta, ref FROM miles_ledger WHERE player_id = $1 AND kind = 'store_purchase'";
+
+  it("grants the catalog's Miles exactly once: one ledger row, one version bump, grantedMiles in the response", async () => {
+    const player = await newPlayer({ linked: true });
+    const before = await progress(player);
+    const beforeRow = await playerRow(player.principal);
+    const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: uniqueSec() });
+    const res = await buy(player, "apple", DEMO_MILES_5000, ref);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "granted",
+      replayed: false,
+      storePurchase: { store: "apple", productId: DEMO_MILES_5000, kind: "miles_pack", environment: "fake", grantedHints: null, grantedMiles: 5000, grantedUntil: null },
+      progress: { version: before.version + 1, hints: before.hints },
+    });
+    const stored = await playerRow(player.principal);
+    expect(stored.miles).toBe(beforeRow.miles + 5000);
+    expect(stored.hints).toBe(beforeRow.hints);
+    expect(stored.version).toBe(before.version + 1);
+    expect((await sql.query(MILES_ROWS, [player.principal])).rows).toEqual([{ delta: 5000, ref: `apple:${ref}` }]);
+    expect(await hintRows(player.principal)).toBe(0);
+    const sum = (await sql.query("SELECT COALESCE(SUM(delta), 0)::int AS s FROM miles_ledger WHERE player_id = $1", [player.principal])).rows[0].s;
+    expect(sum).toBe(stored.miles);
+    expect((await sql.query("SELECT granted_miles, granted_hints FROM store_transactions WHERE transaction_ref = $1", [ref])).rows).toEqual([
+      { granted_miles: 5000, granted_hints: null },
+    ]);
+    expect((await sql.query("SELECT version FROM ugs_mirror_outbox WHERE player_id = $1", [player.principal])).rows).toEqual([{ version: before.version + 1 }]);
+  });
+
+  it("a Google Miles pack grants and is acknowledged; the larger demo pack grants 25,000", async () => {
+    const player = await newPlayer();
+    const ref = fakeReference({ productId: DEMO_MILES_25000, purchasedAtSec: uniqueSec() });
+    const res = await buy(player, "google", DEMO_MILES_25000, ref);
+    expect(res.body).toMatchObject({ status: "granted", storePurchase: { grantedMiles: 25000 } });
+    expect(fake.acknowledged).toContain(ref);
+    expect((await playerRow(player.principal)).miles).toBe(25000);
+  });
+
+  it("a replay is 200 replayed true with the recorded grant, no new ledger row and no version bump", async () => {
+    const player = await newPlayer({ linked: true });
+    const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: uniqueSec() });
+    const first = await buy(player, "apple", DEMO_MILES_5000, ref);
+    await sql.query("DELETE FROM ugs_mirror_outbox WHERE player_id = $1", [player.principal]);
+    const replay = await buy(player, "apple", DEMO_MILES_5000, ref);
+    expect(replay.status).toBe(200);
+    expect(replay.body).toMatchObject({ status: "granted", replayed: true, storePurchase: first.body.storePurchase });
+    expect(replay.body.progress.version).toBe(first.body.progress.version);
+    const stored = await playerRow(player.principal);
+    expect(stored.version).toBe(first.body.progress.version);
+    expect(stored.miles).toBe(5000);
+    expect(await milesRows(player.principal)).toBe(1);
+    expect(await txCount(ref)).toBe(1);
+    expect((await sql.query("SELECT 1 FROM ugs_mirror_outbox WHERE player_id = $1", [player.principal])).rowCount).toBe(0);
+  });
+
+  it("another player gets 409 purchase_owned_by_other and nothing is written for them", async () => {
+    const [owner, other] = [await newPlayer(), await newPlayer()];
+    const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: uniqueSec() });
+    expect((await buy(owner, "apple", DEMO_MILES_5000, ref)).status).toBe(200);
+    const late = await buy(other, "apple", DEMO_MILES_5000, ref);
+    expect(late.status).toBe(409);
+    expect(late.body.error.code).toBe("purchase_owned_by_other");
+    expect((await playerRow(other.principal)).miles).toBe(0);
+    expect(await milesRows(other.principal)).toBe(0);
+  });
+
+  it("a deleted owner's receipt is remembered: the same reference is 409 for the re-created account and grants no Miles", async () => {
+    const owner = await newPlayer();
+    const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: uniqueSec() });
+    expect((await buy(owner, "apple", DEMO_MILES_5000, ref)).status).toBe(200);
+    expect((await request(server).delete("/v1/me").set(owner.auth)).status).toBe(204);
+    expect(await txCount(ref)).toBe(0);
+    expect((await request(server).put("/v1/me").set(owner.auth)).status).toBe(201);
+    const again = await buy(owner, "apple", DEMO_MILES_5000, ref);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe("purchase_owned_by_other");
+    expect((await playerRow(owner.principal)).miles).toBe(0);
+    expect(await milesRows(owner.principal)).toBe(0);
+    expect(await txCount(ref)).toBe(0);
+  });
+
+  it("the grant snapshot survives a catalog edit of miles", async () => {
+    const player = await newPlayer();
+    const productId = await newProduct("miles_pack");
+    const ref = fakeReference({ productId, purchasedAtSec: uniqueSec() });
+    expect((await buy(player, "apple", productId, ref)).body.storePurchase.grantedMiles).toBe(1234);
+    await sql.query("UPDATE store_products SET miles = 9999, version = version + 1 WHERE product_id = $1", [productId]);
+    const replay = await buy(player, "apple", productId, ref);
+    expect(replay.body).toMatchObject({ replayed: true, storePurchase: { grantedMiles: 1234 } });
+    expect((await sql.query("SELECT granted_miles FROM store_transactions WHERE transaction_ref = $1", [ref])).rows[0].granted_miles).toBe(1234);
+    const next = await buy(player, "apple", productId, fakeReference({ productId, purchasedAtSec: uniqueSec() }));
+    expect(next.body.storePurchase.grantedMiles).toBe(9999);
+    expect((await playerRow(player.principal)).miles).toBe(1234 + 9999);
+  });
+
+  it("a Miles pack whose store transaction has an expiry is a catalog mistake: 200 pending, nothing written, logged as an error", async () => {
+    const player = await newPlayer();
+    const logged = vi.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    try {
+      const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: nowSec(), expiresAtSec: nowSec() + 30 * DAY });
+      const res = await buy(player, "apple", DEMO_MILES_5000, ref);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status: "pending", storePurchase: null });
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining(DEMO_MILES_5000));
+      expect(await txCount(ref)).toBe(0);
+      expect(await count("SELECT count(*)::int AS n FROM store_claims WHERE ref = $1", [ref])).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(await playerTxCount(player.principal)).toBe(0);
+    expect(await milesRows(player.principal)).toBe(0);
+    expect((await playerRow(player.principal)).miles).toBe(0);
+  });
+
+  it("a hint pack whose store transaction has an expiry is the same catalog mistake: pending, nothing written", async () => {
+    const player = await newPlayer();
+    const before = await progress(player);
+    const logged = vi.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    try {
+      const ref = fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: nowSec(), expiresAtSec: nowSec() + 30 * DAY });
+      const res = await buy(player, "apple", DEMO_HINT_5, ref);
+      expect(res.body).toMatchObject({ status: "pending", storePurchase: null });
+      expect(await txCount(ref)).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(await progress(player)).toMatchObject({ hints: before.hints, version: before.version });
+  });
+
+  it("ASSUMPTION: a First Class Pass holder gets exactly the pack's Miles, with no +50% on bought Miles", async () => {
+    const player = await newPlayer();
+    const t = await token(player);
+    const start = nowSec();
+    const passRef = fakeReference({ productId: DEMO_PASS_MONTHLY, token: t, purchasedAtSec: start, expiresAtSec: start + 30 * DAY });
+    expect((await buy(player, "apple", DEMO_PASS_MONTHLY, passRef)).body.progress.firstClassPass).toBe(true);
+    const beforeMiles = (await playerRow(player.principal)).miles;
+    const res = await buy(player, "apple", DEMO_MILES_5000, fakeReference({ productId: DEMO_MILES_5000, token: t, purchasedAtSec: uniqueSec() }));
+    expect(res.body).toMatchObject({ status: "granted", storePurchase: { grantedMiles: 5000 }, progress: { firstClassPass: true } });
+    expect((await playerRow(player.principal)).miles).toBe(beforeMiles + 5000);
+    expect((await sql.query(MILES_ROWS, [player.principal])).rows.map((r) => r.delta)).toEqual([5000]);
+  });
+
+  it("ASSUMPTION: bought Miles touch Miles only: Status Points, ranks, counters (miles_earned) and Field Awards are unchanged", async () => {
+    const player = await newPlayer();
+    // Play one Round first so Status Points, Miles and the counters are non-trivial.
+    const issued = await issueRound(server, player.auth);
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    await sql.query("UPDATE rounds SET issued_at = issued_at - ($1::int * interval '1 millisecond') WHERE player_id = $2 AND status = 'open'", [MIN_ROUND_MS * 2, player.principal]);
+    const played = await request(server)
+      .post(`/v1/rounds/${issued.body.round.roundId}/result`)
+      .set(player.auth)
+      .send({ finished: true, errorCount: 0, usedHint: false, timeRemainingFraction: 0.9, ...factsFor("atc-match") });
+    expect(played.status, JSON.stringify(played.body)).toBe(200);
+
+    const snapshot = async () => ({
+      player: (({ status_points, active_rank, perfect_streak, hints }) => ({ status_points, active_rank, perfect_streak, hints }))(await playerRow(player.principal)),
+      counters: (await sql.query("SELECT * FROM player_counters WHERE player_id = $1", [player.principal])).rows,
+      awards: (await sql.query("SELECT award_id FROM player_field_awards WHERE player_id = $1 ORDER BY award_id", [player.principal])).rows,
+      progress: await request(server).get("/v1/me/progress").set(player.auth).then((r) => ({ ...r.body.progress, miles: undefined, version: undefined, evaluatedAt: undefined })),
+    });
+    const before = await snapshot();
+    const milesBefore = (await playerRow(player.principal)).miles;
+    expect(before.player.status_points).toBeGreaterThan(0);
+
+    const res = await buy(player, "apple", DEMO_MILES_25000, fakeReference({ productId: DEMO_MILES_25000, purchasedAtSec: uniqueSec() }));
+    expect(res.body.status).toBe("granted");
+    expect((await playerRow(player.principal)).miles).toBe(milesBefore + 25000);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("Miles near the int4 limit: the grant is a 500, and no transaction row, tombstone, ledger row or balance change is left behind", async () => {
+    const player = await newPlayer();
+    await sql.query("UPDATE players SET miles = 2147483000 WHERE id = $1", [player.principal]);
+    const before = await playerRow(player.principal);
+    const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: uniqueSec() });
+    const res = await buy(player, "apple", DEMO_MILES_5000, ref);
+    expect(res.status).toBe(500);
+    expect(await txCount(ref)).toBe(0);
+    expect(await count("SELECT count(*)::int AS n FROM store_claims WHERE ref = $1", [ref])).toBe(0);
+    expect(await milesRows(player.principal)).toBe(0);
+    const after = await playerRow(player.principal);
+    expect(after.miles).toBe(2147483000);
+    expect(after.version).toBe(before.version);
   });
 });
 

@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { ERROR_CODES } from "../src/common/errors.js";
+import { STORE_PRODUCT_KINDS } from "../src/db/enums.js";
 import { SEED_COMMERCIAL_CARD_KEYS } from "../src/rules/aircraft-tags.js";
 import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
@@ -17,7 +18,9 @@ import { XLSX_MIME } from "../src/content/xlsx.js";
 import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
 import { clientSheet } from "./fixtures.js";
 import { seedAdmins } from "./roles-helpers.js";
-import { DEMO_HINT_5, DEMO_PASS_MONTHLY, seedDemoProducts } from "./store-helpers.js";
+import { DEMO_HINT_5, DEMO_MILES_5000, DEMO_PASS_MONTHLY, seedDemoProducts } from "./store-helpers.js";
+import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
+import { fakeReference } from "../src/purchases/fake-store-verifier.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
@@ -175,6 +178,10 @@ describe("openapi contract parity", () => {
   it("rank and module enums match src/rules", () => {
     expect(spec.components.schemas.Rank.enum).toEqual([...RANKS]);
     expect(spec.components.schemas.ModuleId.enum).toEqual([...MODULE_IDS]);
+  });
+
+  it("store product kinds match src/db/enums", () => {
+    expect([...spec.components.schemas.StoreProductKind.enum].sort()).toEqual([...STORE_PRODUCT_KINDS].sort());
   });
 
   it("every path response and status code is declared (no route lacks a 2xx)", () => {
@@ -448,6 +455,66 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", unknownModule.body);
     rejects("ImportInvalid", { error: invalid.body.error });
     rejects("AdminMe", { principal: "x", staff: false });
+  });
+
+  it("Miles packs: a real purchase response, the product lists and a staff row validate against the spec", async () => {
+    await seedDemoProducts(sql);
+    // The purchase route needs the fake store, which the shared app does not have: a second app with STORE_VERIFIER=fake.
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(APP_CONFIG)
+      .useValue({ ...loadConfig(process.env), storeVerifier: "fake" })
+      .compile();
+    const fakeApp = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
+    configureApp(fakeApp);
+    await fakeApp.listen(0, "127.0.0.1");
+    const buyerUid = `spec-miles-${randomUUID()}`;
+    const buyer = `firebase:demo-airplane-games:${buyerUid}`;
+    const buyerAuth = { Authorization: `Bearer ${emulatorToken(buyerUid)}` };
+    const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
+    try {
+      expect((await request(fakeApp.getHttpServer()).put("/v1/me").set(buyerAuth)).status).toBe(201);
+      const ref = fakeReference({ productId: DEMO_MILES_5000, purchasedAtSec: 1_000_000_000 + Math.floor(Math.random() * 900_000_000) });
+      const bought = await request(fakeApp.getHttpServer())
+        .post("/v1/purchases")
+        .set(buyerAuth)
+        .send({ store: "google", productId: DEMO_MILES_5000, purchaseToken: ref });
+      expect(bought.status).toBe(200);
+      check("StorePurchaseResponse", bought.body);
+      expect(bought.body.storePurchase).toMatchObject({ kind: "miles_pack", grantedMiles: 5000, grantedHints: null, grantedUntil: null });
+      const replay = await request(fakeApp.getHttpServer())
+        .post("/v1/purchases")
+        .set(buyerAuth)
+        .send({ store: "google", productId: DEMO_MILES_5000, purchaseToken: ref });
+      check("StorePurchaseResponse", replay.body);
+      expect(replay.body.replayed).toBe(true);
+      rejects("StorePurchase", { ...bought.body.storePurchase, grantedMiles: 0 });
+      const { grantedMiles: _gm, ...withoutMiles } = bought.body.storePurchase;
+      rejects("StorePurchase", withoutMiles);
+
+      const products = await request(server).get("/v1/store/products").set(buyerAuth);
+      expect(products.status).toBe(200);
+      check("StoreProductList", products.body);
+      // The shared database may hold other tests' Miles packs; the two seeded ones are always there.
+      const seeded = products.body.products.filter((p: { productId: string }) => p.productId.startsWith("aa.miles."));
+      expect(seeded.map((p: { miles: number }) => p.miles)).toEqual([25000, 5000]);
+      const admin = await request(server).get("/v1/admin/store/products").set(staff);
+      expect(admin.status).toBe(200);
+      check("AdminStoreProductList", admin.body);
+      rejects("AdminStoreProduct", { ...admin.body.products[0], miles: 0 });
+      rejects("StoreProduct", { productId: "aa.miles.5000", kind: "miles_pack", miles: 1_000_001 });
+
+      const staffList = await request(server).get(`/v1/admin/store/purchases?player=${encodeURIComponent(buyer)}`).set(staff);
+      expect(staffList.status).toBe(200);
+      check("StaffStorePurchaseList", staffList.body);
+      expect(staffList.body.purchases[0]).toMatchObject({ kind: "miles_pack", grant: { type: "miles", miles: 5000 } });
+      check("StaffStoreGrant", { type: "miles", miles: 5 });
+      rejects("StaffStoreGrant", { type: "miles", miles: 5, hints: 5 });
+      rejects("StaffStoreGrant", { type: "miles", miles: 0 });
+      rejects("StaffStoreGrant", { type: "miles" });
+    } finally {
+      await sql.query("DELETE FROM players WHERE id = $1", [buyer]);
+      await fakeApp.close();
+    }
   });
 
   it("admin routes: staff purchases and entitlements validate against the spec", async () => {

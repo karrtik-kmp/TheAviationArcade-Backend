@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEMO_PRODUCTS } from "../src/store/demo-products.js";
-import { DEMO_HINT_5, DEMO_PASS_MONTHLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
+import { DEMO_HINT_5, DEMO_MILES_5000, DEMO_PASS_MONTHLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
 
 // Migration 0020 (docs/plans/purchases.md, slice P-A): the store tables' CHECKs, keys and cascades against the real test database,
 // written as raw SQL so a drifted constraint fails here whatever the services do. Every row uses unique ids or references.
@@ -46,17 +46,18 @@ const product = (
   kind: string,
   hints: number | null,
   period: string | null,
-  extra: { title?: string; status?: string; version?: number } = {},
+  extra: { title?: string; status?: string; version?: number; miles?: number | null } = {},
 ) =>
   violated(
-    `INSERT INTO store_products (product_id, kind, hints, pass_period, title, demo, status, version)
-     VALUES ($1, $2, $3, $4, $5, false, $6, $7)`,
-    [id, kind, hints, period, extra.title ?? "t", extra.status ?? "active", extra.version ?? 1],
+    `INSERT INTO store_products (product_id, kind, hints, miles, pass_period, title, demo, status, version)
+     VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8)`,
+    [id, kind, hints, extra.miles ?? null, period, extra.title ?? "t", extra.status ?? "active", extra.version ?? 1],
   );
 
 type TxnOverrides = {
   kind?: string;
   hints?: number | null;
+  miles?: number | null;
   until?: string | null;
   original?: string | null;
   store?: string;
@@ -70,30 +71,32 @@ let counter = 0;
 const txn = (over: TxnOverrides = {}) => {
   const kind = over.kind ?? "hint_pack";
   const isPass = kind === "first_class_pass";
+  const isMiles = kind === "miles_pack";
   return violated(
-    `INSERT INTO store_transactions (store, transaction_ref, player_id, product_id, kind, environment, purchased_at, granted_hints, granted_until, original_ref)
-     VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, $9)`,
+    `INSERT INTO store_transactions (store, transaction_ref, player_id, product_id, kind, environment, purchased_at, granted_hints, granted_until, original_ref, granted_miles)
+     VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, $9, $10)`,
     [
       over.store ?? "apple",
       over.ref ?? `${REF}-${++counter}`,
       over.player ?? PLAYER,
-      over.product ?? (isPass ? DEMO_PASS_MONTHLY : DEMO_HINT_5),
+      over.product ?? (isPass ? DEMO_PASS_MONTHLY : isMiles ? DEMO_MILES_5000 : DEMO_HINT_5),
       kind,
       over.env ?? "fake",
-      "hints" in over ? over.hints : isPass ? null : 5,
+      "hints" in over ? over.hints : isPass || isMiles ? null : 5,
       "until" in over ? over.until : isPass ? "2030-01-01T00:00:00Z" : null,
       "original" in over ? over.original : isPass ? "orig-1" : null,
+      "miles" in over ? over.miles : isMiles ? 5000 : null,
     ],
   );
 };
 
-describe("migration 0020: store_products", () => {
-  it("the seed list satisfies every CHECK (four rows, all demo)", async () => {
-    expect(DEMO_PRODUCTS).toHaveLength(4);
+describe("migrations 0020 and 0021: store_products", () => {
+  it("the seed list satisfies every CHECK (six rows, all demo)", async () => {
+    expect(DEMO_PRODUCTS).toHaveLength(6);
     const { rows } = await pool.query("SELECT product_id FROM store_products WHERE demo AND product_id = ANY($1)", [
       DEMO_PRODUCTS.map((p) => p.productId),
     ]);
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(6);
   });
 
   it("enforces the product id pattern", async () => {
@@ -103,7 +106,7 @@ describe("migration 0020: store_products", () => {
   });
 
   it("enforces the kind, period and status lists", async () => {
-    expect(await product(EXTRA, "miles_pack", 5, null)).toBe("store_products_kind_check");
+    expect(await product(EXTRA, "coin_pack", 5, null)).toBe("store_products_kind_check");
     expect(await product(EXTRA, "first_class_pass", null, "P1W")).toBe("store_products_pass_period_check");
     expect(await product(EXTRA, "hint_pack", 5, null, { status: "gone" })).toBe("store_products_status_check");
   });
@@ -120,6 +123,20 @@ describe("migration 0020: store_products", () => {
     expect(await product(EXTRA, "first_class_pass", null, "P1Y")).toBeNull();
   });
 
+  it("enforces the Miles pack rule: miles 1..1,000,000 and neither hints nor a period; no other kind carries miles", async () => {
+    await pool.query("DELETE FROM store_products WHERE product_id = $1", [EXTRA]);
+    expect(await product(EXTRA, "hint_pack", 5, null, { miles: 5 })).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "first_class_pass", null, "P1M", { miles: 5 })).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "miles_pack", null, null)).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "miles_pack", null, null, { miles: 0 })).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "miles_pack", null, null, { miles: 1_000_001 })).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "miles_pack", 5, null, { miles: 5000 })).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "miles_pack", null, "P1M", { miles: 5000 })).toBe("store_products_kind_rule_check");
+    expect(await product(EXTRA, "miles_pack", null, null, { miles: 1_000_000 })).toBeNull();
+    await pool.query("DELETE FROM store_products WHERE product_id = $1", [EXTRA]);
+    expect(await product(EXTRA, "miles_pack", null, null, { miles: 1 })).toBeNull();
+  });
+
   it("enforces title length and version", async () => {
     await pool.query("DELETE FROM store_products WHERE product_id = $1", [EXTRA]);
     expect(await product(EXTRA, "hint_pack", 5, null, { title: "" })).toBe("store_products_title_check");
@@ -128,15 +145,16 @@ describe("migration 0020: store_products", () => {
   });
 });
 
-describe("migration 0020: store_transactions", () => {
-  it("accepts a valid hint pack and a valid Pass row", async () => {
+describe("migrations 0020 and 0021: store_transactions", () => {
+  it("accepts a valid hint pack, a valid Miles pack and a valid Pass row", async () => {
     expect(await txn()).toBeNull();
+    expect(await txn({ kind: "miles_pack" })).toBeNull();
     expect(await txn({ kind: "first_class_pass" })).toBeNull();
   });
 
   it("enforces the store, kind and environment lists", async () => {
     expect(await txn({ store: "amazon" })).toBe("store_transactions_store_check");
-    expect(await txn({ kind: "miles_pack" })).toBe("store_transactions_kind_check");
+    expect(await txn({ kind: "coin_pack" })).toBe("store_transactions_kind_check");
     expect(await txn({ env: "staging" })).toBe("store_transactions_environment_check");
   });
 
@@ -148,6 +166,17 @@ describe("migration 0020: store_transactions", () => {
     expect(await txn({ kind: "first_class_pass", until: null })).toBe("store_transactions_kind_rule_check");
     expect(await txn({ kind: "first_class_pass", original: null })).toBe("store_transactions_kind_rule_check");
     expect(await txn({ hints: 0 })).toBe("store_transactions_granted_hints_check");
+  });
+
+  it("enforces the Miles pack rule: granted_miles > 0, no hints, no expiry, no original_ref; no other kind grants Miles", async () => {
+    expect(await txn({ kind: "miles_pack", miles: null })).toBe("store_transactions_kind_rule_check");
+    expect(await txn({ kind: "miles_pack", until: "2030-01-01T00:00:00Z" })).toBe("store_transactions_kind_rule_check");
+    expect(await txn({ kind: "miles_pack", original: "orig-1" })).toBe("store_transactions_kind_rule_check");
+    expect(await txn({ kind: "miles_pack", hints: 5 })).toBe("store_transactions_kind_rule_check");
+    expect(await txn({ kind: "first_class_pass", miles: 5000 })).toBe("store_transactions_kind_rule_check");
+    expect(await txn({ miles: 5000 })).toBe("store_transactions_kind_rule_check"); // a hint pack grants hints, not Miles
+    expect(await txn({ kind: "miles_pack", miles: 0 })).toBe("store_transactions_granted_miles_check");
+    expect(await txn({ kind: "miles_pack", miles: -1 })).toBe("store_transactions_granted_miles_check");
   });
 
   it("one reference is granted once per store, across players; the same reference in the other store is another transaction", async () => {
@@ -235,6 +264,20 @@ describe("migration 0020: store_claims", () => {
     expect(columns.rows.map((c) => c.column_name)).toEqual(["created_at", "kind", "ref", "store"]);
     const fks = await pool.query("SELECT 1 FROM pg_constraint WHERE conrelid = 'store_claims'::regclass AND contype = 'f'");
     expect(fks.rowCount).toBe(0);
+  });
+});
+
+describe("migration 0021: the Miles ledger kind", () => {
+  it("miles_ledger accepts store_purchase and still refuses an unknown kind", async () => {
+    expect(
+      await violated(
+        "INSERT INTO miles_ledger (player_id, delta, kind, ref, created_at) VALUES ($1, 5000, 'store_purchase', $2, now())",
+        [PLAYER, `apple:${REF}-miles`],
+      ),
+    ).toBeNull();
+    expect(
+      await violated("INSERT INTO miles_ledger (player_id, delta, kind, ref, created_at) VALUES ($1, 5, 'store_refund', $2, now())", [PLAYER, `apple:${REF}-m2`]),
+    ).toBe("miles_ledger_kind_check");
   });
 });
 

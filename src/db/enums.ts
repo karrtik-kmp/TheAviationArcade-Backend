@@ -53,7 +53,7 @@ export const MEDIA_RIGHTS_STATEMENTS = ["v1_own", "v1_authorised", "d1_private_r
 /** The statements a published version may carry (the publishable CHECK). Also the only ones the API accepts. */
 export const MEDIA_PUBLISHABLE_RIGHTS = ["v1_own", "v1_authorised"] as const;
 /** Store catalog and purchases (docs/plans/purchases.md, migration 0020). */
-export const STORE_PRODUCT_KINDS = ["hint_pack", "first_class_pass"] as const;
+export const STORE_PRODUCT_KINDS = ["hint_pack", "first_class_pass", "miles_pack"] as const;
 export const STORE_PRODUCT_STATUSES = ["active", "retired"] as const;
 /** Informational only for a Pass: the store's expiry is authoritative. ISO 8601 durations. */
 export const STORE_PASS_PERIODS = ["P1M", "P1Y"] as const;
