@@ -6,6 +6,8 @@ import {
   CONTENT_DOCUMENT_NAMES,
   CONTENT_SOURCES,
   CONTENT_STATUSES,
+  EDITORIAL_KINDS,
+  EDITORIAL_STATUSES,
   MEDIA_CONTENT_TYPES,
   MEDIA_PUBLISHABLE_RIGHTS,
   MEDIA_RIGHTS_STATEMENTS,
@@ -47,6 +49,8 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "content_items.content_items_status_check": CONTENT_STATUSES,
   "content_items.content_items_source_check": CONTENT_SOURCES,
   "admin_audit.admin_audit_action_check": ADMIN_AUDIT_ACTIONS,
+  "editorial_items.editorial_items_kind_check": EDITORIAL_KINDS,
+  "editorial_items.editorial_items_status_check": EDITORIAL_STATUSES,
   "trips.trips_module_check": MODULE_IDS,
   "trips.trips_rank_check": RANKS,
   "trips.trips_status_check": TRIP_STATUSES,
@@ -77,7 +81,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
 
 /**
  * CHECKs that compare against a single literal but are rules, not enumerations of a TypeScript list (the live-database scan
- * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts, media-schema.e2e.test.ts and store-schema.e2e.test.ts.
+ * cannot tell `state = 'pending'` from a one-value IN list). They are tested by behaviour in roles.e2e.test.ts, media-schema.e2e.test.ts, store-schema.e2e.test.ts and editorial.e2e.test.ts.
  */
 const RULE_CHECKS: ReadonlySet<string> = new Set([
   "account_roles.account_roles_decided_check",
@@ -88,6 +92,8 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "store_products.store_products_kind_rule_check",
   "store_transactions.store_transactions_kind_rule_check",
   "media_imports.media_imports_source_system_check",
+  "editorial_items.editorial_items_identifier_rule_check",
+  "editorial_items.editorial_items_potd_rule_check",
 ]);
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

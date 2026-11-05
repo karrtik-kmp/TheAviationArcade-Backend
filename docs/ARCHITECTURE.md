@@ -97,7 +97,7 @@ DO NOTHING, the one write that cannot lock first), deletion (`erase`) and the UG
 or inserts into the mirror queue tables or the ledgers (the checker is multiline-aware and unit-tested on seeded violations).
 No write overwrites another. The database also enforces one open Round per player (unique partial index).
 
-Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health and the guest media read `GET /v1/public/media`). Production config refuses
+Auth is global (`APP_GUARD`); a route is public only with `@Public()` (health, the guest media read `GET /v1/public/media` and the Plane of the Day read `GET /v1/public/plane-of-the-day`). Production config refuses
 emulator tokens and demo projects, and never reads `.env`.
 
 ## File storage: Bunny (decided 2026-10-27, user)
@@ -225,14 +225,28 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
     refusing → 503 `storage_unavailable` (Retry-After only when transient).
   - Military is the only importer for now; other modules need their own mapping.
 - **Export.** `.xlsx` with `Id, Version, Level, Correct Answer, Wrong Answer 1-3, file, Photographer, Status`, retired
-  rows included (`Status` is informational and ignored on import); editing it and re-importing is the edit path (no
-  in-place edit endpoints yet).
+  rows included (`Status` is informational and ignored on import); editing it and re-importing is one edit path; staff
+  also edit, retire and restore in place (`PATCH .../items/:id`, `.../retire`, `.../restore`, `PUT .../items/:id/media`; TASKS 5.M).
 - **Callers.** The website reaches this API server-to-server through its Worker; browsers never call it, so there is
   no CORS configuration (none is added).
 - **Not built (follow-ups).** Releases and versioned packages, player content delivery, server answer checks,
-  edit-in-place endpoints, importers for the other seven modules, Field
+  importers for the other seven modules, Field
   Awards (the backend owns the catalog, thresholds and progress since C12, 2026-10-28; built after the Trips contract),
   website integration.
+
+## Editorial desks and Plane of the Day (W1, API 0.23.0, built 2026-11-05)
+
+Plan `docs/plans/website-content.md`. The website's Aircraft Identifier and Plane of the Day desks keep their records in
+`editorial_items` (kind `identifier` or `plane-of-the-day`; status `draft | scheduled | published | archived`), not in
+`content_items`: the sheet importer retires rows a client file doesn't list, and the desks need drafts. Plane of the Day is
+the concept's Daily Experience, **not a Module** (`MODULE_IDS` stays 8). Desk question fields are editorial only and never
+dealt: dealable `identifier` questions come only from the client sheet (5.Q I3); a source-scan test keeps dealer, manifest
+and release code away from `editorial_items`. Staff routes `GET/POST/PUT /v1/admin/editorial/{kind}/items` (admin, base-version
+CAS, one audit row per change). Every item links one backend media item; publishing needs that media `published`, not
+demo-owned, with a licence credit. A published photo counts as allowed for every use (user ruling WC-1, 2026-11-05: no
+per-use usage offers). The public `GET /v1/public/plane-of-the-day?timeZone=` (no token) returns due features newest first;
+the server computes the viewer's day from an IANA zone (offset zones refused, never past the UTC+14 date); the public credit
+is the media version's frozen licence credit. Several features per date are allowed.
 
 ## Purchases (design for the purchases slice)
 

@@ -258,6 +258,8 @@ describe("codes and audit actions", () => {
       "store_product_edit",
       "store_product_retire",
       "store_product_restore",
+      "editorial_create",
+      "editorial_save",
     ]);
   });
 });

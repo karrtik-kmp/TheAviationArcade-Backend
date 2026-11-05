@@ -23,6 +23,8 @@ import type {
   ContentDocumentName,
   ContentSource,
   ContentStatus,
+  EditorialKind,
+  EditorialStatus,
   MediaContentType,
   MediaRightsStatement,
   MediaState,
@@ -543,7 +545,51 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save')`,
+    ),
+  ],
+);
+
+/**
+ * Staff editorial desks (docs/plans/website-content.md W1, migration 0022): the Aircraft Identifier desk and Plane of the Day.
+ * One table, `kind` tells them apart. NOT dealable content: `data` holds only what staff typed (the Identifier desk's answer and
+ * distractors are editorial and never reach the dealer, the manifest or a release). `media_id` is fixed at create and must be a
+ * published photo; the public read re-checks the media every time. `date_key` is the Plane of the Day date (a plain calendar
+ * date, no zone); several items may share one date, so there is no unique index on it. Timestamps come from the database clock.
+ * Rendered `ed-<id>` in the API.
+ */
+export const editorialItems = pgTable(
+  "editorial_items",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    kind: text("kind").$type<EditorialKind>().notNull(),
+    mediaId: bigint("media_id", { mode: "number" })
+      .notNull()
+      .references(() => mediaItems.id),
+    status: text("status").$type<EditorialStatus>().notNull(),
+    dateKey: date("date_key", { mode: "string" }),
+    data: jsonb("data").notNull(),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    createdBy: text("created_by").notNull(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  (t) => [
+    index("editorial_items_kind_date").on(t.kind, t.dateKey.desc()).where(sql`${t.status} IN ('scheduled', 'published')`),
+    index("editorial_items_kind_updated").on(t.kind, t.updatedAt.desc()),
+    index("editorial_items_media_id").on(t.mediaId),
+    check("editorial_items_kind_check", sql`${t.kind} IN ('identifier', 'plane-of-the-day')`),
+    check("editorial_items_status_check", sql`${t.status} IN ('draft', 'scheduled', 'published', 'archived')`),
+    check("editorial_items_version_check", sql`${t.version} >= 1`),
+    check("editorial_items_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check("editorial_items_updated_by_check", sql`length(${t.updatedBy}) BETWEEN 1 AND 256`),
+    // Rules, not enumerations (see RULE_CHECKS in test/schema-parity.ts): an Identifier item has no date and is never scheduled;
+    // a scheduled or published Plane of the Day item has a date.
+    check("editorial_items_identifier_rule_check", sql`${t.kind} <> 'identifier' OR (${t.dateKey} IS NULL AND ${t.status} <> 'scheduled')`),
+    check(
+      "editorial_items_potd_rule_check",
+      sql`${t.kind} <> 'plane-of-the-day' OR (${t.status} <> 'scheduled' AND ${t.status} <> 'published') OR ${t.dateKey} IS NOT NULL`,
     ),
   ],
 );
@@ -1050,6 +1096,7 @@ export type PlayerCountersRow = typeof playerCounters.$inferSelect;
 export type ClipperCardRow = typeof playerClipperCards.$inferSelect;
 export type FieldAwardRow = typeof playerFieldAwards.$inferSelect;
 export type ContentItemRow = typeof contentItems.$inferSelect;
+export type EditorialItemRow = typeof editorialItems.$inferSelect;
 export type ContentDocumentRow = typeof contentDocuments.$inferSelect;
 export type ContentImportRow = typeof contentImports.$inferSelect;
 export type StoreProductRow = typeof storeProducts.$inferSelect;

@@ -84,6 +84,10 @@ each image only when the caller is allowed to see it.**
    24-hour link is still not a public image URL: it is issued per request and expires.
 9. **Plane of the Day** is the next slice built on this pipeline: a dated schedule of published images and text.
 
+   _Amended 2026-11-05 (Backend W1, API 0.23.0):_ a Plane of the Day entry does not publish its image; it links a media
+   item that is already `published` (decision 4 applies to the media publish itself). It is served by a second guest
+   route, `GET /v1/public/plane-of-the-day`, with the same signed `ImageRef` and public rate tier as decision 8.
+
 ## Options Considered
 
 ### Option A: Token-protected pull zone on the shared zone, links signed by the backend (chosen)
@@ -178,6 +182,6 @@ lifetime; key rotation is the emergency override.
    the Edge Rules (block outside `/backend/content/photos/`; edge cache 1 year; browser cache 24 h); set the env vars;
    run `npm run bunny:check`; then curl-test that an unsigned URL is 403, a signed one is 200, and
    `/<other prefix>/x` is 403 even when signed.
-5. [ ] Plane of the Day slice on top of this pipeline.
+5. [x] Plane of the Day slice on top of this pipeline (2026-11-05, W1, API 0.23.0).
 6. [ ] Tell the website and Unity sessions about the contract: image link + sha256 + licence fields on Trip open and
    Round issue; links expire after 24 h; the app may cache by sha256.

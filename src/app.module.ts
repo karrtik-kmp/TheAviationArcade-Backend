@@ -9,6 +9,7 @@ import { ApiExceptionFilter } from "./common/api-exception.filter.js";
 import { APP_CONFIG, ConfigModule } from "./config/config.module.js";
 import type { AppConfig } from "./config/config.module.js";
 import { ContentModule } from "./content/content.module.js";
+import { EditorialModule } from "./content/editorial/editorial.module.js";
 import { MediaModule } from "./content/media/media.module.js";
 import { DatabaseModule } from "./database/database.module.js";
 import { HealthModule } from "./health/health.module.js";
@@ -48,6 +49,7 @@ import { UgsModule } from "./ugs/ugs.module.js";
     AdminModule,
     ContentModule,
     MediaModule,
+    EditorialModule,
     UgsModule,
     HealthModule,
   ],

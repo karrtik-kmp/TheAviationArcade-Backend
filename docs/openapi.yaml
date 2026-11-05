@@ -1,10 +1,31 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.22.1
+  version: 0.23.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.23.0 (staff editorial desks and the public Plane of the Day read, wave W1; docs/plans/website-content.md).** Built:
+    `GET` and `POST /v1/admin/editorial/{kind}/items` and `PUT /v1/admin/editorial/{kind}/items/{id}` (admin only; `kind` is `identifier`
+    for the Aircraft Identifier desk or `plane-of-the-day`), and `GET /v1/public/plane-of-the-day` (anonymous, rate limited per IP like
+    `GET /v1/public/media`). New schemas `EditorialKind`, `EditorialStatus`, `EditorialData`, `EditorialItem`, `EditorialItemList`,
+    `EditorialCreateRequest`, `EditorialCreated`, `EditorialSaveRequest`, `EditorialChange`, `EditorialInvalid`, `PublicFeature`,
+    `PlaneOfTheDay`. A desk item links one PUBLISHED photo (`mediaId`, fixed at create) and holds only what staff typed in `data`;
+    nothing is generated or prefilled, and the desk's `correctAnswer`, `distractors` and `difficulty` are editorial: they are never
+    dealt, never in the content manifest and never in a release. `difficulty` is `""` or the item's Rank (a backend rank id such as
+    `captain`; the website maps display names). There is no `imageUrl`: the image is always the linked photo's published version,
+    so a sent `imageUrl` is 400. **Ruling WC-1, no per-use usage offers:** a photo that is published (rights stated, licence set), not
+    owned by the shared demo account and whose licence credit is set counts as allowed for every use, Plane of the Day included.
+    **The one public credit is `image.licence.credit`**, the credit frozen on the published media version; the staff-typed
+    `data.credit` is never public. **The day rule:** the server takes an IANA `timeZone` (default `UTC`), reads the DATABASE clock once
+    and computes the viewer's calendar day itself (a client clock is never trusted); offset zones (`+2359`, `+23:59`, `+14`, `-05`)
+    are 400 even though some runtimes accept them, and the day is never later than the date in `Etc/GMT-14` (UTC+14), so a UTC+14
+    viewer sees the next UTC date's feature from 10:00 UTC and never the one after. Several Plane of the Day items may share one date;
+    the read returns every due feature (scheduled or published, dated on or before the viewer's day), newest date first, at most 100.
+    A withdrawn photo drops out at once; a newly published version of the photo is followed, not pinned. **The website caches the
+    read on its server**: the public tier limits per IP and its server is one IP for every guest, so it refreshes ahead of the image
+    `expiresAt` and never calls per visitor. Additive: no existing shape changed.
 
     **Changelog 0.22.1 (Apple and Google verifiers, wave P2-P3; descriptions only, no shape change).** The server now verifies real
     App Store and Google Play purchases when configured (`STORE_VERIFIER=stores`); until a store is configured its purchases answer 503
@@ -234,6 +255,8 @@ tags:
     description: The content manifest and the versioned data documents it points to.
   - name: media
     description: Images with their licence, rights statement and description; upload, edit and publish for staff; batch reads of published images (signed-in and guest).
+  - name: editorial
+    description: Staff editorial desks (Aircraft Identifier, Plane of the Day) and the public Plane of the Day read.
 
 paths:
   /v1/health:
@@ -3426,6 +3449,176 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/public/plane-of-the-day:
+    get:
+      tags: [editorial]
+      operationId: getPublicPlaneOfTheDay
+      summary: Read today's Plane of the Day features, anonymously
+      description: |
+        For guests on the public website. No token is needed and an `Authorization` header, valid or not, is ignored. It is not
+        version gated. Returns every Plane of the Day item that is `scheduled` or `published`, dated on or before the viewer's day,
+        whose photo is published, not owned by the shared demo account and has a licence credit, newest date first (then most
+        recently updated, then newest id), at most 100. Several items may share a date. A photo that is withdrawn disappears at once;
+        a newly published version of a photo is followed. Always `Cache-Control: no-store`.
+
+        **The viewer's day.** `timeZone` is an IANA name (default `UTC`): 1 to 64 characters of letters, digits, `_`, `/` and `-`,
+        starting with a letter. Offset zones (`+2359`, `+23:59`, `+14`, `-05`) are 400. The server reads the database clock once and
+        derives `day` from it; the day is never later than the date in `Etc/GMT-14`, so the worst case is the next UTC date's feature
+        from 10:00 UTC (a viewer in `Pacific/Kiritimati`), never earlier and never the day after.
+
+        **Public fields only.** Never returned: the staff-typed credit, answers, distractors, difficulty, source, status, version,
+        the photo's owner, description or rights. **The one public credit is `image.licence.credit`.** There is no by-id route: find
+        the id in `features` and use `image.url`.
+
+        Rate limit: the per-IP public tier (`RATE_LIMIT_PUBLIC_PER_MIN`), 429 with `Retry-After`. The website calls this from its
+        server, so every guest shares that one budget: cache the answer on the server, refresh ahead of the earliest image
+        `expiresAt`, and keep serving the cached answer when this route answers 429.
+      security: []
+      parameters:
+        - name: timeZone
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 64, default: UTC, example: Europe/London }
+      responses:
+        "200":
+          description: The viewer's day and the features due on or before it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlaneOfTheDay" }
+        "400":
+          description: An unknown or repeated query key, or a `timeZone` that is not an IANA zone name (an offset such as `+23:59` included).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [invalid_request]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/editorial/{kind}/items:
+    get:
+      tags: [editorial]
+      operationId: listEditorialItems
+      summary: List a desk's items
+      description: |
+        Admin only. The desk's items, most recently updated first, at most 200 (no paging yet). No query parameters. An unknown
+        `kind` is 404.
+      parameters:
+        - $ref: "#/components/parameters/EditorialKind"
+      responses:
+        "200":
+          description: Items.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EditorialItemList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    post:
+      tags: [editorial]
+      operationId: createEditorialItem
+      summary: Create a draft from a published photo
+      description: |
+        Admin only. Creates a `draft` at version 1 for `mediaId`, which is fixed for the item's life. The photo must exist, be
+        published and not be owned by the shared demo account, else 422 `content_invalid` with every reason in `errors`. `data`
+        absent stores the blank shape; nothing is prefilled from the photo. One transaction (the photo row is read `FOR SHARE`) and
+        one `editorial_create` audit row. The request is strict: an unknown key, including `imageUrl`, is 400.
+      parameters:
+        - $ref: "#/components/parameters/EditorialKind"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EditorialCreateRequest" }
+      responses:
+        "201":
+          description: The new draft.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EditorialCreated" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "422": { $ref: "#/components/responses/EditorialInvalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/editorial/{kind}/items/{id}:
+    put:
+      tags: [editorial]
+      operationId: saveEditorialItem
+      summary: Save an item (status, data, date)
+      description: |
+        Admin only. Replaces the whole editable state: `status`, `data` (every field) and `dateKey`. Optimistic: `version` must equal
+        the item's stored version, else 409 `version_conflict` and nothing changes. An id that does not exist, or belongs to the
+        other kind, is 404. The item is locked `FOR UPDATE` first; the photo is read `FOR SHARE`, so a withdraw racing a publish is
+        serialised and the one that commits second sees the other.
+
+        `draft` and `archived` need only a well-formed `data` (strings of at most 2400 code points, CRLF turned into LF, no control
+        character other than a line feed, text trimmed on store, exactly 3 distractors, `instagram` empty or a handle or an https
+        link, `difficulty` empty or a Rank). `scheduled` and `published` also need: a title of at least 3 characters, an https
+        `factualSource` and, for `identifier`, a correct answer and three distractors that are all different (ignoring case and
+        spacing) and a `difficulty` Rank, and, for `plane-of-the-day`, a description of at least 15 characters and a `dateKey`; and
+        the linked photo must be published, not demo-owned, with a licence credit on its published version. `identifier` items have
+        no `dateKey` and are never `scheduled`. Every problem found is returned at once in `errors` (422 `content_invalid`).
+        Any status may move to any other. Several `plane-of-the-day` items may share a date. A `scheduled` or `published` save is
+        re-validated even when nothing changed, so it is 422 if the photo has since been withdrawn or lost its credit; move the item
+        to `draft` or `archived` instead.
+
+        A save that changes nothing (same status, `dateKey` and trimmed data) is 200 `changed: false`: no version bump and no audit
+        row. Otherwise the version goes up by one and one `editorial_save` audit row records the changed field names (never the
+        text). `dateKey` absent means null. Ruling WC-1: there are no usage offers; "published photo with a credit" is the photo
+        rule.
+      parameters:
+        - $ref: "#/components/parameters/EditorialKind"
+        - $ref: "#/components/parameters/EditorialItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EditorialSaveRequest" }
+      responses:
+        "200":
+          description: "The item as it is now. `changed: false` means nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EditorialChange" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: "`version_conflict`: `version` is not the item's stored version (someone else changed it). Nothing was written; reload and decide again."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "422": { $ref: "#/components/responses/EditorialInvalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
 components:
   securitySchemes:
     firebaseBearer:
@@ -3459,6 +3652,20 @@ components:
       required: true
       description: A content item id, e.g. `mil-a5`. An id the module does not store is 404 `not_found`.
       schema: { type: string, minLength: 1, maxLength: 64 }
+
+    EditorialKind:
+      name: kind
+      in: path
+      required: true
+      description: The desk. Any other value is 404 `not_found`.
+      schema: { $ref: "#/components/schemas/EditorialKind" }
+
+    EditorialItemId:
+      name: id
+      in: path
+      required: true
+      description: An editorial item id, `ed-<n>`. A malformed id, an unknown id, or an id of the other kind is 404 `not_found`.
+      schema: { type: string, pattern: "^ed-[1-9][0-9]{0,14}$" }
 
     ContentDocumentNamePath:
       name: name
@@ -3719,6 +3926,17 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    EditorialInvalid:
+      description: |
+        `content_invalid`: the item or the photo breaks a rule. `errors` lists EVERY reason found (never just the first), in plain
+        English for display to staff; `error.message` repeats them. Nothing was changed.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [content_invalid]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/EditorialInvalid" }
     UnknownRoute:
       description: Any path or method not in this document. Not attached to a route.
       headers:
@@ -5727,3 +5945,138 @@ components:
           description: The image to link; null removes the link.
           oneOf: [{ $ref: "#/components/schemas/MediaId" }, { type: "null" }]
         expectedVersion: { type: integer, minimum: 1, description: The content item `version` the caller read. }
+    EditorialKind:
+      type: string
+      description: "`identifier` is the Aircraft Identifier desk; `plane-of-the-day` is the Daily Experience feature. Plane of the Day is not a Module."
+      enum: [identifier, plane-of-the-day]
+    EditorialStatus:
+      type: string
+      enum: [draft, scheduled, published, archived]
+    EditorialData:
+      type: object
+      additionalProperties: false
+      description: |
+        What staff typed. Every key is required (a save replaces the whole object). Each string is at most 2400 code points, CRLF
+        becomes LF, no control character other than a line feed, and it is trimmed on store. Nothing is generated or prefilled, and
+        there is no `imageUrl`: the image is the linked photo's published version. Lengths are measured after the CRLF change and
+        trim, and going over is 422, not 400. The whole request body is at most 16 KB (413), so not every field can be at its cap at once.
+      required: [title, aircraft, photographer, instagram, credit, description, correctAnswer, distractors, difficulty, factualSource]
+      properties:
+        title: { type: string, maxLength: 2400 }
+        aircraft: { type: string, maxLength: 2400 }
+        photographer: { type: string, maxLength: 2400 }
+        instagram:
+          type: string
+          maxLength: 2400
+          description: "Empty (none), a handle (`@name`: 1 to 30 letters, digits, `.` or `_`, the `@` optional) or an `https://` link."
+        credit:
+          type: string
+          maxLength: 2400
+          description: Staff-typed credit. NEVER public; the public credit is the photo's `licence.credit`.
+        description: { type: string, maxLength: 2400 }
+        correctAnswer: { type: string, maxLength: 2400, description: Editorial only; never dealt. }
+        distractors:
+          type: array
+          description: Exactly 3 texts once saved (any other count is 422 `content_invalid`; more than 20 is 400). Editorial only; never dealt.
+          maxItems: 20
+          items: { type: string, maxLength: 2400 }
+        difficulty:
+          type: string
+          description: "Empty or the item's Rank, a backend rank id (`trainee`, `first-officer`, `captain`, `check-airman`, `chief-pilot`). The website maps display names."
+          maxLength: 2400
+        factualSource: { type: string, maxLength: 2400, description: Must start with `https://` before the item can be scheduled or published. }
+    EditorialItem:
+      type: object
+      additionalProperties: false
+      required: [id, kind, mediaId, status, dateKey, version, data, createdAt, updatedAt]
+      properties:
+        id: { type: string, pattern: "^ed-[1-9][0-9]{0,14}$" }
+        kind: { $ref: "#/components/schemas/EditorialKind" }
+        mediaId: { $ref: "#/components/schemas/MediaId" }
+        status: { $ref: "#/components/schemas/EditorialStatus" }
+        dateKey:
+          type: [string, "null"]
+          pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          description: The Plane of the Day date (a calendar date, no zone). Always null for `identifier`.
+        version: { type: integer, minimum: 1 }
+        data: { $ref: "#/components/schemas/EditorialData" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    EditorialItemList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/EditorialItem" }
+    EditorialCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [mediaId]
+      properties:
+        mediaId: { $ref: "#/components/schemas/MediaId" }
+        data: { $ref: "#/components/schemas/EditorialData" }
+    EditorialCreated:
+      type: object
+      additionalProperties: false
+      required: [item]
+      properties:
+        item: { $ref: "#/components/schemas/EditorialItem" }
+    EditorialSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [version, status, data]
+      properties:
+        version: { type: integer, minimum: 1, maximum: 2147483647, description: The item `version` the caller read. }
+        status: { $ref: "#/components/schemas/EditorialStatus" }
+        data: { $ref: "#/components/schemas/EditorialData" }
+        dateKey:
+          type: [string, "null"]
+          pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          description: A real calendar date (2026-02-29 is 422), or null or absent for none. Must be null for `identifier`.
+    EditorialChange:
+      type: object
+      additionalProperties: false
+      required: [changed, item]
+      properties:
+        changed: { type: boolean, description: "False when nothing was written (no version bump, no audit row)." }
+        item: { $ref: "#/components/schemas/EditorialItem" }
+    EditorialInvalid:
+      type: object
+      additionalProperties: false
+      required: [error, errors]
+      properties:
+        error: { $ref: "#/components/schemas/Error/properties/error" }
+        errors:
+          type: array
+          minItems: 1
+          description: Every reason, in plain English.
+          items: { type: string }
+    PublicFeature:
+      type: object
+      additionalProperties: false
+      description: |
+        One Plane of the Day feature as a guest sees it. Only these fields exist: no staff-typed credit (the one public credit is
+        `image.licence.credit`), answer, distractor, difficulty, source, status, version, owner or rights.
+      required: [id, date, title, aircraft, photographer, instagram, description, image]
+      properties:
+        id: { type: string, pattern: "^ed-[1-9][0-9]{0,14}$" }
+        date: { type: string, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        title: { type: string }
+        aircraft: { type: string }
+        photographer: { type: string }
+        instagram: { type: string, description: "Empty, a handle or an https link." }
+        description: { type: string }
+        image: { $ref: "#/components/schemas/ImageRef" }
+    PlaneOfTheDay:
+      type: object
+      additionalProperties: false
+      required: [day, features]
+      properties:
+        day: { type: string, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", description: "The viewer's calendar day, computed by the server." }
+        features:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/PublicFeature" }

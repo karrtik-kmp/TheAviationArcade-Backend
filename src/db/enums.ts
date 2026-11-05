@@ -34,6 +34,8 @@ export const ADMIN_AUDIT_ACTIONS = [
   "store_product_edit",
   "store_product_retire",
   "store_product_restore",
+  "editorial_create",
+  "editorial_save",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
@@ -63,6 +65,10 @@ export const STORE_ENVIRONMENTS = ["production", "sandbox", "fake"] as const;
 export const STORE_CLAIM_KINDS = ["transaction", "subscription"] as const;
 export const STORE_SUBSCRIPTION_STATUSES = ["active", "grace", "billing_retry", "on_hold", "expired", "revoked"] as const;
 
+/** Editorial desks (docs/plans/website-content.md W1, migration 0022). Own literals: Plane of the Day is not a Module, so this is never derived from MODULE_IDS. */
+export const EDITORIAL_KINDS = ["identifier", "plane-of-the-day"] as const;
+export const EDITORIAL_STATUSES = ["draft", "scheduled", "published", "archived"] as const;
+
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
@@ -84,4 +90,6 @@ export type StorePassPeriod = (typeof STORE_PASS_PERIODS)[number];
 export type StoreName = (typeof STORES)[number];
 export type StoreEnvironment = (typeof STORE_ENVIRONMENTS)[number];
 export type StoreClaimKind = (typeof STORE_CLAIM_KINDS)[number];
+export type EditorialKind = (typeof EDITORIAL_KINDS)[number];
+export type EditorialStatus = (typeof EDITORIAL_STATUSES)[number];
 export type StoreSubscriptionStatus = (typeof STORE_SUBSCRIPTION_STATUSES)[number];

@@ -155,6 +155,13 @@
       "when": 1793853186122,
       "tag": "0021_store_miles_packs",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793874683188,
+      "tag": "0022_editorial_items",
+      "breakpoints": true
     }
   ]
 }
