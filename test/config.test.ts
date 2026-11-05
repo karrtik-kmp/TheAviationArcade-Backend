@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config/config.module.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportPKCS8, generateKeyPair } from "jose";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { importStoreKeys, isInsideAnyRoot, loadConfig } from "../src/config/config.module.js";
 
 const local = {
   APP_ENV: "local",
@@ -383,5 +387,259 @@ describe("loadConfig", () => {
       expect(message({ ...local, BLOB_STORE: "memory", BUNNY_STORAGE_PASSWORD: "pw" })).toContain("BUNNY_STORAGE_PASSWORD");
       expect(loadConfig({ ...local, BLOB_STORE: "memory", BUNNY_STORAGE_PASSWORD: "" }).bunny).toBeUndefined();
     });
+  });
+});
+
+describe("STORE_VERIFIER=stores", () => {
+  const realLocal = { ...local, FIREBASE_PROJECT_ID: "airplane-games-auth-20261022", ALLOW_EMULATOR_TOKENS: undefined };
+  const dir = mkdtempSync(join(tmpdir(), "store-config-"));
+  let ecPem = "";
+  let rsaPem = "";
+  const SECRET_MARKER = "SUPER-SECRET-KEY-BYTES-0123456789";
+  const appleBase = {
+    APPLE_BUNDLE_ID: "com.example.aviationarcade",
+    APPLE_IAP_KEY_ID: "ABCDE12345",
+    APPLE_IAP_ISSUER_ID: "69a6de70-03db-47e3-e053-5b8c7c11a4d1",
+    APPLE_APP_APPLE_ID: "1234567890",
+  };
+  let apple: Record<string, string> = {};
+  let google: Record<string, string> = {};
+  let googleJson: Record<string, string> = {};
+  const stores = (extra: Record<string, string | undefined>) => ({ ...realLocal, STORE_VERIFIER: "stores", ...extra });
+  const escaped = (pem: string) => pem.trim().replaceAll("\n", "\\n");
+
+  beforeAll(async () => {
+    const ec = await generateKeyPair("ES256", { extractable: true });
+    ecPem = await exportPKCS8(ec.privateKey);
+    const rsa = await generateKeyPair("RS256", { extractable: true, modulusLength: 2048 });
+    rsaPem = await exportPKCS8(rsa.privateKey);
+    apple = { ...appleBase, APPLE_IAP_KEY: escaped(ecPem) };
+    googleJson = {
+      type: "service_account",
+      client_email: "play@example-project.iam.gserviceaccount.com",
+      private_key_id: "0123456789abcdef0123456789abcdef01234567",
+      private_key: rsaPem,
+    };
+    google = { GOOGLE_PLAY_PACKAGE_NAME: "com.example.aviationarcade", GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: JSON.stringify(googleJson) };
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const file = (name: string, content: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, content);
+    return path;
+  };
+  const googleWith = (extra: Record<string, string | undefined>) => stores({ GOOGLE_PLAY_PACKAGE_NAME: google.GOOGLE_PLAY_PACKAGE_NAME, ...extra });
+
+  it("exposes parsed Apple and Google settings for the adapters (inline PEM with backslash-n escapes)", () => {
+    const config = loadConfig(stores({ ...apple, ...google }));
+    expect(config.storeVerifier).toBe("stores");
+    expect(config.apple).toEqual({
+      bundleId: "com.example.aviationarcade",
+      keyId: "ABCDE12345",
+      issuerId: appleBase.APPLE_IAP_ISSUER_ID,
+      appAppleId: 1_234_567_890,
+      privateKeyPem: ecPem.trim(),
+    });
+    expect(config.google).toEqual({
+      packageName: "com.example.aviationarcade",
+      clientEmail: googleJson.client_email,
+      privateKeyId: googleJson.private_key_id,
+      privateKeyPem: rsaPem,
+    });
+  });
+
+  it("one store alone is enough; the other side stays undefined", () => {
+    expect(loadConfig(stores(apple))).toMatchObject({ google: undefined });
+    expect(loadConfig(stores(google))).toMatchObject({ apple: undefined });
+  });
+
+  it("reads key files from outside the working directory", () => {
+    const config = loadConfig(
+      stores({
+        ...appleBase,
+        APPLE_IAP_KEY_FILE: file("AuthKey_ABCDE12345.p8", ecPem),
+        GOOGLE_PLAY_PACKAGE_NAME: google.GOOGLE_PLAY_PACKAGE_NAME,
+        GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: file("sa.json", JSON.stringify(googleJson)),
+      }),
+    );
+    expect(config.apple?.privateKeyPem.trim()).toBe(ecPem.trim());
+    expect(config.google?.clientEmail).toBe(googleJson.client_email);
+  });
+
+  it("refuses to start with stores and no store configured", () => {
+    expect(message(stores({}))).toContain("STORE_VERIFIER=stores");
+  });
+
+  it("stray APPLE_* and GOOGLE_PLAY_* settings with another STORE_VERIFIER are refused, naming the settings", () => {
+    for (const kind of [undefined, "none", "fake"]) {
+      const msg = message({ ...local, STORE_VERIFIER: kind, ...apple, ...google });
+      expect(msg).toContain("APPLE_IAP_KEY_ID");
+      expect(msg).toContain("GOOGLE_PLAY_PACKAGE_NAME");
+      expect(msg).toContain("STORE_VERIFIER is not stores");
+      expect(msg).not.toContain("BEGIN");
+    }
+  });
+
+  describe("Apple", () => {
+    it("all or none: a missing setting is named", () => {
+      expect(message(stores({ APPLE_BUNDLE_ID: appleBase.APPLE_BUNDLE_ID }))).toMatch(
+        /APPLE_IAP_KEY_ID, APPLE_IAP_ISSUER_ID, APPLE_APP_APPLE_ID, APPLE_IAP_KEY_FILE or APPLE_IAP_KEY required/,
+      );
+      expect(message(stores({ ...apple, APPLE_APP_APPLE_ID: undefined }))).toContain("APPLE_APP_APPLE_ID required");
+      expect(message(stores({ ...apple, APPLE_IAP_KEY: undefined }))).toContain("APPLE_IAP_KEY_FILE or APPLE_IAP_KEY");
+    });
+
+    it("exactly one of the key file and the inline key", () => {
+      expect(message(stores({ ...apple, APPLE_IAP_KEY_FILE: file("both.p8", ecPem) }))).toContain("set exactly one");
+    });
+
+    it("checks every format", () => {
+      expect(message(stores({ ...apple, APPLE_BUNDLE_ID: "nodots" }))).toContain("APPLE_BUNDLE_ID");
+      expect(message(stores({ ...apple, APPLE_IAP_KEY_ID: "abcde12345" }))).toContain("APPLE_IAP_KEY_ID");
+      expect(message(stores({ ...apple, APPLE_IAP_KEY_ID: "ABCDE1234" }))).toContain("APPLE_IAP_KEY_ID");
+      expect(message(stores({ ...apple, APPLE_IAP_ISSUER_ID: "not-a-uuid" }))).toContain("APPLE_IAP_ISSUER_ID");
+      expect(message(stores({ ...apple, APPLE_APP_APPLE_ID: "0" }))).toContain("APPLE_APP_APPLE_ID");
+      expect(message(stores({ ...apple, APPLE_APP_APPLE_ID: "12ab" }))).toContain("APPLE_APP_APPLE_ID");
+    });
+
+    it("a key that is not an EC P-256 PKCS#8 PEM is refused (an RSA key too)", () => {
+      expect(message(stores({ ...apple, APPLE_IAP_KEY: "not a pem" }))).toContain("APPLE_IAP_KEY");
+      expect(message(stores({ ...apple, APPLE_IAP_KEY: escaped(rsaPem) }))).toContain("APPLE_IAP_KEY");
+    });
+
+    it("a corrupt key file is refused by setting name and none of its bytes appear in the error", () => {
+      const path = file("corrupt.p8", `-----BEGIN PRIVATE KEY-----\n${SECRET_MARKER}\n-----END PRIVATE KEY-----\n`);
+      const msg = message(stores({ ...appleBase, APPLE_IAP_KEY_FILE: path }));
+      expect(msg).toBe("Invalid environment configuration: APPLE_IAP_KEY_FILE");
+      expect(msg).not.toContain(SECRET_MARKER);
+      expect(msg).not.toContain(dir);
+    });
+
+    it("an unreadable key file path names the setting only", () => {
+      expect(message(stores({ ...appleBase, APPLE_IAP_KEY_FILE: join(dir, "missing.p8") }))).toBe("Invalid environment configuration: APPLE_IAP_KEY_FILE");
+    });
+
+    it("a key path inside the repo working directory is refused", () => {
+      const inside = join(process.cwd(), ".tmp-store-key-test.p8");
+      writeFileSync(inside, ecPem);
+      try {
+        expect(message(stores({ ...appleBase, APPLE_IAP_KEY_FILE: inside }))).toContain("must point outside the working directory");
+        expect(message(stores({ ...appleBase, APPLE_IAP_KEY_FILE: ".tmp-store-key-test.p8" }))).toContain("must point outside the working directory");
+      } finally {
+        rmSync(inside, { force: true });
+      }
+    });
+
+    it("a key file named `..key.p8` inside the repo is still inside (only a `..` path segment leaves)", () => {
+      const inside = join(process.cwd(), "..key-store-test.p8");
+      writeFileSync(inside, ecPem);
+      try {
+        expect(message(stores({ ...appleBase, APPLE_IAP_KEY_FILE: inside }))).toContain("must point outside the working directory");
+      } finally {
+        rmSync(inside, { force: true });
+      }
+    });
+
+    it("a key under the repo root is refused even when the working directory is elsewhere", () => {
+      const repo = process.cwd();
+      const inside = join(repo, ".tmp-store-key-cwd.p8");
+      writeFileSync(inside, ecPem);
+      try {
+        process.chdir(dir);
+        expect(message(stores({ ...appleBase, APPLE_IAP_KEY_FILE: inside }))).toContain("must point outside the working directory");
+      } finally {
+        process.chdir(repo);
+        rmSync(inside, { force: true });
+      }
+    });
+
+    it("isInsideAnyRoot: root itself and children are inside; siblings, parents and `..name` files are judged by segment", () => {
+      const root = join(dir, "repo");
+      expect(isInsideAnyRoot(root, [root])).toBe(true);
+      expect(isInsideAnyRoot(join(root, "a", "k.p8"), [root])).toBe(true);
+      expect(isInsideAnyRoot(join(root, "..k.p8"), [root])).toBe(true);
+      expect(isInsideAnyRoot(join(dir, "repo-other", "k.p8"), [root])).toBe(false);
+      expect(isInsideAnyRoot(dir, [root])).toBe(false);
+      expect(isInsideAnyRoot(join(dir, "k.p8"), [root])).toBe(false);
+      expect(isInsideAnyRoot(join(dir, "k.p8"), [root, dir])).toBe(true);
+    });
+  });
+
+  describe("Google", () => {
+    it("all or none: a missing setting is named, and exactly one of file and JSON", () => {
+      expect(message(stores({ GOOGLE_PLAY_PACKAGE_NAME: google.GOOGLE_PLAY_PACKAGE_NAME }))).toContain(
+        "GOOGLE_PLAY_SERVICE_ACCOUNT_FILE or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON required",
+      );
+      expect(message(stores({ GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: google.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }))).toContain("GOOGLE_PLAY_PACKAGE_NAME required");
+      expect(message(stores({ ...google, GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: file("two.json", "{}") }))).toContain("set exactly one");
+    });
+
+    it("checks the package name and the service-account fields", () => {
+      expect(message(stores({ ...google, GOOGLE_PLAY_PACKAGE_NAME: "nodots" }))).toContain("GOOGLE_PLAY_PACKAGE_NAME");
+      expect(message(stores({ ...google, GOOGLE_PLAY_PACKAGE_NAME: "1bad.package" }))).toContain("GOOGLE_PLAY_PACKAGE_NAME");
+      const bad = (patch: Record<string, unknown>) =>
+        message(googleWith({ GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: JSON.stringify({ ...googleJson, ...patch }) }));
+      expect(bad({ type: "authorized_user" })).toBe("Invalid environment configuration: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+      expect(bad({ client_email: undefined })).toContain("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+      expect(bad({ private_key_id: "" })).toContain("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+      expect(bad({ private_key: undefined })).toContain("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+      expect(bad({ private_key: ecPem })).toContain("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"); // an EC key is not RS256
+    });
+
+    it("bad JSON and a corrupt key never put their bytes in the error", () => {
+      const withText = (text: string) => message(googleWith({ GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: text }));
+      const badJson = withText(`{"private_key": "${SECRET_MARKER}`);
+      expect(badJson).toBe("Invalid environment configuration: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+      expect(badJson).not.toContain(SECRET_MARKER);
+      const badKey = withText(JSON.stringify({ ...googleJson, private_key: `-----BEGIN PRIVATE KEY-----\n${SECRET_MARKER}\n-----END PRIVATE KEY-----\n` }));
+      expect(badKey).toBe("Invalid environment configuration: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+      expect(badKey).not.toContain(SECRET_MARKER);
+      const badFile = message(googleWith({ GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: file("corrupt.json", `{ not json ${SECRET_MARKER}`) }));
+      expect(badFile).toBe("Invalid environment configuration: GOOGLE_PLAY_SERVICE_ACCOUNT_FILE");
+      expect(badFile).not.toContain(SECRET_MARKER);
+    });
+
+    it("a key path inside the repo working directory is refused", () => {
+      const inside = join(process.cwd(), ".tmp-store-sa-test.json");
+      writeFileSync(inside, JSON.stringify(googleJson));
+      try {
+        expect(message(googleWith({ GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: inside }))).toContain("must point outside the working directory");
+      } finally {
+        rmSync(inside, { force: true });
+      }
+    });
+  });
+
+  it("stores with a demo- project is refused unless APP_ENV=test", () => {
+    const demo = { ...local, STORE_VERIFIER: "stores", ...apple };
+    expect(message(demo)).toContain("demo- FIREBASE_PROJECT_ID");
+    expect(loadConfig({ ...demo, APP_ENV: "test" }).apple?.keyId).toBe("ABCDE12345");
+  });
+
+  describe("production", () => {
+    const prod = (extra: Record<string, string | undefined>) => ({ ...production, STORE_VERIFIER: "stores", ...extra });
+
+    it("needs STORE_ENABLED, and it must match exactly the configured stores", () => {
+      expect(message(prod({ ...apple, ...google }))).toContain("STORE_ENABLED required");
+      expect(message(prod({ ...apple, ...google, STORE_ENABLED: "apple" }))).toContain("STORE_ENABLED does not match");
+      expect(message(prod({ ...apple, STORE_ENABLED: "apple,google" }))).toContain("STORE_ENABLED does not match");
+      expect(message(prod({ ...apple, STORE_ENABLED: "apple,banana" }))).toContain("STORE_ENABLED");
+      expect(loadConfig(prod({ ...apple, ...google, STORE_ENABLED: "google, apple" })).google).toBeDefined();
+      expect(loadConfig(prod({ ...apple, STORE_ENABLED: "apple" })).apple).toBeDefined();
+    });
+  });
+
+  it("importStoreKeys imports both keys with jose, and a key it cannot import names the setting only", async () => {
+    const config = loadConfig(stores({ ...apple, ...google }));
+    await expect(importStoreKeys(config)).resolves.toBeUndefined();
+    const broken = {
+      apple: { ...config.apple!, privateKeyPem: `-----BEGIN PRIVATE KEY-----\n${SECRET_MARKER}\n-----END PRIVATE KEY-----` },
+      google: undefined,
+    };
+    const error = (await importStoreKeys(broken).catch((e: unknown) => e)) as Error;
+    expect(error.message).toBe("Invalid environment configuration: APPLE_IAP_KEY_FILE or APPLE_IAP_KEY");
+    expect(error.message).not.toContain(SECRET_MARKER);
+    expect(error.cause).toBeUndefined();
   });
 });

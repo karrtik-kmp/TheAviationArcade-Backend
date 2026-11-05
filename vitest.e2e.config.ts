@@ -9,6 +9,10 @@ try {
 
 // Tests never reach real UGS: the UGS suites set their own fake values, so nothing real from .env may stay.
 for (const name of Object.keys(process.env)) if (name.startsWith("UGS_")) delete process.env[name];
+// Nor the real stores: a developer's .env may hold Apple and Google keys (docs/plans/purchases.md, wave P2-P3).
+for (const name of Object.keys(process.env)) if (name.startsWith("APPLE_") || name.startsWith("GOOGLE_PLAY_")) delete process.env[name];
+delete process.env.STORE_VERIFIER;
+delete process.env.STORE_ENABLED;
 // Tests never reach real Bunny either: a developer's .env may hold the live storage password and CDN key (plan T10). Tests
 // use the in-memory store and set any CDN values they need themselves. TRUST_PROXY is dropped so rate-limit tests key on
 // the socket address as they expect.

@@ -1,10 +1,20 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.22.0
+  version: 0.22.1
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.22.1 (Apple and Google verifiers, wave P2-P3; descriptions only, no shape change).** The server now verifies real
+    App Store and Google Play purchases when configured (`STORE_VERIFIER=stores`); until a store is configured its purchases answer 503
+    `store_unavailable`. A 422 is returned only when the store itself says the purchase is bad; anything that may be a server-side
+    problem (credentials, settings, network, an unexpected answer) is 503 and the app keeps the purchase pending. A store answer that
+    does not match the catalog kind (a subscription id listed as a pack, or the reverse) is 200 `pending`. A one-time purchase with
+    a quantity other than 1, a completed purchase with no `purchaseCompletionTime` or `latestSuccessfulOrderId`, and an Apple
+    non-consumable or non-renewing type are 503 `store_unavailable` (the app keeps the purchase pending and retries). Sandbox and test purchases grant, including in production, and are recorded with `environment: sandbox`.
+    A Google purchase is acknowledged by the server after the grant (retried in the background on failure); the app still finishes
+    it (consume or acknowledge).
 
     **Changelog 0.22.0 (Miles packs, wave P-E; docs/plans/purchases.md; user ruling U11).** Miles packs are sold as store products: this reverses the earlier
     "No Miles are sold". `StoreProductKind` gains `miles_pack` (the enum is closed for the game, hence the minor bump). `StoreProduct` carries `miles` (1 to 1,000,000)
@@ -1206,8 +1216,8 @@ paths:
         | Answer | Client action |
         |---|---|
         | 200 `status: granted` (new, or `replayed: true`) | finish the store transaction (consume consumables) |
-        | 200 `status: pending` (valid store purchase, product not in the catalog or not sellable here; nothing written) | keep pending, resend later |
-        | 503 `store_unavailable` + `Retry-After` (store transient, or no verifier configured; nothing written) | keep pending, resend |
+        | 200 `status: pending` (valid store purchase, product not in the catalog or not sellable here, or the store answer does not match the catalog kind; nothing written) | keep pending, resend later |
+        | 503 `store_unavailable` + `Retry-After` (store transient, store not configured, or a possible server-side problem, including a one-time purchase with a quantity other than 1, a missing `purchaseCompletionTime` or `latestSuccessfulOrderId`, or an Apple non-consumable or non-renewing type; nothing written) | keep pending, resend |
         | 500 (server fault; the whole grant rolled back, nothing written) | keep pending, resend |
         | 409 `purchase_owned_by_other` | finish (it belongs to another account) |
         | 422 `purchase_invalid` (the store says invalid), `purchase_revoked` | finish; nothing granted |

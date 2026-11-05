@@ -11,6 +11,7 @@ import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
 import type { AppConfig } from "../src/config/config.module.js";
 import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { FakeStoreVerifier, fakeReference } from "../src/purchases/fake-store-verifier.js";
+import { PurchasesService } from "../src/purchases/purchases.service.js";
 import { STORE_VERIFIER } from "../src/purchases/store-verifier.js";
 import type { StoreVerifier } from "../src/purchases/store-verifier.js";
 import { DEMO_HINT_15, DEMO_HINT_5, DEMO_MILES_25000, DEMO_MILES_5000, DEMO_PASS_MONTHLY, DEMO_PASS_YEARLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
@@ -732,6 +733,135 @@ describe("POST /v1/purchases: what the store says", () => {
     expect(res.body.status).toBe("granted");
     expect(await txCount(ref)).toBe(1);
   });
+
+  it("a transient acknowledge is retried in the background (bounded) while the answer stays 200", async () => {
+    const real = new FakeStoreVerifier();
+    let calls = 0;
+    const flaky: StoreVerifier = {
+      verify: (ref) => real.verify(ref),
+      acknowledge: async () => (++calls < 3 ? { kind: "transient" } : { kind: "ok" }),
+    };
+    const app = await buildApp({ storeVerifier: "fake" }, flaky);
+    extraApps.push(app);
+    const service = app.get(PurchasesService);
+    service.acknowledgeRetryDelaysMs = [5, 5, 5];
+    const player = await newPlayer({ on: app.getHttpServer() });
+    const ref = fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() });
+    const res = await buy(player, "google", DEMO_HINT_5, ref, app.getHttpServer());
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("granted");
+    for (let i = 0; i < 100 && (calls < 3 || service.pendingAcknowledgeRetries > 0); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toBe(3); // inline + two background retries, then it stops
+    expect(service.pendingAcknowledgeRetries).toBe(0);
+  });
+
+  it("background acknowledge retries stop at the bound and on shutdown", async () => {
+    const real = new FakeStoreVerifier();
+    let calls = 0;
+    const down: StoreVerifier = {
+      verify: (ref) => real.verify(ref),
+      acknowledge: async () => {
+        calls++;
+        return { kind: "transient" };
+      },
+    };
+    const app = await buildApp({ storeVerifier: "fake" }, down);
+    extraApps.push(app);
+    const service = app.get(PurchasesService);
+    service.acknowledgeRetryDelaysMs = [5, 5];
+    const player = await newPlayer({ on: app.getHttpServer() });
+    await buy(player, "google", DEMO_HINT_5, fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() }), app.getHttpServer());
+    for (let i = 0; i < 100 && (calls < 3 || service.pendingAcknowledgeRetries > 0); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toBe(3); // inline + the two configured retries, no more
+    expect(service.pendingAcknowledgeRetries).toBe(0);
+
+    service.acknowledgeRetryDelaysMs = [60_000];
+    await buy(player, "google", DEMO_HINT_5, fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() }), app.getHttpServer());
+    expect(service.pendingAcknowledgeRetries).toBe(1);
+    service.onModuleDestroy();
+    expect(service.pendingAcknowledgeRetries).toBe(0);
+  });
+
+  it("a replay while a background acknowledge chain is pending does not start a second chain", async () => {
+    const real = new FakeStoreVerifier();
+    let calls = 0;
+    const down: StoreVerifier = {
+      verify: (ref) => real.verify(ref),
+      acknowledge: async () => {
+        calls++;
+        return { kind: "transient" };
+      },
+    };
+    const app = await buildApp({ storeVerifier: "fake" }, down);
+    extraApps.push(app);
+    const service = app.get(PurchasesService);
+    service.acknowledgeRetryDelaysMs = [60_000];
+    const player = await newPlayer({ on: app.getHttpServer() });
+    const ref = fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() });
+    const first = await buy(player, "google", DEMO_HINT_5, ref, app.getHttpServer());
+    expect(first.body.status).toBe("granted");
+    expect(service.pendingAcknowledgeRetries).toBe(1);
+    const replay = await buy(player, "google", DEMO_HINT_5, ref, app.getHttpServer());
+    expect(replay.status).toBe(200);
+    expect(calls).toBe(2); // each request still tries once inline
+    expect(service.pendingAcknowledgeRetries).toBe(1); // but no second chain
+    service.onModuleDestroy();
+    expect(service.pendingAcknowledgeRetries).toBe(0);
+  });
+
+  it("shutdown while a background acknowledge is in flight schedules no new timer afterwards", async () => {
+    const real = new FakeStoreVerifier();
+    let calls = 0;
+    let retryStarted = false;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slow: StoreVerifier = {
+      verify: (ref) => real.verify(ref),
+      acknowledge: async () => {
+        calls++;
+        if (calls === 1) return { kind: "transient" };
+        retryStarted = true;
+        await gate;
+        return { kind: "transient" };
+      },
+    };
+    const app = await buildApp({ storeVerifier: "fake" }, slow);
+    extraApps.push(app);
+    const service = app.get(PurchasesService);
+    service.acknowledgeRetryDelaysMs = [5, 5];
+    const player = await newPlayer({ on: app.getHttpServer() });
+    await buy(player, "google", DEMO_HINT_5, fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() }), app.getHttpServer());
+    for (let i = 0; i < 100 && !retryStarted; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(retryStarted).toBe(true);
+    service.onModuleDestroy();
+    release();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(service.pendingAcknowledgeRetries).toBe(0);
+    expect(calls).toBe(2); // no third attempt was scheduled
+  });
+
+  it("a Google purchase the store already reports acknowledged is not acknowledged again", async () => {
+    const real = new FakeStoreVerifier();
+    let calls = 0;
+    const acked: StoreVerifier = {
+      verify: async (ref) => {
+        const result = await real.verify(ref);
+        return result.kind === "valid" ? { kind: "valid", transaction: { ...result.transaction, acknowledged: true } } : result;
+      },
+      acknowledge: async () => {
+        calls++;
+        return { kind: "ok" };
+      },
+    };
+    const app = await buildApp({ storeVerifier: "fake" }, acked);
+    extraApps.push(app);
+    const player = await newPlayer({ on: app.getHttpServer() });
+    const res = await buy(player, "google", DEMO_HINT_5, fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() }), app.getHttpServer());
+    expect(res.body.status).toBe("granted");
+    expect(calls).toBe(0);
+  });
 });
 
 describe("POST /v1/purchases: the catalog decides", () => {
@@ -908,5 +1038,54 @@ describe("POST /v1/purchases: no store configured", () => {
 
     const stranger = await newPlayer({ create: false, on });
     expect((await buy(stranger, "apple", DEMO_HINT_5, ref, on)).status).toBe(404);
+  });
+});
+
+describe("POST /v1/purchases: STORE_VERIFIER=stores", () => {
+  it("with neither store configured, an Apple and a Google reference are both 503 store_unavailable and nothing is written", async () => {
+    const stores = await buildApp({ storeVerifier: "stores" });
+    extraApps.push(stores);
+    const on = stores.getHttpServer();
+    const player = await newPlayer({ on });
+    const before = await progress(player);
+    for (const store of ["apple", "google"] as const) {
+      const ref = fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() });
+      const res = await buy(player, store, DEMO_HINT_5, ref, on);
+      expect(res.status, store).toBe(503);
+      expect(res.body.error.code).toBe("store_unavailable");
+      expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
+      expect(await txCount(ref)).toBe(0);
+    }
+    expect(await progress(player)).toMatchObject({ hints: before.hints, version: before.version });
+  });
+});
+
+describe("POST /v1/purchases: the product is read before any store call", () => {
+  it("an unknown product is pending without calling the verifier, for both stores, and the context carries the catalog kind", async () => {
+    const real = new FakeStoreVerifier();
+    const seen: Array<{ store: string; kind: string }> = [];
+    const spy: StoreVerifier = {
+      verify: (ref, context) => {
+        seen.push({ store: ref.store, kind: context.kind });
+        return real.verify(ref);
+      },
+      acknowledge: (transaction) => real.acknowledge(transaction),
+    };
+    const watched = await buildApp({ storeVerifier: "fake" }, spy);
+    extraApps.push(watched);
+    const on = watched.getHttpServer();
+    const player = await newPlayer({ on });
+    const before = await progress(player);
+    const unknown = `test.unknown.${randomUUID().replaceAll("-", "")}`;
+    for (const store of ["apple", "google"] as const) {
+      const res = await buy(player, store, unknown, fakeReference({ productId: unknown, purchasedAtSec: uniqueSec() }), on);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status: "pending", storePurchase: null, progress: { hints: before.hints, version: before.version } });
+    }
+    expect(seen).toEqual([]);
+
+    const known = await buy(player, "google", DEMO_HINT_5, fakeReference({ productId: DEMO_HINT_5, purchasedAtSec: uniqueSec() }), on);
+    expect(known.body.status).toBe("granted");
+    expect(seen).toEqual([{ store: "google", kind: "hint_pack" }]);
   });
 });

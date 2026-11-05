@@ -91,8 +91,21 @@ staff `grant.type: "miles"`; consumable guard (a hint or Miles pack whose verifi
 `pending`); staff fingerprint for every Google consumable. ASSUMPTION tests: no First Class +50% on bought Miles; bought Miles
 never touch Status Points, ranks, Trip counters or Field Awards. P4 refunds (user ruling R5, 2026-11-05): a refunded Miles pack takes back only unspent
 Miles, never below 0. Reviews: senior-lead, backend-expert, game-domain-expert (plan, all "approve with changes"), code-reviewer (diff, "ship after fixes": staff list text, a spec/code kind-enum test, the consumable guard narrowed to the expiry because Apple gives consumables an original id; all fixed).
-Verified: typecheck clean; `npm test` 781; `npm run test:e2e` 37 files / 1032; second `db:generate` no changes; `contracts/` unchanged. Next waves: P2 Apple adapter → P3 Google adapter + acknowledge sweeper → P4 notifications, refunds, grace →
-ads and Pass hint grants → P5 Status Point boosts → final store ids.
+Verified: typecheck clean; `npm test` 781; `npm run test:e2e` 37 files / 1032; second `db:generate` no changes; `contracts/` unchanged. **P2-P3 built 2026-11-05 (API 0.22.1, descriptions only; no migration):** `STORE_VERIFIER=stores` with an
+Apple adapter (`@apple/app-store-server-library` 3.1.0, production then sandbox on 4040010, JWS checked against the committed Apple
+Root CA G3, SHA-256 63343abf…3e9179 cross-checked with support.apple.com/105116; library HTTP through `fetch` with the caller's signal)
+and a Google adapter (plain `fetch`, jose service-account token, single-flight cache, productsv2 / subscriptionsv2 by catalog kind
+with one retry on the other endpoint). `invalid` only when the store says so; every possibly-ours failure is 503. Keys by file or
+inline value, checked at start, never logged; ignore files cover `*.p8` and Google key names. Google acknowledge after commit with a
+bounded, de-duplicated background retry (Unity confirmed its finish also acknowledges subscriptions). Owner guide
+`docs/setup/store-credentials.md`. Reviews: senior-lead, backend-expert, devops-expert (plan), code-reviewer ("ship after fixes",
+all fixed: Apple bundle-id typo no longer 422, contract text, repo-path check, retry de-duplication). Verified: typecheck clean;
+`npm test` 39 files / 911; `npm run test:e2e` 38 files / 1045; `nest build` ok; the named CJS import proven on built output;
+`contracts/` unchanged. **Not proven:** any real Apple or Google call (needs the owner's keys, a device build and a backend the
+device reaches). ASSUMPTIONs to confirm on the first sandbox calls: Google token-level error reasons; `refundableQuantity` absent on
+a refunded purchase. Open user decisions: final product ids (permanent in both stores), Play Cloud project, where the first sandbox
+purchase runs. Next waves: P4 notifications, refunds (R5), grace, acknowledge sweeper → ads and Pass hint grants → P5 Status Point
+boosts → final store ids.
 
 **Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**
 

@@ -20,3 +20,9 @@ npm-debug.log*
 *-adminsdk-*.json
 firebase-token.txt
 .claude/worktrees/
+
+# Store credentials (Apple .p8, Google Play service-account keys): never in the repo
+*.p8
+AuthKey_*
+/secrets/
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json

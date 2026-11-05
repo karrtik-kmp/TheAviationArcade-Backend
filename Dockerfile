@@ -18,6 +18,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# Apple root certificates the verifier trusts (certs/apple/README.md records their hashes).
+COPY certs ./certs
 # The official image ships an unprivileged "node" user.
 USER node
 EXPOSE 3000

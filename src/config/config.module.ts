@@ -1,4 +1,9 @@
+import { createPrivateKey } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Global, Module } from "@nestjs/common";
+import { importPKCS8 } from "jose";
 import { parse as parseConnectionString } from "pg-connection-string";
 import { z } from "zod";
 import { accountPrincipalFor } from "../accounts/account-principal.js";
@@ -42,6 +47,10 @@ export type AppConfig = {
   blobStore: BlobStoreKind;
   /** Store-receipt verifier for purchases (docs/plans/purchases.md). `fake` only outside production and on a test or demo- project. */
   storeVerifier: StoreVerifierKind;
+  /** Present only with STORE_VERIFIER=stores and every APPLE_* setting given. Holds a private key: never log or echo it. */
+  apple: AppleStoreConfig | undefined;
+  /** Present only with STORE_VERIFIER=stores and every GOOGLE_PLAY_* setting given. Holds a private key: never log or echo it. */
+  google: GoogleStoreConfig | undefined;
   /** Present only when blobStore is "bunny". The password is a secret: never log or echo it. */
   bunny: BunnyConfig | undefined;
   /** Present only when both BUNNY_CDN_* settings are given; without it image previews carry `url: null` (reason `cdn_not_configured`). */
@@ -54,6 +63,26 @@ export type AppConfig = {
    * but nothing needs it in logs.
    */
   demoPrincipal?: string | undefined;
+};
+
+export type AppleStoreConfig = {
+  bundleId: string;
+  /** App Store Connect In-App Purchase key id (10 upper-case letters or digits). */
+  keyId: string;
+  issuerId: string;
+  /** Numeric Apple id of the app (App Store Connect); the production verifier needs it in every APP_ENV. */
+  appAppleId: number;
+  /** PKCS#8 PEM of the .p8 key (ES256). A secret. */
+  privateKeyPem: string;
+};
+
+export type GoogleStoreConfig = {
+  packageName: string;
+  /** Service-account email (not a secret; it is logged at start-up). */
+  clientEmail: string;
+  privateKeyId: string;
+  /** PKCS#8 PEM of the service-account key (RS256). A secret. */
+  privateKeyPem: string;
 };
 
 export type UgsConfig = {
@@ -75,7 +104,7 @@ export type RateLimitStoreKind = "postgres" | "memory";
 
 export type BlobStoreKind = "none" | "memory" | "bunny";
 /** Which store-receipt verifier POST /v1/purchases uses. `none` answers 503 store_unavailable; `fake` is the deterministic test double (never in production). */
-export type StoreVerifierKind = "none" | "fake";
+export type StoreVerifierKind = "none" | "fake" | "stores";
 
 export type BunnyConfig = {
   zone: string;
@@ -176,8 +205,19 @@ const envSchema = z.object({
   MIN_CLIENT_BUILD: optionalInt(1, 999_999_999),
   /** Default depends on APP_ENV (memory locally, none in production), so it is applied after parsing. */
   BLOB_STORE: z.enum(["none", "memory", "bunny"]).optional(),
-  /** none (default: purchases answer 503) | fake (deterministic test double; refused in production and unless FIREBASE_PROJECT_ID starts with demo-). */
-  STORE_VERIFIER: z.enum(["none", "fake"]).default("none"),
+  /** none (default: purchases answer 503) | fake (deterministic test double; refused in production and unless FIREBASE_PROJECT_ID starts with demo-) | stores (Apple and/or Google). */
+  STORE_VERIFIER: z.enum(["none", "fake", "stores"]).default("none"),
+  /** Production with stores: the stores that must be live (comma list of apple, google), matching the configured ones. */
+  STORE_ENABLED: optionalText,
+  APPLE_BUNDLE_ID: optionalText,
+  APPLE_IAP_KEY_ID: optionalText,
+  APPLE_IAP_ISSUER_ID: optionalText,
+  APPLE_APP_APPLE_ID: optionalText,
+  APPLE_IAP_KEY_FILE: optionalText,
+  APPLE_IAP_KEY: optionalText,
+  GOOGLE_PLAY_PACKAGE_NAME: optionalText,
+  GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: optionalText,
+  GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: optionalText,
   BUNNY_STORAGE_ZONE: z.string().trim().optional(),
   /** Not trimmed: a password is used byte for byte. Blank (whitespace only) counts as unset. */
   BUNNY_STORAGE_PASSWORD: z.string().optional(),
@@ -274,6 +314,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (STORE_VERIFIER === "fake" && (APP_ENV === "production" || !FIREBASE_PROJECT_ID.startsWith("demo-"))) {
     throw new Error("Invalid environment configuration: STORE_VERIFIER=fake is not allowed in production or with a real FIREBASE_PROJECT_ID");
   }
+  const { apple, google } = parseStoresConfig(parsed.data, APP_ENV, FIREBASE_PROJECT_ID);
   const blobStore: BlobStoreKind = parsed.data.BLOB_STORE ?? (APP_ENV === "production" ? "none" : "memory");
   if (APP_ENV === "production" && blobStore === "memory") {
     throw new Error("Invalid environment configuration: BLOB_STORE=memory is not allowed when APP_ENV=production");
@@ -376,11 +417,220 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     minClientBuild: MIN_CLIENT_BUILD,
     blobStore,
     storeVerifier: STORE_VERIFIER,
+    apple,
+    google,
     bunny,
     cdn,
     ugs,
     demoPrincipal,
   };
+}
+
+const STORE_NAMES = ["apple", "google"] as const;
+const APPLE_KEY_ID = /^[A-Z0-9]{10}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const APPLE_BUNDLE_ID = /^(?=.{3,155}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+const APPLE_APP_APPLE_ID = /^[1-9][0-9]{0,14}$/;
+const ANDROID_PACKAGE = /^(?=.{3,255}$)[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const SERVICE_ACCOUNT_EMAIL = /^[^\s@:/]{1,100}@[A-Za-z0-9.-]{1,200}$/;
+const PRIVATE_KEY_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Name-only error for every store setting problem, so no key content or file content can reach a message. */
+function storeConfigError(detail: string): Error {
+  return new Error(`Invalid environment configuration: ${detail}`);
+}
+
+type StoreEnv = {
+  STORE_VERIFIER: StoreVerifierKind;
+  STORE_ENABLED?: string | undefined;
+  APPLE_BUNDLE_ID?: string | undefined;
+  APPLE_IAP_KEY_ID?: string | undefined;
+  APPLE_IAP_ISSUER_ID?: string | undefined;
+  APPLE_APP_APPLE_ID?: string | undefined;
+  APPLE_IAP_KEY_FILE?: string | undefined;
+  APPLE_IAP_KEY?: string | undefined;
+  GOOGLE_PLAY_PACKAGE_NAME?: string | undefined;
+  GOOGLE_PLAY_SERVICE_ACCOUNT_FILE?: string | undefined;
+  GOOGLE_PLAY_SERVICE_ACCOUNT_JSON?: string | undefined;
+};
+
+const INSIDE_REPO = "must point outside the working directory";
+
+/** True when `real` is a root itself or below it. A file named `..key.p8` inside a root is inside (only `..` or `../` segments leave). */
+export function isInsideAnyRoot(real: string, roots: readonly string[]): boolean {
+  return roots.some((root) => {
+    const rel = relative(root, real);
+    const outside = rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
+    return !outside;
+  });
+}
+
+/** The repo root from this module's location (src/config or dist/config, both two levels below it). */
+function repoRoot(): string {
+  return fileURLToPath(new URL("../../", import.meta.url));
+}
+
+/** A key file must sit outside the repo (both the working directory and the repo root), so a key can never be where git or the Docker context sees it. */
+function readKeyFile(setting: string, path: string): string {
+  let real: string;
+  try {
+    real = realpathSync(resolve(path));
+    if (isInsideAnyRoot(real, [realpathSync(process.cwd()), realpathSync(repoRoot())])) real = "";
+  } catch {
+    throw storeConfigError(setting);
+  }
+  if (real === "") throw storeConfigError(`${setting} ${INSIDE_REPO}`);
+  try {
+    return readFileSync(real, "utf8");
+  } catch {
+    // No cause, no path: a read error names only the setting.
+    throw storeConfigError(setting);
+  }
+}
+
+/** Sync shape check of a PKCS#8 PEM; the async jose import follows in `importStoreKeys`. */
+function checkPem(setting: string, pem: string, type: "ec" | "rsa"): void {
+  let ok = false;
+  try {
+    if (pem.includes("-----BEGIN PRIVATE KEY-----")) {
+      const key = createPrivateKey({ key: pem, format: "pem" });
+      ok = key.asymmetricKeyType === type && (type !== "ec" || key.asymmetricKeyDetails?.namedCurve === "prime256v1");
+    }
+  } catch {
+    ok = false;
+  }
+  if (!ok) throw storeConfigError(setting);
+}
+
+function parseStoresConfig(
+  env: StoreEnv,
+  appEnv: AppEnv,
+  firebaseProjectId: string,
+): { apple: AppleStoreConfig | undefined; google: GoogleStoreConfig | undefined } {
+  const appleNames = ["APPLE_BUNDLE_ID", "APPLE_IAP_KEY_ID", "APPLE_IAP_ISSUER_ID", "APPLE_APP_APPLE_ID", "APPLE_IAP_KEY_FILE", "APPLE_IAP_KEY"] as const;
+  const googleNames = ["GOOGLE_PLAY_PACKAGE_NAME", "GOOGLE_PLAY_SERVICE_ACCOUNT_FILE", "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"] as const;
+  const appleGiven = appleNames.filter((name) => env[name] !== undefined);
+  const googleGiven = googleNames.filter((name) => env[name] !== undefined);
+
+  let enabled: Set<string> | undefined;
+  if (env.STORE_ENABLED !== undefined) {
+    const parts = env.STORE_ENABLED.split(",").map((part) => part.trim());
+    if (!parts.every((part) => (STORE_NAMES as readonly string[]).includes(part))) throw storeConfigError("STORE_ENABLED");
+    enabled = new Set(parts);
+  }
+
+  if (env.STORE_VERIFIER !== "stores") {
+    // Same rule as the Bunny settings: a half-wired store is a mistake worth failing on. Names only.
+    const stray = [...appleGiven, ...googleGiven];
+    if (stray.length > 0) throw storeConfigError(`${stray.join(", ")} set but STORE_VERIFIER is not stores`);
+    return { apple: undefined, google: undefined };
+  }
+  if (appleGiven.length === 0 && googleGiven.length === 0) {
+    throw storeConfigError("STORE_VERIFIER=stores needs the APPLE_* or GOOGLE_PLAY_* settings of at least one store");
+  }
+  // Like the UGS rule: real store settings never run under a demo- project (tests set APP_ENV=test).
+  if (appEnv !== "test" && firebaseProjectId.startsWith("demo-")) {
+    throw storeConfigError("STORE_VERIFIER=stores is not allowed with a demo- FIREBASE_PROJECT_ID");
+  }
+
+  let apple: AppleStoreConfig | undefined;
+  if (appleGiven.length > 0) {
+    const missing = [
+      ...(["APPLE_BUNDLE_ID", "APPLE_IAP_KEY_ID", "APPLE_IAP_ISSUER_ID", "APPLE_APP_APPLE_ID"] as const).filter((name) => env[name] === undefined),
+      ...(env.APPLE_IAP_KEY_FILE === undefined && env.APPLE_IAP_KEY === undefined ? ["APPLE_IAP_KEY_FILE or APPLE_IAP_KEY"] : []),
+    ];
+    if (missing.length > 0) throw storeConfigError(`${missing.join(", ")} required when any APPLE_* setting is given`);
+    if (env.APPLE_IAP_KEY_FILE !== undefined && env.APPLE_IAP_KEY !== undefined) {
+      throw storeConfigError("APPLE_IAP_KEY_FILE, APPLE_IAP_KEY: set exactly one");
+    }
+    const bad = [
+      ...(APPLE_BUNDLE_ID.test(env.APPLE_BUNDLE_ID ?? "") ? [] : ["APPLE_BUNDLE_ID"]),
+      ...(APPLE_KEY_ID.test(env.APPLE_IAP_KEY_ID ?? "") ? [] : ["APPLE_IAP_KEY_ID"]),
+      ...(UUID.test(env.APPLE_IAP_ISSUER_ID ?? "") ? [] : ["APPLE_IAP_ISSUER_ID"]),
+      ...(APPLE_APP_APPLE_ID.test(env.APPLE_APP_APPLE_ID ?? "") ? [] : ["APPLE_APP_APPLE_ID"]),
+    ];
+    if (bad.length > 0) throw storeConfigError(bad.join(", "));
+    const setting = env.APPLE_IAP_KEY_FILE !== undefined ? "APPLE_IAP_KEY_FILE" : "APPLE_IAP_KEY";
+    const pem = env.APPLE_IAP_KEY_FILE !== undefined ? readKeyFile(setting, env.APPLE_IAP_KEY_FILE) : (env.APPLE_IAP_KEY ?? "").replace(/\\n/g, "\n");
+    checkPem(setting, pem, "ec");
+    apple = {
+      bundleId: env.APPLE_BUNDLE_ID ?? "",
+      keyId: env.APPLE_IAP_KEY_ID ?? "",
+      issuerId: env.APPLE_IAP_ISSUER_ID ?? "",
+      appAppleId: Number(env.APPLE_APP_APPLE_ID),
+      privateKeyPem: pem,
+    };
+  }
+
+  let google: GoogleStoreConfig | undefined;
+  if (googleGiven.length > 0) {
+    const missing = [
+      ...(env.GOOGLE_PLAY_PACKAGE_NAME === undefined ? ["GOOGLE_PLAY_PACKAGE_NAME"] : []),
+      ...(env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE === undefined && env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON === undefined
+        ? ["GOOGLE_PLAY_SERVICE_ACCOUNT_FILE or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"]
+        : []),
+    ];
+    if (missing.length > 0) throw storeConfigError(`${missing.join(", ")} required when any GOOGLE_PLAY_* setting is given`);
+    if (env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE !== undefined && env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON !== undefined) {
+      throw storeConfigError("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE, GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: set exactly one");
+    }
+    if (!ANDROID_PACKAGE.test(env.GOOGLE_PLAY_PACKAGE_NAME ?? "")) throw storeConfigError("GOOGLE_PLAY_PACKAGE_NAME");
+    const setting = env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE !== undefined ? "GOOGLE_PLAY_SERVICE_ACCOUNT_FILE" : "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON";
+    const text = env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE !== undefined ? readKeyFile(setting, env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE) : (env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON ?? "");
+    let json: Record<string, unknown> | undefined;
+    try {
+      const value: unknown = JSON.parse(text);
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) json = value as Record<string, unknown>;
+    } catch {
+      // V8 JSON.parse messages quote the input, so nothing of the caught error is carried.
+      json = undefined;
+    }
+    const { type, client_email: clientEmail, private_key_id: privateKeyId, private_key: privateKey } = json ?? {};
+    if (
+      type !== "service_account" ||
+      typeof clientEmail !== "string" ||
+      !SERVICE_ACCOUNT_EMAIL.test(clientEmail) ||
+      typeof privateKeyId !== "string" ||
+      !PRIVATE_KEY_ID.test(privateKeyId) ||
+      typeof privateKey !== "string"
+    ) {
+      throw storeConfigError(setting);
+    }
+    checkPem(setting, privateKey, "rsa");
+    google = { packageName: env.GOOGLE_PLAY_PACKAGE_NAME ?? "", clientEmail, privateKeyId, privateKeyPem: privateKey };
+  }
+
+  // Production: a forgotten store must fail at start, not leave its purchases pending. STORE_ENABLED names the stores that must be live.
+  if (appEnv === "production") {
+    if (enabled === undefined) throw storeConfigError("STORE_ENABLED required when APP_ENV=production and STORE_VERIFIER=stores");
+    const configured = new Set<string>([...(apple ? ["apple"] : []), ...(google ? ["google"] : [])]);
+    if (configured.size !== enabled.size || [...configured].some((name) => !enabled.has(name))) {
+      throw storeConfigError("STORE_ENABLED does not match the configured stores");
+    }
+  }
+  return { apple, google };
+}
+
+/**
+ * Import the configured keys with jose (ES256 for the Apple .p8, RS256 for the Google key), the call the adapters make.
+ * `loadConfig` is synchronous and has already checked shape and key type; this proves the import, at start (ConfigModule factory).
+ * Errors carry the setting name only, never a cause or key content.
+ */
+export async function importStoreKeys(config: Pick<AppConfig, "apple" | "google">): Promise<void> {
+  if (config.apple) {
+    try {
+      await importPKCS8(config.apple.privateKeyPem, "ES256");
+    } catch {
+      throw storeConfigError("APPLE_IAP_KEY_FILE or APPLE_IAP_KEY");
+    }
+  }
+  if (config.google) {
+    try {
+      await importPKCS8(config.google.privateKeyPem, "RS256");
+    } catch {
+      throw storeConfigError("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+    }
+  }
 }
 
 const UGS_REQUIRED = [
@@ -423,7 +673,17 @@ function parseUgsConfig(
 
 @Global()
 @Module({
-  providers: [{ provide: APP_CONFIG, useFactory: (): AppConfig => loadConfig(process.env) }],
+  providers: [
+    {
+      provide: APP_CONFIG,
+      // Async so the store keys are imported (jose) before the app serves anything; a bad key stops the start.
+      useFactory: async (): Promise<AppConfig> => {
+        const config = loadConfig(process.env);
+        await importStoreKeys(config);
+        return config;
+      },
+    },
+  ],
   exports: [APP_CONFIG],
 })
 export class ConfigModule {}

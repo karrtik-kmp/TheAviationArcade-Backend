@@ -80,8 +80,19 @@ describe("FakeStoreVerifier", () => {
         purchasedAt: new Date(1_700_000_000_000),
         expiresAt: null,
         revoked: false,
+        acknowledged: null,
+        storeToken: null,
       },
     });
+  });
+
+  it("a Google reference carries its purchase token as storeToken (what acknowledge uses); Apple carries none", async () => {
+    const ref = fakeReference({ productId: "aa.hints.15", token: TOKEN, purchasedAtSec: 1_700_000_000 });
+    const google = await verifier.verify({ store: "google", productId: "aa.hints.15", purchaseToken: ref });
+    const apple = await verifier.verify({ store: "apple", productId: "aa.hints.15", transactionId: ref });
+    if (google.kind !== "valid" || apple.kind !== "valid") throw new Error("expected valid");
+    expect(google.transaction).toMatchObject({ storeToken: ref, acknowledged: null });
+    expect(apple.transaction).toMatchObject({ storeToken: null, acknowledged: null });
   });
 
   it("references that differ only in their times are renewals of one subscription chain", async () => {

@@ -72,7 +72,10 @@ keys. Players created this way live in your local database only.
 | `UGS_MIRROR_MAX_PER_MIN` | Default 25, 1–33. Cloud Save calls per minute (token bucket, burst ≤ 10), **shared by all instances** through one Postgres row (`ugs_budget`), so run every instance with the same value. UGS allows about 33/min sustained per project and IP. Setting it without the other `UGS_*` variables fails at startup |
 | `UGS_MIRROR_MIN_INTERVAL_SEC` | Default 300, 0–3600; 0 turns the delay off. The least time between two copy writes for one player (C3): Rounds inside the interval coalesce into one write of the latest version. The first write after a link or re-link is not delayed (a Round that was already waiting when the player re-linked becomes due at once), and deletions are never delayed. Optional like `UGS_MIRROR_MAX_PER_MIN`, so it is not one of the five required variables, but setting it without them also fails at startup |
 | `DEMO_ACCOUNT_UID` | Optional. The Firebase uid of the website's shared demo account (a password handed to testers); same uid rules as any principal (1-128 characters, no `:` or `/`, no control characters), otherwise startup fails. The derived principal `firebase:<FIREBASE_PROJECT_ID>:<uid>` can never hold `photographer` or `admin`: the roles guard ignores any such row, and request, approve, admin grant, `roles:grant` and `media:import` refuse it (ADR-0002 follow-up, incident 2026-11-04). Not a secret. Revoke, reject and block still work, so cleanup is possible. Set it wherever the demo account exists |
-| `STORE_VERIFIER` | `none` (default) or `fake`. Who checks store purchases. `none`: `POST /v1/purchases` answers 503 `store_unavailable` (the app keeps the purchase pending). `fake`: the deterministic test store (see "Purchases"); a startup error when `APP_ENV=production`, and outside `APP_ENV=test` unless `FIREBASE_PROJECT_ID` starts with `demo-`. The Apple and Google verifiers come with waves P2/P3 |
+| `STORE_VERIFIER` | `none` (default), `fake` or `stores`. Who checks store purchases. `none`: `POST /v1/purchases` answers 503 `store_unavailable` (the app keeps the purchase pending). `fake`: the deterministic test store (see "Purchases"); a startup error when `APP_ENV=production`, and outside `APP_ENV=test` unless `FIREBASE_PROJECT_ID` starts with `demo-`. `stores`: the real Apple and Google verifiers, for the stores whose settings are given (below); refused with a `demo-` project outside `APP_ENV=test` |
+| `APPLE_BUNDLE_ID`, `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID`, `APPLE_APP_APPLE_ID`, `APPLE_IAP_KEY_FILE` or `APPLE_IAP_KEY` | Apple App Store Server API (all or none; one key form). Only with `STORE_VERIFIER=stores`. Owner steps: [docs/setup/store-credentials.md](docs/setup/store-credentials.md) |
+| `GOOGLE_PLAY_PACKAGE_NAME`, `GOOGLE_PLAY_SERVICE_ACCOUNT_FILE` or `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Google Play Developer API (all or none; one key form). Only with `STORE_VERIFIER=stores` |
+| `STORE_ENABLED` | Production with `stores` only: `apple`, `google` or `apple,google`, matching the configured stores |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
 The server runs locally only for now; hosting is not chosen.
@@ -261,6 +264,12 @@ With `STORE_VERIFIER=fake` (local/test only) the store reference itself decides 
 or from a Unity dev build: `fake~<ok|invalid|transient|revoked>~<productId>~<commerceToken|none>~<purchasedAtSec>[~<expiresAtSec>]`
 as the Apple `transactionId` or the Google `purchaseToken` (Google's `productId` must match). A First Class Pass needs the
 expiry; references that differ only in their times are renewals of one subscription.
+
+With `STORE_VERIFIER=stores` (waves P2-P3) the server asks Apple (`@apple/app-store-server-library`, production then sandbox, signed
+answers checked against `certs/apple/AppleRootCA-G3.cer`) and Google (Play Developer API v3 with a service-account token). A 422 is
+answered only when the store says the purchase is bad; anything that may be ours is 503, so the app keeps the purchase. Key files
+live outside the repo and are never logged. Not yet proven against a real store: the first sandbox purchase needs the owner's keys
+and a device build.
 
 ## Content documents and the manifest (slice T4)
 

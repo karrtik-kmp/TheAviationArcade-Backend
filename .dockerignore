@@ -3,6 +3,10 @@
 **/*service-account*.json
 **/*-adminsdk-*.json
 **/*.pem
+**/*.p8
+**/AuthKey_*
+secrets
+**/*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 
 node_modules
 dist

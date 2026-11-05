@@ -1,0 +1,15 @@
+{
+  "kind": "androidpublisher#productPurchaseV2",
+  "orderId": "GPA.3300-1111-2222-33333",
+  "productLineItem": [
+    {
+      "productId": "miles_pack_small",
+      "productOfferDetails": { "quantity": 1, "refundableQuantity": 1, "consumptionState": "CONSUMPTION_STATE_YET_TO_BE_CONSUMED" }
+    }
+  ],
+  "purchaseStateContext": { "purchaseState": "PURCHASED" },
+  "obfuscatedExternalAccountId": "0123456789abcdef0123456789abcdef",
+  "regionCode": "US",
+  "purchaseCompletionTime": "2026-11-05T10:00:00.123Z",
+  "acknowledgementState": "ACKNOWLEDGEMENT_STATE_PENDING"
+}

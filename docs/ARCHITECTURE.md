@@ -252,7 +252,12 @@ tokens are shown only as a 12-hex fingerprint and the `commerceToken` is never i
 migration 0021, user ruling monetization U11 reversing R1's "No Miles are sold"): kind `miles_pack` (`miles` 1..1,000,000), snapshotted as
 `granted_miles` and posted as Miles ledger kind `store_purchase` (ref `<store>:<transactionRef>`); bought Miles change
 `players.miles` only (never Status Points, ranks, Trip counters or Field Awards) and get no First Class +50% (ASSUMPTION tests).
-A consumable whose verified transaction carries an expiry is a catalog mistake and stays `pending`. The bullets below
+A consumable whose verified transaction carries an expiry is a catalog mistake and stays `pending`. Store verifiers (P2-P3, API 0.22.1): `STORE_VERIFIER=stores`
+dispatches to an Apple adapter (official library 3.1.0, production then sandbox on 4040010, JWS verified against the committed Apple
+Root CA G3, the library HTTP routed through `fetch` with the caller's signal) and a Google adapter (plain `fetch`, jose-signed
+service-account token with a single-flight cache, productsv2 / subscriptionsv2 chosen by catalog kind with one retry on the other
+endpoint). `invalid` only when the store says the purchase is bad; every possibly-ours failure is `transient`. Google purchases are
+acknowledged after commit with a bounded in-process background retry (P4 adds the durable sweeper). The bullets below
 remain the target design.
 
 - Client sends only a store reference (Apple `transactionId`, Google `purchaseToken` + `productId`).

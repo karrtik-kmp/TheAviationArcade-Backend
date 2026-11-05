@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
+import type { OnModuleDestroy } from "@nestjs/common";
 import { eq } from "drizzle-orm";
 import { PlayerBalance } from "../balance/player-balance.js";
 import type { BalanceChange } from "../balance/player-balance.js";
@@ -64,7 +65,7 @@ function retryAfterSeconds(retryAfterMs: number | undefined): number {
  * earlier insert must not stay.
  */
 @Injectable()
-export class PurchasesService {
+export class PurchasesService implements OnModuleDestroy {
   private readonly logger = new Logger("Purchases");
 
   constructor(
@@ -75,15 +76,23 @@ export class PurchasesService {
   ) {}
 
   async submit(principal: string, reference: StoreReference): Promise<PurchaseOutcome> {
-    const [existing] = await this.database.db.select({ id: players.id }).from(players).where(eq(players.id, principal));
+    const [existing] = await this.database.db.select().from(players).where(eq(players.id, principal));
     if (!existing) return { kind: "no_player" };
+
+    // The catalog kind tells the adapter which store endpoint to ask. Read without a lock, outside any transaction; `kind` is
+    // immutable after create, and `grant` re-reads the product inside the transaction. An unknown or unsellable product is
+    // pending before any store call, for both stores (nothing is written, the app keeps it).
+    const catalogProduct = await findProduct(this.database.db, reference.productId);
+    if (!catalogProduct || !isSellable(catalogProduct, this.config.appEnv)) {
+      return { kind: "pending", player: await withLiveStreak(this.database.db, existing) };
+    }
 
     let verified;
     try {
-      verified = await this.verifier.verify(reference, AbortSignal.timeout(VERIFY_TIMEOUT_MS));
+      verified = await this.verifier.verify(reference, { kind: catalogProduct.kind }, AbortSignal.timeout(VERIFY_TIMEOUT_MS));
     } catch (error) {
-      // An adapter that throws is a store we could not ask: transient, nothing written.
-      this.logger.warn(`store verify failed: ${error instanceof Error ? error.message : String(error)}`);
+      // An adapter that throws is a store we could not ask: transient, nothing written. The message is not logged (it can quote input).
+      this.logger.warn(`store verify failed (${error instanceof Error ? error.constructor.name : typeof error}); adapters must return results`);
       return { kind: "unavailable", retryAfterSec: DEFAULT_RETRY_AFTER_SEC };
     }
     if (verified.kind === "transient") return { kind: "unavailable", retryAfterSec: retryAfterSeconds(verified.retryAfterMs) };
@@ -119,7 +128,7 @@ export class PurchasesService {
     const live = await withLiveStreak(this.database.db, player);
     if (decision.kind === "pending") return { kind: "pending", player: live };
 
-    // Google wants the purchase acknowledged; also on a replay, until the notification wave retries failures.
+    // Google wants the purchase acknowledged; also on a replay (skipped when the store already reports it acknowledged).
     if (transaction.store === "google") await this.acknowledge(transaction);
     return { kind: "granted", replayed: decision.replayed, record: decision.record, player: live };
   }
@@ -202,12 +211,70 @@ export class PurchasesService {
     }
   }
 
+  /**
+   * Acknowledge once inline; a transient failure is retried in the background, in process, at `acknowledgeRetryDelaysMs`
+   * (bounded, never after shutdown starts). The answer to the app stays 200: the app's own finish also acknowledges (Unity IAP
+   * `acknowledgePurchase` / `consumeAsync`), and an unfinished purchase is resent as a replay. P4's durable sweeper replaces this.
+   */
   private async acknowledge(transaction: VerifiedTransaction): Promise<void> {
+    if (transaction.acknowledged === true) return;
+    if (await this.tryAcknowledge(transaction)) return;
+    // One retry chain per purchase: a replay while a chain is in flight does not start another.
+    const key = `${transaction.store}:${transaction.storeToken ?? transaction.transactionRef}`;
+    if (this.acknowledgeChains.has(key) || this.shuttingDown) return;
+    this.acknowledgeChains.add(key);
+    this.scheduleAcknowledgeRetry(transaction, 0, key);
+  }
+
+  /** Delays of the background acknowledge retries (about 10 s, 60 s and 5 min). Tests replace it. */
+  acknowledgeRetryDelaysMs: readonly number[] = [10_000, 60_000, 300_000];
+  private readonly acknowledgeTimers = new Set<NodeJS.Timeout>();
+  /** Keys (`store:token`) with a retry chain in flight. */
+  private readonly acknowledgeChains = new Set<string>();
+  private shuttingDown = false;
+
+  onModuleDestroy(): void {
+    this.shuttingDown = true;
+    for (const timer of this.acknowledgeTimers) clearTimeout(timer);
+    this.acknowledgeTimers.clear();
+    this.acknowledgeChains.clear();
+  }
+
+  /** Pending background acknowledge retries (for tests and shutdown). */
+  get pendingAcknowledgeRetries(): number {
+    return this.acknowledgeTimers.size;
+  }
+
+  private scheduleAcknowledgeRetry(transaction: VerifiedTransaction, attempt: number, key: string): void {
+    const delay = this.acknowledgeRetryDelaysMs[attempt];
+    if (delay === undefined || this.shuttingDown) {
+      this.acknowledgeChains.delete(key);
+      if (delay === undefined && !this.shuttingDown) this.logger.error(`acknowledge of ${transaction.store} purchase still failing after ${attempt} background retries; the app's finish or P4 must cover it`);
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.acknowledgeTimers.delete(timer);
+      if (this.shuttingDown) {
+        this.acknowledgeChains.delete(key);
+        return;
+      }
+      void this.tryAcknowledge(transaction).then((ok) => {
+        if (ok) this.acknowledgeChains.delete(key);
+        else this.scheduleAcknowledgeRetry(transaction, attempt + 1, key);
+      });
+    }, delay);
+    timer.unref();
+    this.acknowledgeTimers.add(timer);
+  }
+
+  private async tryAcknowledge(transaction: VerifiedTransaction): Promise<boolean> {
     try {
       const result = await this.verifier.acknowledge(transaction, AbortSignal.timeout(ACKNOWLEDGE_TIMEOUT_MS));
-      if (result.kind !== "ok") this.logger.warn(`acknowledge of ${transaction.store} purchase did not complete (transient)`);
+      if (result.kind === "ok") return true;
+      this.logger.warn(`acknowledge of ${transaction.store} purchase did not complete (transient)`);
     } catch (error) {
-      this.logger.warn(`acknowledge of ${transaction.store} purchase failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`acknowledge of ${transaction.store} purchase failed (${error instanceof Error ? error.constructor.name : typeof error}); adapters must return results`);
     }
+    return false;
   }
 }

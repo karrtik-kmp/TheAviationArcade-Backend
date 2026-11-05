@@ -1,0 +1,1 @@
+{ "error": { "code": 410, "message": "The subscription purchase is no longer available for query because it has been expired for too long.", "errors": [ { "message": "The subscription purchase is no longer available for query because it has been expired for too long.", "domain": "androidpublisher", "reason": "purchaseTokenNoLongerValid" } ] } }

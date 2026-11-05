@@ -476,13 +476,16 @@ records `environment`. No switch. Family Sharing is off for the Pass (D7).
   to the old expiry (documented).
 - `acknowledge` after commit (D3: the backend acknowledges, the client consumes consumables): skip when `acknowledged` is true;
   one-time `purchases.products.acknowledge`, subscription `purchases.subscriptions.acknowledge`, both on `storeToken`.
-- Pass safety without a sweeper: if acknowledging a **not yet acknowledged Google Pass** comes back `transient`, the service
-  answers 503 (the grant is committed; the resend is a replay, which acknowledges again; nothing is granted twice). Consumables
-  stay 200 (the client's consume also acknowledges). Unity is asked to confirm its finish acknowledges subscriptions.
+- Acknowledge safety without a sweeper (revised after Unity's answer, 2026-11-05): the answer stays **200 granted**. Unity IAP
+  5.x confirms after a 200: `consumeAsync` for consumables, `acknowledgePurchase` for subscriptions (Unity pins the product
+  types in M1a), and an unconfirmed purchase comes back at the next store init and is resent (a replay, which acknowledges
+  again). The one gap is a player who never reopens the app within 3 days, so a `transient` acknowledge is retried in the
+  background, in process, a bounded number of times (3 attempts at about 10 s, 60 s and 5 min, never after shutdown starts);
+  P4's durable sweeper replaces it.
 
 ### Contract 0.22.1 (descriptions only)
 
-`POST /v1/purchases`: 503 can follow a committed Google Pass grant whose acknowledge failed (resend is a replay); a hint or Miles
+`POST /v1/purchases`: a hint or Miles
 pack bought in a quantity other than 1 stays pending; sandbox purchases grant and are recorded `sandbox`. `.env` keys documented in
 README, not in the contract.
 
@@ -498,7 +501,7 @@ README, not in the contract.
 - Google: fixtures from the official reference for both shapes and every state; the other-endpoint retry both ways (Pass id
   marked consumable and the reverse → `pending` through the real service); every HTTP status and reason; quantity; missing
   order id or completion time; token cache (two parallel calls → one exchange, a failed exchange retried, a 401 invalidates);
-  acknowledge skip; the Pass 503-after-commit path and its replay; another player sending the same subscription token after a
+  acknowledge skip; the background acknowledge retry (bounded, stops at shutdown); another player sending the same subscription token after a
   renewal → 409.
 - Config: every rule above on both sides, including a corrupt key file whose bytes never appear in the error.
 - e2e: `STORE_VERIFIER=stores` (APP_ENV=test) with neither store set → 503 for both; the composite with a stubbed Google fetch
@@ -528,7 +531,7 @@ production beyond App Review.
 | Lead, slice P2-0 (first) | `src/purchases/store-verifier.ts`, `fake-store-verifier.ts`, `none-store-verifier.ts`, `stores-verifier.ts`, `purchases.module.ts`, `purchases.service.ts`, `src/config/config.module.ts`, `test/config.test.ts`, `vitest.e2e.config.ts`, `.gitignore`, `.dockerignore`, `.env.example`, `Dockerfile` |
 | Implementer A (Apple, after P2-0) | `src/purchases/apple-store-verifier.ts`, `certs/apple/*`, `test/apple-store-verifier.test.ts`, `package.json` + lockfile (`@apple/app-store-server-library` 3.1.0, devDependency jsrsasign, both exact) |
 | Implementer B (Google, after P2-0) | `src/purchases/google-store-verifier.ts`, `test/google-store-verifier.test.ts`, `test/fixtures/google-play/*` |
-| Lead (integration) | the e2e cases, the service's Pass 503-after-commit path, `docs/openapi.yaml` 0.22.1, README, ARCHITECTURE, TASKS, `docs/setup/store-credentials.md`, messages to Unity |
+| Lead (integration) | the e2e cases, the service's background acknowledge retry, `docs/openapi.yaml` 0.22.1, README, ARCHITECTURE, TASKS, `docs/setup/store-credentials.md`, messages to Unity |
 
 Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShell, one full run; `nest build` + start with Apple
 configured from a throwaway test key proves the import.

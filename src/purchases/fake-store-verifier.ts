@@ -75,6 +75,9 @@ export class FakeStoreVerifier implements StoreVerifier {
       purchasedAt: new Date(parsed.purchasedAtSec * 1000),
       expiresAt: parsed.expiresAtSec === null ? null : new Date(parsed.expiresAtSec * 1000),
       revoked: parsed.outcome === "revoked",
+      // Google's verify-time state is unknown to the fake; the token is the reference itself (what Google's acknowledge needs).
+      acknowledged: null,
+      storeToken: reference.store === "google" ? raw : null,
     };
     return { kind: "valid", transaction };
   }
