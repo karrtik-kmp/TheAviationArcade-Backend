@@ -1,10 +1,15 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.21.0
+  version: 0.21.1
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.21.1 (descriptions only; no shape or behaviour change).** Entitlements `productId` is null whenever `firstClassPass` is
+    false, a lapsed Pass included. `StaffStoreSubscription.status` is the store-reported state, not re-judged against the clock: a
+    subscription past `expiresAt` can still read `active` until a store notification (planned) changes it; compare `expiresAt` with
+    `evaluatedAt`.
 
     **Changelog 0.21.0 (staff read of purchases, wave P-D; docs/plans/purchases.md).** Built: `GET /v1/admin/store/purchases` (every verified store transaction, newest first,
     cursor-paged, filterable) and `GET /v1/admin/store/players/{principal}/entitlements` (a player's Pass state and subscriptions). Both are admin only,
@@ -4817,7 +4822,7 @@ components:
         firstClassUntil: { type: [string, "null"], format: date-time }
         productId:
           oneOf: [{ $ref: "#/components/schemas/StoreProductId" }, { type: "null" }]
-          description: The Pass product that sets `firstClassUntil`; null without a Pass.
+          description: The Pass product that sets `firstClassUntil` while `firstClassPass` is true; null whenever `firstClassPass` is false, a lapsed Pass included.
         evaluatedAt: { type: string, format: date-time, description: The database clock at the instant this view was built. }
 
     StaffStoreGrant:
@@ -4882,7 +4887,13 @@ components:
         originalTransactionId: { type: [string, "null"], description: Apple only, as stored. }
         originalFingerprint: { type: [string, "null"], description: Google only. First 12 hex digits of the SHA-256 of the chain's first purchase token. }
         productId: { $ref: "#/components/schemas/StoreProductId" }
-        status: { type: string, enum: [active, grace, billing_retry, on_hold, expired, revoked] }
+        status:
+          type: string
+          enum: [active, grace, billing_retry, on_hold, expired, revoked]
+          description: |
+            The store-reported state, set by a verified purchase and (planned) store notifications; never re-judged against the clock.
+            A subscription past `expiresAt` can still read `active` until the store reports otherwise. Whether it is lapsed is
+            `expiresAt` <= `evaluatedAt`; the Pass itself is `firstClassPass`.
         expiresAt: { type: string, format: date-time }
         lastEventAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
@@ -4897,7 +4908,7 @@ components:
         firstClassUntil: { type: [string, "null"], format: date-time }
         productId:
           oneOf: [{ $ref: "#/components/schemas/StoreProductId" }, { type: "null" }]
-          description: The Pass product that sets `firstClassUntil`; null without a Pass.
+          description: The Pass product that sets `firstClassUntil` while `firstClassPass` is true; null whenever `firstClassPass` is false, a lapsed Pass included.
         evaluatedAt: { type: string, format: date-time }
         hasStoreAccount: { type: boolean, description: Whether the player has ever read their own entitlements (their commerce token exists). }
         subscriptions:
