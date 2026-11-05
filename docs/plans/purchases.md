@@ -233,8 +233,131 @@ a verified email, on both routes; title trimming and control-character refusal.
 
 Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShell (uppercase `H:`), one full run.
 
+## Wave P-E: Miles packs (approved with changes, revised, 2026-11-05)
+
+User ruling U11 (2026-11-04, "both"; confirmed again 2026-11-05, "Yes, sell Miles packs"): Miles packs are store products too.
+This **reverses R1's "No Miles are sold"**; R1's catalog list otherwise stands. Source: `../docs/briefs/commerce.md` update item 1
+and Unity `Contracts/products.v1.json` (kind `miles_pack`, `aa.miles.5000` = 5,000 Miles, `aa.miles.25000` = 25,000 Miles). The
+file wins over the brief's `milesPack` spelling. The ids and amounts are **placeholders** (no client prices, final ids Unity Q4,
+amounts CQ7): both rows are `demo`. Reviews: senior-lead, backend-expert, game-domain-expert, all "approve with changes"; every
+finding is folded in below.
+
+Vocabulary across repos: **Miles pack** = a store product (`miles_pack`) that grants Miles. **Miles hint pack** =
+`/v1/shop/miles-hint-pack`, which spends Miles on hints. Never "Miles pack" for the second.
+
+### Schema: migration `0021_store_miles_packs` (0020 is pushed and immutable)
+
+Generated with `npm run db:generate -- --name store_miles_packs`; a second `db:generate` reports no changes. drizzle-kit emits a
+changed CHECK as DROP + ADD (as in 0009, 0019, 0020); existing rows have NULL in both new columns and pass every new arm.
+
+- `store_products.miles integer` NULL; kind CHECK adds `'miles_pack'`; `store_products_kind_rule_check` becomes three arms:
+  `hint_pack` (hints NOT NULL 1..1000, miles NULL, period NULL), `miles_pack` (miles NOT NULL 1..1,000,000, hints NULL, period
+  NULL), `first_class_pass` (period NOT NULL, hints NULL, miles NULL). Explicit `IS NOT NULL` on every range.
+- `store_transactions.granted_miles integer` NULL, CHECK `store_transactions_granted_miles_check` (`IS NULL OR > 0`); kind CHECK
+  adds `'miles_pack'`; the kind rule gains a `miles_pack` arm (granted_miles NOT NULL, granted_hints NULL, granted_until NULL,
+  original_ref NULL), and the two existing arms add `granted_miles IS NULL`.
+- `miles_ledger_kind_check` adds `'store_purchase'`; `MILES_LEDGER_KINDS` gains it, with a one-line comment per Miles kind giving
+  its direction (`round_award` credit, `hint_pack` debit = the Miles hint pack, `store_purchase` credit).
+- `STORE_PRODUCT_KINDS` gains `miles_pack`. `test/schema-parity.ts` and `test/balance-guard.test.ts` need no edits beyond what
+  the enum arrays drive (both kind CHECKs, both rule CHECKs and the Miles ledger are already mapped; no new writer).
+
+### Grant
+
+- `PurchasesService.grant` and `claimTransaction` switch on `product.kind` exhaustively (`never` default) instead of `isPass`.
+  The Pass pre-check stays ahead of the ownership and claim steps.
+- **Consumable guard (new):** a `hint_pack` or `miles_pack` product whose verified transaction has an `expiresAt` or an
+  `originalRef` is a catalog mistake (a subscription id marked consumable; every renewal would pay again): log an error, return
+  `pending`, write nothing. Mirrors the Pass guard.
+- `claimTransaction`'s `miles_pack` arm snapshots `granted_miles = product.miles` under the lock (throw if `product.miles` is
+  null, like the hints guard). `grant` reads `claim.row.grantedMiles` (one source for fresh and replayed) and posts
+  `{ account: "miles", kind: "store_purchase", ref: "<store>:<transactionRef>", delta }` through `PlayerBalance.update`. Same
+  claim / replay / tombstone / rollback path; no subscription. A replay posts nothing (and the ledger's UNIQUE (player, kind,
+  ref) is a second guard).
+- **A store Miles grant changes `players.miles` only.** It never touches Status Points, Certified or Active Rank, Module ranks,
+  `trip_counters.miles_earned`, any Trip counter or Field Award evaluation (SP is earned only by play:
+  `../docs/points-progression.md:16-19`; SP purchases are P5, blocked on IAP-2/3). ASSUMPTION: bought Miles do not count
+  toward Coast to Coast / Globe Trotter ("lifetime Miles earned"); a client question, below.
+- **No First Class +50% on bought Miles.** The perk applies to "all base earnings and set bonuses"
+  (`../docs/points-progression.md:52`, U12), which lives only in `scoreRound` (`src/rules/scoring.ts:63-67`); a store grant is
+  neither. ASSUMPTION test; a client confirmation, below.
+- The fake verifier needs no change. A Google Miles purchase is a consumable like a hint pack: acknowledged after commit and
+  fingerprinted in the staff view.
+- Overflow: `players.miles` is int4. `PlayerBalance.update` computes `miles + delta` in SQL, so past 2^31-1 Postgres raises
+  22003 (integer out of range) before any CHECK: a 500, the whole transaction rolls back (no transaction row, no tombstone), and
+  the app keeps the purchase pending (a 500 is "keep pending, resend"; the client-action table gains that row). Not fixed here
+  (same for earned Miles); one e2e test proves nothing is written.
+
+### Catalog and seed
+
+- `src/store/store-admin.controller.ts`: the zod PUT body adds `miles: z.number().int().min(1).max(1_000_000).optional()` (out of
+  range is 400, like `hints`); the "Expected { ... }" message lists `miles?`.
+- `src/store/store-catalog.service.ts`: `ListedProduct`, `AdminProduct`, `ProductWrite` gain `miles`; pairing: `miles_pack`
+  needs `miles` and neither `hints` nor `passPeriod`; `hint_pack` and `first_class_pass` refuse `miles` (422 `content_invalid`);
+  written as a switch on kind. `miles` goes into the insert, the create audit detail, the edit diff and the update `.set`.
+  `adminView` returns `miles` (null when absent); `listedView` includes it only when non-null.
+- `DEMO_PRODUCTS` adds `aa.miles.5000` (5,000, title "5,000 Miles") and `aa.miles.25000` (25,000, "25,000 Miles"), `demo: true`,
+  `active`. `seedDemoCatalog` is insert-if-missing, so an existing database gains them at the next `npm run store:seed-demo`.
+  `scripts/store-seed-demo.mjs` comment and `test/store-helpers.ts` seed type follow.
+- `src/store/store-purchases-admin.service.ts`: `grantOf` gains `case "miles_pack": { type: "miles", miles }`; `tokenFingerprint`
+  (line 140, today `kind === "hint_pack"`) becomes an exhaustive `isConsumable(kind)` (hint and Miles packs true, Pass false).
+
+### Contract: API **0.22.0**
+
+- `Changelog 0.22.0` block in `info.description`: Miles packs sold (reverses "No Miles are sold"), the game-facing enum change,
+  `grantedMiles`, staff `grant.type: "miles"`.
+- `StoreProductKind` adds `miles_pack` (closed for the game, hence the minor bump). `miles` (1..1,000,000) on `StoreProduct`
+  (present for `miles_pack` only), `AdminStoreProduct` (`[integer, null]`) and `AdminStoreProductRequest`. `hints` /
+  `passPeriod` descriptions say "absent / null for any other kind"; the request description gives the three-way pairing.
+- `StorePurchase.grantedMiles: [integer, null]`, `minimum: 1`, required; `grantedHints` / `grantedUntil` "null for any other
+  kind".
+- `StaffStoreGrant` `oneOf` adds `{ type: "miles", miles }` (`additionalProperties: false`, `required: [type, miles]`, `miles`
+  integer >= 1); `StaffStorePurchase.kind` and `tokenFingerprint` descriptions name Miles packs.
+- The `POST /v1/purchases` client-action table gains "500: keep pending, resend".
+- `contracts/` unaffected (catalog and dealer only); confirmed with `npm run contracts:write`.
+
+### Tests
+
+- Unit (`test/purchases.test.ts`, `test/store-catalog.test.ts`): three-way pairing; `DEMO_PRODUCTS` carries the two rows with
+  the brief's amounts.
+- e2e `test/purchases.e2e.test.ts`: a fake `aa.miles.5000` purchase grants +5,000 Miles exactly once (Miles ledger kind
+  `store_purchase`, ref `<store>:<ref>`), `storePurchase.grantedMiles` 5000; replay 200 `replayed: true`, no new ledger row, no
+  version bump; another player 409; a deleted owner's receipt 409 (tombstone); a catalog edit of `miles` after the grant leaves
+  `granted_miles`; a fake reference **with an expiry** against `aa.miles.5000` is `pending` with nothing written;
+  ASSUMPTION: a Pass holder gets exactly +5,000 (no +50%); ASSUMPTION: Status Points, ranks, `trip_counters.miles_earned` and
+  Field Awards are unchanged by a Miles purchase; Miles near 2^31 → 500 and no store row, tombstone or ledger row.
+- e2e `test/store-schema.e2e.test.ts`: six demo rows; products refuse miles on a hint pack, miles with a pass period, NULL miles on
+  a miles pack, 0 and 1,000,001; transactions refuse a miles pack with NULL granted_miles, with granted_until, with original_ref,
+  a Pass with granted_miles, granted_miles with granted_hints, `granted_miles` 0 and -1; `miles_ledger` accepts `store_purchase`.
+- e2e `test/store-products.e2e.test.ts`: create and edit a `miles_pack`; every pairing refusal; out-of-range `miles` 400; `kind`
+  stays immutable; game list shows `miles` only on Miles packs.
+- e2e `test/store-purchases-admin.e2e.test.ts`: a Miles row's `grant` is `{ type: "miles", miles: 5000 }` and a Google Miles row
+  has a `tokenFingerprint`.
+- `test/openapi.e2e.test.ts`: a real Miles purchase response, product lists and staff row validate; `rejects("StaffStoreGrant",
+  { type: "miles", miles: 5, hints: 5 })`.
+
+### Open for later (not P-E)
+
+- **Miles-pack refunds** (P4): claw back clamped at 0 like D6, or never? Bought Miles can be turned into hints at once through
+  the Miles hint pack. Needs a user or client ruling before P4; D6 is not copied silently.
+
+### Client questions (sent to the Unity session for `CLIENT_CONTENT_IMPORT.md` "Purchases")
+
+CQ7 mirrored (Miles pack amounts 5,000 / 25,000 are placeholders; prices; Get More placement; note 5,000 equals the Miles hint
+pack's 5,000-Mile price); do bought Miles count toward Coast to Coast / Globe Trotter (backend: no); does the First Class +50%
+apply to bought Miles (backend: no); a refunded Miles pack (clamp at 0, or keep).
+
+### Ownership
+
+| Who | Files |
+|---|---|
+| Implementer | `src/db/schema.ts`, `src/db/enums.ts`, `src/balance/ledger-kinds.ts`, `drizzle/0021_store_miles_packs.sql` + meta (generated), `src/store/` (catalog, demo-products, store-admin.controller, store-catalog.service, store-purchases-admin.service), `src/purchases/purchase-grant.ts`, `src/purchases/purchases.service.ts`, `src/purchases/purchases.controller.ts` (response mapping), `scripts/store-seed-demo.mjs` (comment), `docs/openapi.yaml`, the tests above, `test/store-helpers.ts` |
+| Lead | `npm run contracts:write`, `docs/TASKS.md`, `docs/ARCHITECTURE.md` Purchases (Miles kind; drop the stale "Later `miles_ledger`" bullet), README (kind list, purchases section), then messages: Unity (0.22.0, kind, `grantedMiles`, exact Miles with no multiplier, the vocabulary split, the brief's `milesPack` spelling, the client questions), the website (re-vendor; `miles_pack` in the catalog desk; `grant.type: "miles"`), and the root session (record "Miles are sold" in PROJECT_STATE settled rulings) |
+
+One implementer (the slices share schema and grant code). Verification: `npm run typecheck`, `npm test`, `npm run test:e2e`
+from PowerShell, one full run.
+
 ## Next waves
 
 P-E Miles packs (U11) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
-RTDN, refunds (hint clawback clamped at 0, D6), grace/expiry, Get Notification History → ads + Pass hint grants (brief) →
+RTDN, refunds (hint clawback clamped at 0, D6; Miles-pack refund policy needs a ruling), grace/expiry, Get Notification History → ads + Pass hint grants (brief) →
 P5 SP boosts → final store ids replace the demo rows.
