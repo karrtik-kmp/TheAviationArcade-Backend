@@ -37,6 +37,9 @@ export const ADMIN_AUDIT_ACTIONS = [
   "editorial_create",
   "editorial_save",
   "content_prepare",
+  "release_create",
+  "release_activate",
+  "release_restore",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
@@ -73,6 +76,11 @@ export const EDITORIAL_STATUSES = ["draft", "scheduled", "published", "archived"
 /** Military preparation stages, in order (docs/plans/website-content.md W3, migration 0023; website/lib/military.ts). */
 export const PREP_STAGES = ["missing_photo", "rights_checked", "content_prepared", "previewed", "approved"] as const;
 
+/** Military releases (docs/plans/website-content.md W3 commit 2, migration 0024). v1 records one deal rule and one Flight kind. */
+export const RELEASE_DEAL_RULES = ["nearest-ranks"] as const;
+export const RELEASE_FLIGHT_KINDS = ["choice"] as const;
+export const RELEASE_ACTIVATION_KINDS = ["activate", "restore"] as const;
+
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
@@ -95,6 +103,9 @@ export type StoreName = (typeof STORES)[number];
 export type StoreEnvironment = (typeof STORE_ENVIRONMENTS)[number];
 export type StoreClaimKind = (typeof STORE_CLAIM_KINDS)[number];
 export type PrepStage = (typeof PREP_STAGES)[number];
+export type ReleaseDealRule = (typeof RELEASE_DEAL_RULES)[number];
+export type ReleaseFlightKind = (typeof RELEASE_FLIGHT_KINDS)[number];
+export type ReleaseActivationKind = (typeof RELEASE_ACTIVATION_KINDS)[number];
 export type EditorialKind = (typeof EDITORIAL_KINDS)[number];
 export type EditorialStatus = (typeof EDITORIAL_STATUSES)[number];
 export type StoreSubscriptionStatus = (typeof STORE_SUBSCRIPTION_STATUSES)[number];

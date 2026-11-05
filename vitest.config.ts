@@ -33,7 +33,7 @@ export default defineConfig({
       "test/field-awards-import.test.ts", "test/content-item-edit.test.ts", "test/clock.test.ts",
       "test/image-sniff.test.ts", "test/cdn-signer.test.ts", "test/role-accounts.test.ts",
       "test/typed-email.test.ts", "test/store-catalog.test.ts", "test/purchases.test.ts", "test/stores-verifier.test.ts", "test/apple-store-verifier.test.ts", "test/google-store-verifier.test.ts",
-      "test/editorial-rules.test.ts", "test/local-day.test.ts", "test/military-preparation.test.ts",
+      "test/editorial-rules.test.ts", "test/local-day.test.ts", "test/military-preparation.test.ts", "test/release-rules.test.ts",
     ],
   },
 });

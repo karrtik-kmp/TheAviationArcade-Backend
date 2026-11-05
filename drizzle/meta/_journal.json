@@ -169,6 +169,13 @@
       "when": 1793876135525,
       "tag": "0023_military_preparation",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793878167407,
+      "tag": "0024_military_releases",
+      "breakpoints": true
     }
   ]
 }

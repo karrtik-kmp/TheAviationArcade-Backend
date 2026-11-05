@@ -26,6 +26,9 @@ import type {
   EditorialKind,
   PrepStage,
   EditorialStatus,
+  ReleaseActivationKind,
+  ReleaseDealRule,
+  ReleaseFlightKind,
   MediaContentType,
   MediaRightsStatement,
   MediaState,
@@ -558,8 +561,116 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare', 'release_create', 'release_activate', 'release_restore')`,
     ),
+  ],
+);
+
+/**
+ * Military releases (docs/plans/website-content.md W3 commit 2, migration 0024): RECORDED, NOT DELIVERED. A release freezes the chosen
+ * items (version, rank, Card key, photo version and hash, the question as dealt) exactly as they were when staff uploaded it. Nothing
+ * deals from it and no player route reads it yet. Insert-only (a trigger appended by hand to the migration, as in 0011), written only by
+ * `src/content/releases/release-store.ts`. `basis` is the sorted `<id>:<version>` list of the chosen items. Timestamps come from the
+ * database clock.
+ */
+export const contentReleases = pgTable(
+  "content_releases",
+  {
+    module: text("module").notNull(),
+    version: integer("version").notNull(),
+    basis: text("basis").notNull(),
+    itemCount: integer("item_count").notNull(),
+    dealRule: text("deal_rule").$type<ReleaseDealRule>().notNull(),
+    flightKind: text("flight_kind").$type<ReleaseFlightKind>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    createdBy: text("created_by").notNull(),
+    note: text("note"),
+  },
+  (t) => [
+    primaryKey({ name: "content_releases_pk", columns: [t.module, t.version] }),
+    check("content_releases_module_check", sql`${t.module} IN ${MODULE_LIST}`),
+    check("content_releases_version_check", sql`${t.version} >= 1`),
+    check("content_releases_basis_check", sql`length(${t.basis}) BETWEEN 1 AND 65536`),
+    check("content_releases_item_count_check", sql`${t.itemCount} BETWEEN 1 AND 2000`),
+    check("content_releases_deal_rule_check", sql`${t.dealRule} IN ('nearest-ranks')`),
+    check("content_releases_flight_kind_check", sql`${t.flightKind} IN ('choice')`),
+    check("content_releases_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check("content_releases_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
+  ],
+);
+
+/** One frozen item of a release (insert-only). `position` is the natural id order (the dealers' shuffles are positional). */
+export const contentReleaseItems = pgTable(
+  "content_release_items",
+  {
+    module: text("module").notNull(),
+    releaseVersion: integer("release_version").notNull(),
+    itemId: text("item_id").notNull(),
+    itemVersion: integer("item_version").notNull(),
+    position: integer("position").notNull(),
+    rank: text("rank").notNull(),
+    // The item's Clipper Card key; frozen here when the item has none yet (the item row is never rewritten by an upload).
+    cardKey: text("card_key"),
+    mediaId: bigint("media_id", { mode: "number" }).notNull(),
+    mediaVersion: integer("media_version").notNull(),
+    photoSha256: text("photo_sha256").notNull(),
+    credit: text("credit"),
+    // `{ answer, wrong: [3 strings] }`: the question as it would be dealt.
+    deal: jsonb("deal").notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "content_release_items_pk", columns: [t.module, t.releaseVersion, t.itemId] }),
+    foreignKey({
+      name: "content_release_items_release_fk",
+      columns: [t.module, t.releaseVersion],
+      foreignColumns: [contentReleases.module, contentReleases.version],
+    }),
+    foreignKey({
+      name: "content_release_items_media_fk",
+      columns: [t.mediaId, t.mediaVersion],
+      foreignColumns: [mediaVersions.mediaId, mediaVersions.version],
+    }),
+    uniqueIndex("content_release_items_position").on(t.module, t.releaseVersion, t.position),
+    uniqueIndex("content_release_items_photo").on(t.module, t.releaseVersion, t.photoSha256),
+    check("content_release_items_item_version_check", sql`${t.itemVersion} >= 1`),
+    check("content_release_items_position_check", sql`${t.position} >= 1`),
+    check("content_release_items_rank_check", sql`${t.rank} IN ${RANK_LIST}`),
+    check("content_release_items_media_version_check", sql`${t.mediaVersion} >= 1`),
+    check("content_release_items_sha256_check", sql`${t.photoSha256} ~ '^[0-9a-f]{64}$'`),
+    check("content_release_items_credit_check", sql`${t.credit} IS NULL OR length(${t.credit}) BETWEEN 1 AND 200`),
+  ],
+);
+
+/**
+ * The pointer log (append-only): `activate` makes an uploaded release current, `restore` makes the previous current again. The
+ * pointer is the newest row per module: `{ current: release_version, history, version: sequence }` (no row = nothing current, version 0).
+ * `history` is the stack of earlier currents, oldest first; restore pops it. UNIQUE (module, sequence) is the race backstop.
+ */
+export const contentReleaseActivations = pgTable(
+  "content_release_activations",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    module: text("module").notNull(),
+    sequence: integer("sequence").notNull(),
+    kind: text("kind").$type<ReleaseActivationKind>().notNull(),
+    releaseVersion: integer("release_version").notNull(),
+    history: integer("history").array().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    createdBy: text("created_by").notNull(),
+    note: text("note"),
+  },
+  (t) => [
+    foreignKey({
+      name: "content_release_activations_release_fk",
+      columns: [t.module, t.releaseVersion],
+      foreignColumns: [contentReleases.module, contentReleases.version],
+    }),
+    uniqueIndex("content_release_activations_sequence").on(t.module, t.sequence),
+    check("content_release_activations_module_check", sql`${t.module} IN ${MODULE_LIST}`),
+    check("content_release_activations_sequence_check", sql`${t.sequence} >= 1`),
+    check("content_release_activations_kind_check", sql`${t.kind} IN ('activate', 'restore')`),
+    check("content_release_activations_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
+    check("content_release_activations_note_check", sql`${t.note} IS NULL OR length(${t.note}) <= 500`),
   ],
 );
 

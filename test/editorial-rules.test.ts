@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EDITORIAL_KINDS as DB_KINDS, EDITORIAL_STATUSES } from "../src/db/enums.js";
@@ -196,7 +196,6 @@ describe("ASSUMPTION: editorial items are never read by dealer, manifest or rele
   const FORBIDDEN = /editorial_items|editorialItems|EditorialItemRow|content\/editorial|\.\.\/editorial\/|EditorialService|EditorialModule|editorial-rules/;
 
   function sourcesUnder(dir: string): string[] {
-    if (!existsSync(dir)) return []; // src/content/releases arrives with wave W3
     const out: string[] = [];
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -208,7 +207,7 @@ describe("ASSUMPTION: editorial items are never read by dealer, manifest or rele
 
   it.each(["src/rounds", "src/rules", "src/content/documents", "src/content/releases"])("no file under %s mentions the editorial table or module", (dir) => {
     const files = sourcesUnder(join(process.cwd(), dir));
-    if (dir !== "src/content/releases") expect(files.length, `${dir} should hold sources (the scan must not pass vacuously)`).toBeGreaterThan(0);
+    expect(files.length, `${dir} should hold sources (the scan must not pass vacuously)`).toBeGreaterThan(0);
     for (const file of files) expect(FORBIDDEN.test(readFileSync(file, "utf8")), file).toBe(false);
   });
 

@@ -130,6 +130,28 @@ preloading; each Round issue re-sends its own.
 
 ## 3. Content releases
 
+> **Note, 2026-11-05 (website content wave W3, commit 2; [plan](../plans/website-content.md) section 3.7). What was built, and where it
+> departs from this section.** The Military desk's releases are built as Postgres rows only (migration 0024, API 0.25.0):
+> `content_releases`, `content_release_items`, `content_release_activations`, written only by `src/content/releases/release-store.ts`.
+> They are **recorded, not delivered**: no snapshot or package file, no Bunny, no `contentVersion`, no player route, no manifest entry,
+> and a Military release reaches no player. Departures from 3.1 to 3.3:
+>
+> - **Activations are `kind` / `history` / `sequence` rows, not `previous_version` with NULL meaning deactivated.** `kind` is `activate` or
+>   `restore`; the pointer is the newest row `{ current, history, version: sequence }` (no row: `{ null, [], 0 }`); `history` is a stack of
+>   earlier currents and **restore is a pop**, not "activate an older version". `UNIQUE (module, sequence)` is the race backstop. Deactivate
+>   (3.3 `POST .../releases/deactivate`) is deferred.
+> - **`content_releases` is insert-only, so R3 must NOT add snapshot or package columns to it.** R3 adds the snapshot and package data in
+>   an insert-only side table `content_release_snapshots (module, version)` (digests, keys, sizes, `content_version`), one row per release.
+>   `content_version`, `snapshot_*` and `package_*` of 3.1 therefore do not exist on the release row.
+> - **R3 must not honour activations recorded before delivery is enabled.** Activations written while the desk was being tested never start
+>   dealing: turning delivery on needs a fresh activation (a new `activate` row after the user's sign-off), and R3 reads only activations
+>   created after that point (for example by a stored "delivery enabled at" instant or sequence).
+> - Staff choose the items (R-3) and the gate is the backend's own dealer rule (`nearest-ranks`, C13 open), not the website's own-rank rule.
+>   The photo is the item's `media_id` (published, not demo-owned, no two items share a `sha256`); a missing Card key is frozen into the
+>   release item row only.
+> - Still to come (5.Q): the snapshot and package files, `contentVersion`, `GET /v1/content/releases/...`, manifest `v: 2`, deactivate,
+>   republish, `dryRun`, dealt Trips and answer checks (R4), and the adapters of the other modules.
+
 ### 3.1 Tables (migration 0017; generated, immutability triggers appended by hand as in 0011)
 
 `content_releases` (insert-only): `module`; `version` int >= 1, PK (module, version); `content_version`

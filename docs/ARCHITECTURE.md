@@ -179,14 +179,23 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
 
 - **Authority.** Backend Postgres is the source of truth for admin-curated content (`content_items`, one row per
   module + id; payload in `data` jsonb, validated by the module mapping before every write). The website admin
-  and Unity consume it in follow-ups; there is no player-facing content route and no release yet, so nothing
-  reaches players.
+  and Unity consume it in follow-ups; there is no player-facing content route. Releases are recorded but not
+  delivered (see the Military releases bullet below), so nothing reaches players.
 - **Military preparation** (W3 commit 1, API 0.24.0, migration 0023). `PUT /v1/admin/content/aircraft-identifier-military/items/:id/preparation`
   records the website desk's package stage (`missing_photo` → `rights_checked` → `content_prepared` → `previewed` →
   `approved`, forward one step, back to any) and evidence on the item itself (`prep_stage`, `prep_evidence`, `prep_version`);
   the question stays the client sheet's (no staff answers or hints). From `rights_checked` the linked photo must be a
   published, non-demo backend photo, on this route and on `PUT .../media`. Any later import, edit, relink, retire or restore
   makes the package `stale`; an approved package that went stale must step back to Previewed.
+- **Military releases: recorded, not delivered** (W3 commit 2, API 0.25.0, migration 0024). `GET`/`POST /v1/admin/content/aircraft-identifier-military/releases`,
+  `POST .../releases/{version}/activate` and `POST .../releases/restore` let staff freeze a chosen set of approved Military items (item
+  versions, rank, Card key, photo version, hash and credit, the question as dealt) as an immutable release, make one the current
+  release and step back (a history stack). Three tables (`content_releases`, `content_release_items` insert-only;
+  `content_release_activations` append-only; triggers refuse UPDATE and DELETE), written only by `src/content/releases/release-store.ts`
+  under a release try-lock and the module lock (busy: 409 `release_in_progress` / `import_in_progress`). **Nothing reads them for
+  players:** no snapshot or package file, no manifest entry, no dealing, no player route; a Military release reaches no player. Turning
+  delivery on is 5.Q R3 and needs the user's sign-off: R3 must not honour activations recorded before then (it needs a fresh activation),
+  and adds its snapshot data in an insert-only side table, not on the release row ([design 3](design/releases-and-dealing.md)).
 - **Roles** ([ADR-0002](adr/ADR-0002-role-based-access.md), supersedes the `STAFF_EMAILS` allowlist). Admin routes carry
   `@Roles("admin")`; `RolesGuard` (`src/auth/roles.ts`) runs after the auth and rate-limit guards (401 first, then 403
   `forbidden`) and reads the caller's ACTIVE roles from `account_roles` by the verified principal in one primary-key

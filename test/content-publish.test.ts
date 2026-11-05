@@ -261,6 +261,9 @@ describe("codes and audit actions", () => {
       "editorial_create",
       "editorial_save",
       "content_prepare",
+      "release_create",
+      "release_activate",
+      "release_restore",
     ]);
   });
 });

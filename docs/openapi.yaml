@@ -1,10 +1,47 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.24.0
+  version: 0.25.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.25.0 (Military releases, wave W3 commit 2; docs/plans/website-content.md). Releases are RECORDED, NOT DELIVERED: no player route reads them, nothing deals from them, the manifest does not carry them, and a Military release reaches no player.**
+    Built (admin only; the `aircraft-identifier-military` module only, any other module is 404): `GET /v1/admin/content/{module}/releases`,
+    `POST /v1/admin/content/{module}/releases` (upload), `POST .../releases/{version}/activate` and `POST .../releases/restore`.
+    **Upload** takes `{ itemIds, basis, previewed: true, note? }` (strict). `itemIds` are the items staff choose for the release
+    (ruling R-3): **send every id to keep batch behaviour**; leaving an item out (for example one with no photo yet) is a choice, not a
+    retire. `basis` is the sorted `<id>:<version>` of the chosen items joined by `,`; it must equal the server's basis over the same
+    selection (409 `version_conflict` otherwise: "Packages changed since this preview"). Every chosen item must be `approved` and not
+    stale (item `version` equals `prep_version`) and must have a linked photo (`mediaId`) whatever its `photoSource`: that photo must be
+    PUBLISHED and not owned by the shared demo account, and no two items may share a photo file (`sha256`). A Trip must be fillable at
+    every rank by the backend dealer over the chosen items (`nearest-ranks`; the website's own-rank rule is not the gate, see
+    `ownRankCounts`). Every reason is listed in `errors[]` (422 `content_invalid`). A selection that repeats an id or names a retired item
+    is 422 `content_invalid`; an id the module does not store is 422 `unknown_item_ids`. A basis equal to the CURRENT release's is 409
+    `nothing_to_publish` (it already exists; the same basis as an older release is allowed). An upload freezes, per item, the item
+    version, rank, Card key, the photo's media version, file hash and credit, and the question as it would be dealt; a missing Card key is
+    frozen into the release row only (the item is never rewritten and its version does not move). It creates release `number` = highest + 1
+    with status `uploaded`, writes one `release_create` audit row, and does NOT make anything current.
+    **Activate** `{ expectedPointerVersion, note? }` makes an `uploaded` release current. The guard, exactly as written: under the module
+    and release locks, with every linked photo read FOR SHARE in id order, (a) every release item still exists and is not retired;
+    (b) for every release item, `content_items.version` equals the frozen `item_version`; (c) for every release item, the photo is still
+    published, `published_version` equals the frozen `media_version`, and the stored file hash of that version equals the frozen
+    `photo_sha256`. The media `revision` is not compared (a draft-only edit of a photo leaves the published file and credit untouched).
+    Otherwise 409 `version_conflict` with `errors[]` naming each change, and nothing is written. A stale `expectedPointerVersion` is 409
+    `version_conflict`; a release already made live once is 422 ("Only an uploaded release can be made live. Restore steps back to
+    earlier ones."); a basis equal to the current release's is 409 `nothing_to_publish`; an unknown release is 404. **Restore**
+    `{ expectedPointerVersion, note? }` pops the history stack: the earlier current becomes current again (no earlier release is 422); it
+    refuses (422 `content_invalid`, `errors[]`) when a photo of the restored release is no longer published at its frozen version with its frozen file hash, and does
+    not re-check the items. The **pointer** is `{ current, history, version }`: `version` counts activations and restores (0 = none yet),
+    `history` is the stack of earlier currents, oldest first. One audit row per step: `release_create`, `release_activate`,
+    `release_restore`. **A busy release lock is 409 `release_in_progress`** (new error code; retry after `Retry-After` seconds, a retry is
+    safe); upload and activate also take the module write lock (busy: 409 `import_in_progress`). `GET` returns `{ pointer, releases (newest
+    50, number descending), ownRankCounts }`; `status` is `released` once a release has been made live, so it can then only be restored;
+    `ownRankCounts` is, per rank, the number of non-retired items whose preparation is approved and current: non-blocking, so the desk can
+    still show a shortage at a rank (C13 is open). New schemas `ReleaseStatus`, `ReleasePointer`, `ReleaseSummary`, `ReleaseState`,
+    `ReleaseList`, `OwnRankCounts`, `ReleaseUploadRequest`, `ReleasePointerRequest`, `ReleaseRefusal`; new parameter `ReleaseNumber`.
+    New error code `release_in_progress`; `ADMIN_AUDIT_ACTIONS` gains `release_create`, `release_activate`, `release_restore`. A request
+    body over 16 KB is 413 (about 600 items), so the 2000-id schema cap is not reachable until a route-scoped body reader is added.
 
     **Changelog 0.24.0 (Military preparation, wave W3 commit 1; docs/plans/website-content.md). Releases are the next commit and are NOT in this version.**
     Built: `PUT /v1/admin/content/{module}/items/{id}/preparation` (admin only; the `aircraft-identifier-military` module only, any other
@@ -3460,6 +3497,216 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/admin/content/{module}/releases:
+    get:
+      tags: [admin]
+      operationId: listContentReleases
+      summary: The Military release pointer, the newest releases and the own-rank counts
+      description: |
+        Admin only; the `aircraft-identifier-military` module only (any other module is 404 `not_found`). **Recorded, not delivered:** a
+        release here is a staff record; no player route reads it and nothing deals from it. Returns the pointer, the newest 50 releases
+        (number descending) and `ownRankCounts` (per rank, non-retired items whose preparation is approved and current; non-blocking, C13).
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+      responses:
+        "200":
+          description: The pointer, the releases and the counts.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    post:
+      tags: [admin]
+      operationId: uploadContentRelease
+      summary: Upload a Military release (recorded, not delivered)
+      description: |
+        Admin only; the `aircraft-identifier-military` module only (any other module is 404). **Recorded, not delivered:** an upload
+        freezes the chosen items as an immutable candidate (status `uploaded`); it does not make anything current and reaches no player.
+        `itemIds` are the items staff choose (ruling R-3): **send every id to keep batch behaviour**; leaving one out is a choice, not a
+        retire. `basis` must be the sorted `<id>:<version>` of the chosen items joined by `,`. Takes the release try-lock, then the module
+        write lock. Every chosen item must be approved and current (not stale), have a linked photo whatever its `photoSource`, whose
+        photo is published (read FOR SHARE in id order) and not demo-owned; no two items may share a photo file; and the backend dealer
+        (`nearest-ranks`) must be able to fill a Trip at every rank from the chosen items, computed in the same transaction. A missing
+        Card key is frozen into the release row only; the item and its version are never touched. One `release_create` audit row
+        (`{ release, itemCount, basis }`).
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleaseUploadRequest" }
+      responses:
+        "201":
+          description: The new release, status `uploaded`.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseSummary" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `basis` is not the server's basis over the selection (packages changed since the preview).
+            `nothing_to_publish`: the basis equals the current release's (it already exists). `release_in_progress`: another release step
+            holds the release lock. `import_in_progress`: an import or an item edit holds the module write lock. Retry after `Retry-After`
+            seconds (the two lock answers only). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, nothing_to_publish, release_in_progress, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRefusal" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: |
+            `content_invalid`: `previewed` is not true, an id repeats, an item is retired, or the batch cannot be released; `errors` lists EVERY reason
+            (not approved, stale, no linked photo, photo not published or demo-owned, a shared photo, a rank whose Trip cannot be filled).
+            `unknown_item_ids`: an id the module does not store. Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid, unknown_item_ids]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRefusal" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/releases/{version}/activate:
+    post:
+      tags: [admin]
+      operationId: activateContentRelease
+      summary: Make an uploaded Military release current (recorded, not delivered)
+      description: |
+        Admin only; the `aircraft-identifier-military` module only (any other module, or a malformed release number, is 404). **Recorded,
+        not delivered:** the pointer is a staff record; nothing reads it for players. Takes the release try-lock, then the module write lock.
+        The guard, exactly: at commit, with every linked photo read FOR SHARE in id order, (a) every release item still exists and is not
+        retired; (b) for every release item, `content_items.version` equals the frozen `item_version`; (c) for every release item, the photo
+        is still published, `published_version` equals the frozen `media_version`, and the stored file hash of that version equals the frozen
+        `photo_sha256`. The media `revision` is not compared. If any leg fails: 409 `version_conflict` with `errors[]` naming each change and
+        nothing is written. Success appends an `activate` row (`sequence` = pointer version + 1, `history` = the previous history plus the
+        previous current, if any) and one `release_activate` audit row (`{ release, previous, itemCount, sequence }`).
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - $ref: "#/components/parameters/ReleaseNumber"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleasePointerRequest" }
+      responses:
+        "200":
+          description: The pointer and the newest releases as they are now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseState" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `expectedPointerVersion` is not the pointer's version (another editor changed the release), or the guard failed
+            (`errors[]` names each change). `nothing_to_publish`: the release's basis equals the current release's. `release_in_progress` or
+            `import_in_progress`: a lock is held; retry after `Retry-After` seconds (that response only). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, nothing_to_publish, release_in_progress, import_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRefusal" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`content_invalid`: the release was already made live once (\"Only an uploaded release can be made live. Restore steps back to earlier ones.\"). Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRefusal" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/releases/restore:
+    post:
+      tags: [admin]
+      operationId: restoreContentRelease
+      summary: Step the Military release pointer back (recorded, not delivered)
+      description: |
+        Admin only; the `aircraft-identifier-military` module only (any other module is 404). **Recorded, not delivered.** Pops the history
+        stack: the most recent earlier current becomes current again. Takes the release try-lock only. Every photo of the restored release
+        is read FOR SHARE in id order and must still be published at its frozen version with its frozen file hash (422 `content_invalid` with `errors[]` otherwise);
+        the items are not re-checked. Appends a `restore` row and one `release_restore` audit row (`{ release, replaced, sequence }`).
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleasePointerRequest" }
+      responses:
+        "200":
+          description: The pointer and the newest releases as they are now.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseState" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `expectedPointerVersion` is not the pointer's version. `release_in_progress`: another release step holds the
+            release lock; retry after `Retry-After` seconds (that response only). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, release_in_progress]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRefusal" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: |
+            `content_invalid`: there is no earlier release to restore, or a photo of the restored release is no longer published at its frozen
+            version with its frozen file hash (`errors[]` names each). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRefusal" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/media:
     get:
       tags: [media]
@@ -3736,6 +3983,13 @@ components:
       required: true
       description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military` and `airport-spotter`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
+
+    ReleaseNumber:
+      name: version
+      in: path
+      required: true
+      description: A release number (a positive integer, as `number` on a release). Anything else is 404.
+      schema: { type: integer, minimum: 1 }
 
     ContentItemId:
       name: id
@@ -4166,6 +4420,7 @@ components:
                 - unknown_item_ids
                 - version_conflict
                 - nothing_to_publish
+                - release_in_progress
                 - rights_already_stated
                 - content_invalid
                 - ugs_link_conflict
@@ -4349,6 +4604,87 @@ components:
       properties:
         changed: { type: boolean, description: False when nothing was written. }
         item: { $ref: "#/components/schemas/ContentItem" }
+    ReleaseStatus:
+      type: string
+      enum: [uploaded, released]
+      description: "`uploaded`: recorded, never made current. `released`: made current at least once (it can then only be restored, not activated again)."
+    ReleasePointer:
+      type: object
+      additionalProperties: false
+      required: [current, history, version]
+      description: The newest activation row, or nothing current at version 0. Recorded, not delivered.
+      properties:
+        current: { type: [integer, "null"], minimum: 1, description: The current release number; null when none is current. }
+        history: { type: array, items: { type: integer, minimum: 1 }, description: "Earlier currents, oldest first. Restore pops the last." }
+        version: { type: integer, minimum: 0, description: "Activations and restores so far; send it back as `expectedPointerVersion`." }
+    ReleaseSummary:
+      type: object
+      additionalProperties: false
+      required: [number, basis, aircraft, createdAt, note, status]
+      properties:
+        number: { type: integer, minimum: 1 }
+        basis: { type: string, description: "The sorted `<id>:<version>` of the release's items joined by `,`." }
+        aircraft: { type: integer, minimum: 1, maximum: 2000, description: How many items the release holds. }
+        createdAt: { type: string, format: date-time }
+        note: { type: [string, "null"], maxLength: 500 }
+        status: { $ref: "#/components/schemas/ReleaseStatus" }
+    ReleaseState:
+      type: object
+      additionalProperties: false
+      required: [pointer, releases]
+      properties:
+        pointer: { $ref: "#/components/schemas/ReleasePointer" }
+        releases: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ReleaseSummary" }, description: "Newest 50, number descending." }
+    OwnRankCounts:
+      type: object
+      additionalProperties: false
+      required: [trainee, first-officer, captain, check-airman, chief-pilot]
+      description: Per rank, the non-retired items whose preparation is approved and current. Non-blocking (C13 is open).
+      properties:
+        trainee: { type: integer, minimum: 0 }
+        first-officer: { type: integer, minimum: 0 }
+        captain: { type: integer, minimum: 0 }
+        check-airman: { type: integer, minimum: 0 }
+        chief-pilot: { type: integer, minimum: 0 }
+    ReleaseList:
+      type: object
+      additionalProperties: false
+      required: [pointer, releases, ownRankCounts]
+      properties:
+        pointer: { $ref: "#/components/schemas/ReleasePointer" }
+        releases: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ReleaseSummary" }, description: "Newest 50, number descending." }
+        ownRankCounts: { $ref: "#/components/schemas/OwnRankCounts" }
+    ReleaseUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [itemIds, basis, previewed]
+      properties:
+        itemIds:
+          type: array
+          minItems: 1
+          maxItems: 2000
+          items: { type: string, minLength: 1, maxLength: 64 }
+          description: "The items staff choose for the release (R-3). Send every id to keep batch behaviour. Each at most once."
+        basis: { type: string, minLength: 1, maxLength: 65536, description: "The sorted `<id>:<version>` of the chosen items joined by `,`, as previewed." }
+        previewed: { type: boolean, description: "Must be true: the sample Trips were reviewed (422 otherwise)." }
+        note: { type: string, maxLength: 500 }
+    ReleasePointerRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedPointerVersion]
+      properties:
+        expectedPointerVersion: { type: integer, minimum: 0, maximum: 2147483647, description: The pointer `version` the caller read. }
+        note: { type: string, maxLength: 500 }
+    ReleaseRefusal:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: "#/components/schemas/Error/properties/error" }
+        errors:
+          type: array
+          items: { type: string }
+          description: Every reason found, in plain English (present when the refusal has reasons to list).
     ContentItemList:
       type: object
       additionalProperties: false

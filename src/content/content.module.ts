@@ -6,9 +6,11 @@ import { ContentDocumentsService } from "./documents/content-documents.service.j
 import { ContentController } from "./content.controller.js";
 import { ContentItemEditService } from "./content-item-edit.service.js";
 import { ContentService } from "./content.service.js";
+import { ReleaseStore } from "./releases/release-store.js";
+import { ReleasesController } from "./releases/releases.controller.js";
 
 @Module({
-  controllers: [ContentController, ContentAdminController, ContentDocumentsController],
-  providers: [ContentService, ContentItemEditService, ContentDocumentsService, ContentAdminService],
+  controllers: [ContentController, ContentAdminController, ContentDocumentsController, ReleasesController],
+  providers: [ContentService, ContentItemEditService, ContentDocumentsService, ContentAdminService, ReleaseStore],
 })
 export class ContentModule {}
