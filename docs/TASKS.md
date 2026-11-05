@@ -84,7 +84,7 @@ id) and `GET /v1/admin/store/players/{principal}/entitlements` (READ ONLY snapsh
 fingerprints, no `commerceToken` in staff views (fake-store refs masked too); product titles trimmed, no control characters,
 1..100 code points (a legacy title with surrounding spaces, saved unchanged, now counts as an edit). Reviews: senior-lead,
 backend-expert (plan), code-reviewer ("ship after fixes", all fixed). Verified: typecheck clean, `npm test` 777, `npm run
-test:e2e` 37 files / 1013. **P-E built 2026-11-05 (API 0.22.0, migration `0021_store_miles_packs`; user ruling U11 "Yes,
+test:e2e` 37 files / 1013. **P-E built 2026-11-05 (API 0.22.0, migration `0021_store_miles_packs`; user ruling monetization U11 "Yes,
 sell Miles packs", reversing R1's "No Miles are sold"):** kind `miles_pack` (`miles` 1..1,000,000; demo rows `aa.miles.5000`,
 `aa.miles.25000`, placeholders, CQ7), `granted_miles` snapshot, Miles ledger kind `store_purchase`, `StorePurchase.grantedMiles`,
 staff `grant.type: "miles"`; consumable guard (a hint or Miles pack whose verified transaction has an expiry stays

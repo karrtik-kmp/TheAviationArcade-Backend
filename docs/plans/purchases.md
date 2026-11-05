@@ -159,7 +159,7 @@ idempotent and refused in production.
 ## Wave P-D: staff read of purchases and entitlements (approved with changes, revised, 2026-11-04)
 
 For the website admin's Phase 2 (`../docs/briefs/website-monetization-admin.md`). User order 2026-11-04: P-D first, then P-E
-Miles packs (U11, confirmed by the user here). Read-only; no migration, no balance write, no new error code. Reviews:
+Miles packs (monetization U11, confirmed by the user here). Read-only; no migration, no balance write, no new error code. Reviews:
 senior-lead and backend-expert, both "approve with changes"; every finding is folded in below. Default taken (reviewers'
 recommendation, user may overrule): **staff do not see `commerceToken`** (the ownership key stays with its owner).
 
@@ -235,7 +235,7 @@ Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShel
 
 ## Wave P-E: Miles packs (built 2026-11-05; approved with changes, revised)
 
-User ruling U11 (2026-11-04, "both"; confirmed again 2026-11-05, "Yes, sell Miles packs"): Miles packs are store products too.
+User ruling monetization U11 (Unity MONETIZATION_PLAN numbering, not the 10-29 contract answer U11; 2026-11-04, "both"; confirmed again 2026-11-05, "Yes, sell Miles packs"): Miles packs are store products too.
 This **reverses R1's "No Miles are sold"**; R1's catalog list otherwise stands. Source: `../docs/briefs/commerce.md` update item 1
 and Unity `Contracts/products.v1.json` (kind `miles_pack`, `aa.miles.5000` = 5,000 Miles, `aa.miles.25000` = 25,000 Miles). The
 file wins over the brief's `milesPack` spelling. The ids and amounts are **placeholders** (no client prices, final ids Unity Q4,
@@ -359,6 +359,6 @@ from PowerShell, one full run.
 
 ## Next waves
 
-P-E Miles packs (U11) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
+P-E Miles packs (monetization U11, built) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
 RTDN, refunds (hint clawback clamped at 0, D6; Miles-pack refund policy needs a ruling), grace/expiry, Get Notification History → ads + Pass hint grants (brief) →
 P5 SP boosts → final store ids replace the demo rows.

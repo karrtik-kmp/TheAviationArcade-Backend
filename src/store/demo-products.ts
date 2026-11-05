@@ -6,7 +6,7 @@ export type DemoProduct = Omit<StoreProductRow, "version" | "createdAt" | "updat
 /**
  * The one seed list (user ruling R1, docs/plans/purchases.md): the client's catalog from Unity `Contracts/products.v1.json`
  * (CF-33 / BLK-13). The hint counts and the monthly/yearly split are the client's numbers; the Miles pack ids and amounts
- * (5,000 and 25,000, user ruling U11, wave P-E) are placeholders too (amounts CQ7). The store ids are PLACEHOLDERS
+ * (5,000 and 25,000, user ruling monetization U11, wave P-E) are placeholders too (amounts CQ7). The store ids are PLACEHOLDERS
  * (final ids: Unity Q4), which is why every row is `demo` (never listed or sold in production). Titles are plain staff labels.
  * Seeded by `npm run store:seed-demo` (slice P-B) and by test/store-helpers.ts. Prices are not stored: the store owns them.
  */
