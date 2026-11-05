@@ -222,6 +222,11 @@ WC-1 ("published = allowed for every use"). `npm run contracts:write` shows no d
 
 ## W3: Military preparation (commit 1) + releases (commit 2) (API 0.24.0, migration 0023)
 
+_Renumbered when built (2026-11-05):_ commit 1 is migration `0023_military_preparation` and API 0.24.0; commit 2 (releases)
+is migration 0024 and API 0.25.0; W4 becomes API 0.26.0. Built in commit 1 beyond the plan: an unchanged save of a stale
+package below `approved` re-confirms it (`reconfirmed: true` in the audit detail); a stale `approved` package must step back
+to Previewed (review finding: otherwise a relink or re-import could slip past the approved lock).
+
 ### 3.1 Migration `0023_military_preparation_and_releases`
 
 **`content_items` gains `prep_stage text NULL`, `prep_evidence jsonb NULL`, `prep_version int NULL`**: all null or all set

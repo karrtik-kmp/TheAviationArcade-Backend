@@ -36,6 +36,7 @@ export const ADMIN_AUDIT_ACTIONS = [
   "store_product_restore",
   "editorial_create",
   "editorial_save",
+  "content_prepare",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
@@ -69,6 +70,9 @@ export const STORE_SUBSCRIPTION_STATUSES = ["active", "grace", "billing_retry", 
 export const EDITORIAL_KINDS = ["identifier", "plane-of-the-day"] as const;
 export const EDITORIAL_STATUSES = ["draft", "scheduled", "published", "archived"] as const;
 
+/** Military preparation stages, in order (docs/plans/website-content.md W3, migration 0023; website/lib/military.ts). */
+export const PREP_STAGES = ["missing_photo", "rights_checked", "content_prepared", "previewed", "approved"] as const;
+
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
@@ -90,6 +94,7 @@ export type StorePassPeriod = (typeof STORE_PASS_PERIODS)[number];
 export type StoreName = (typeof STORES)[number];
 export type StoreEnvironment = (typeof STORE_ENVIRONMENTS)[number];
 export type StoreClaimKind = (typeof STORE_CLAIM_KINDS)[number];
+export type PrepStage = (typeof PREP_STAGES)[number];
 export type EditorialKind = (typeof EDITORIAL_KINDS)[number];
 export type EditorialStatus = (typeof EDITORIAL_STATUSES)[number];
 export type StoreSubscriptionStatus = (typeof STORE_SUBSCRIPTION_STATUSES)[number];

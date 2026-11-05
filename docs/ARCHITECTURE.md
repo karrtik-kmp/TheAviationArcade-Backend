@@ -181,6 +181,12 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   module + id; payload in `data` jsonb, validated by the module mapping before every write). The website admin
   and Unity consume it in follow-ups; there is no player-facing content route and no release yet, so nothing
   reaches players.
+- **Military preparation** (W3 commit 1, API 0.24.0, migration 0023). `PUT /v1/admin/content/aircraft-identifier-military/items/:id/preparation`
+  records the website desk's package stage (`missing_photo` → `rights_checked` → `content_prepared` → `previewed` →
+  `approved`, forward one step, back to any) and evidence on the item itself (`prep_stage`, `prep_evidence`, `prep_version`);
+  the question stays the client sheet's (no staff answers or hints). From `rights_checked` the linked photo must be a
+  published, non-demo backend photo, on this route and on `PUT .../media`. Any later import, edit, relink, retire or restore
+  makes the package `stale`; an approved package that went stale must step back to Previewed.
 - **Roles** ([ADR-0002](adr/ADR-0002-role-based-access.md), supersedes the `STAFF_EMAILS` allowlist). Admin routes carry
   `@Roles("admin")`; `RolesGuard` (`src/auth/roles.ts`) runs after the auth and rate-limit guards (401 first, then 403
   `forbidden`) and reads the caller's ACTIVE roles from `account_roles` by the verified principal in one primary-key

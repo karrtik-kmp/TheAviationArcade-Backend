@@ -13,6 +13,7 @@ import {
   MEDIA_RIGHTS_STATEMENTS,
   MEDIA_STATES,
   MEDIA_UPLOAD_OPERATIONS,
+  PREP_STAGES,
   ROLE_STATES,
   ROUND_COMPLETIONS,
   ROUND_STATUSES,
@@ -49,6 +50,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "content_items.content_items_status_check": CONTENT_STATUSES,
   "content_items.content_items_source_check": CONTENT_SOURCES,
   "admin_audit.admin_audit_action_check": ADMIN_AUDIT_ACTIONS,
+  "content_items.content_items_prep_stage_check": PREP_STAGES,
   "editorial_items.editorial_items_kind_check": EDITORIAL_KINDS,
   "editorial_items.editorial_items_status_check": EDITORIAL_STATUSES,
   "trips.trips_module_check": MODULE_IDS,
@@ -92,6 +94,7 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "store_products.store_products_kind_rule_check",
   "store_transactions.store_transactions_kind_rule_check",
   "media_imports.media_imports_source_system_check",
+  "content_items.content_items_prep_all_or_none_check",
   "editorial_items.editorial_items_identifier_rule_check",
   "editorial_items.editorial_items_potd_rule_check",
 ]);

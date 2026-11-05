@@ -1,10 +1,13 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { and, eq, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
+import { isDemoPrincipal } from "../accounts/account-principal.js";
 import { ApiError } from "../common/errors.js";
+import { APP_CONFIG } from "../config/config.module.js";
+import type { AppConfig } from "../config/config.module.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
-import type { AdminAuditAction, ContentStatus } from "../db/enums.js";
+import type { AdminAuditAction, ContentStatus, PrepStage } from "../db/enums.js";
 import { adminAudit, contentItems, mediaItems } from "../db/schema.js";
 import type { ContentItemRow } from "../db/schema.js";
 import { militaryCardKey } from "../rules/clipper-cards.js";
@@ -16,8 +19,22 @@ import { canonicalJson, diffItem, planImport } from "./import-plan.js";
 import type { ExistingItem, FieldDiff } from "./import-plan.js";
 import type { ItemView } from "./content.service.js";
 import { formatMediaId, parseMediaId } from "./item-media-id.js";
+import {
+  MILITARY_MODULE,
+  changedEvidenceFields,
+  guardsMedia,
+  mediaGuardProblems,
+  preparationErrors,
+  preparationView,
+} from "./preparation/military-preparation.js";
+import type { PreparationBody, PrepEvidence } from "./preparation/military-preparation.js";
 
-const MILITARY = "aircraft-identifier-military";
+const MILITARY = MILITARY_MODULE;
+
+/** 422 `content_invalid`; the reasons are in `errors[]` next to `error`. */
+function invalid(errors: string[]): ApiError {
+  return new ApiError(422, "content_invalid", `The item is not valid: ${errors.join(" ")} Nothing was changed.`, {}, { errors });
+}
 
 /** The Card key of the answer as stored (null when there is none, as the lazy freeze treats it). */
 function militaryKeyOfStored(data: unknown): string | null {
@@ -38,6 +55,7 @@ function view(row: ContentItemRow): ItemView {
     version: row.version,
     data: row.data,
     mediaId: formatMediaId(row.mediaId),
+    preparation: preparationView(row),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -54,7 +72,10 @@ type Outcome = { ok: true; value: ItemChange } | { ok: false; error: ApiError };
  */
 @Injectable()
 export class ContentItemEditService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
   async edit(mapping: ContentModuleMapping, id: string, expectedVersion: number, change: ItemEdit, principal: string): Promise<ItemChange> {
     // The payload rules are the mapping's own (the sheet parser calls the same function), checked before any lock.
@@ -127,11 +148,24 @@ export class ContentItemEditService {
     const wanted = mediaId === null ? null : parseMediaId(mediaId);
     if (wanted === undefined) throw new ApiError(422, "media_invalid", "mediaId must be a media id such as med-12, or null.");
     return this.run(module, id, expectedVersion, principal, async (tx, stored, _existing, now) => {
+      let media: { state: string; publishedVersion: number | null; owner: string } | undefined;
       if (wanted !== null) {
-        const [found] = await tx.select({ id: mediaItems.id }).from(mediaItems).where(eq(mediaItems.id, wanted)).limit(1);
-        if (!found) throw new ApiError(422, "media_invalid", "No such media item. Nothing was changed.");
+        // FOR SHARE: a concurrent withdraw waits for this transaction (and the other way round), so the guard below holds at commit.
+        [media] = await tx
+          .select({ state: mediaItems.state, publishedVersion: mediaItems.publishedVersion, owner: mediaItems.owner })
+          .from(mediaItems)
+          .where(eq(mediaItems.id, wanted))
+          .limit(1)
+          .for("share");
+        if (!media) throw new ApiError(422, "media_invalid", "No such media item. Nothing was changed.");
       }
       if (stored.mediaId === wanted) return { kind: "unchanged" };
+      // Military at or past Rights checked: the link must be a published, non-demo photo (W3). At stage 0, or with no
+      // preparation, any existing media may be linked as before.
+      if (media && module === MILITARY && stored.prepStage !== null && guardsMedia(stored.prepStage)) {
+        const problems = mediaGuardProblems({ state: media.state, publishedVersion: media.publishedVersion, ownerIsDemo: isDemoPrincipal(this.config, media.owner) });
+        if (problems.length > 0) throw invalid(problems);
+      }
       const [row] = await tx
         .update(contentItems)
         .set({ mediaId: wanted, version: sql`${contentItems.version} + 1`, source: "admin", updatedAt: now, updatedBy: principal })
@@ -146,6 +180,79 @@ export class ContentItemEditService {
     });
   }
 
+  /**
+   * Save the Military preparation of one item (docs/plans/website-content.md W3): stage, evidence and the linked photo in ONE write.
+   * Only the Military module has it (any other module is 404). The rules are the pure ones in `military-preparation.ts`; the media
+   * is read FOR SHARE and, from Rights checked on, must be published and not demo-owned. A save sets `media_id`, bumps the item
+   * version and sets `prep_version` to the new version, so any later import, edit, relink, retire or restore makes it stale. An
+   * unchanged save of a current preparation writes nothing; re-saving a STALE preparation unchanged re-confirms it (a write).
+   */
+  async prepare(module: string, id: string, body: PreparationBody, principal: string): Promise<{ changed: boolean; item: ItemView }> {
+    if (module !== MILITARY) throw new ApiError(404, "not_found", "No such endpoint.");
+    const wanted = body.mediaId === null ? null : parseMediaId(body.mediaId);
+    if (wanted === undefined) throw new ApiError(422, "media_invalid", "mediaId must be a media id such as med-12, or null.");
+    const evidence: PrepEvidence = body.evidence;
+    const result = await this.run(module, id, body.version, principal, async (tx, stored, _existing, now) => {
+      const stale = stored.prepVersion !== null && stored.prepVersion !== stored.version;
+      const errors = preparationErrors(
+        { status: stored.status, stale },
+        { stage: stored.prepStage as PrepStage | null, evidence: stored.prepEvidence, mediaId: stored.mediaId },
+        { stage: body.stage, evidence, mediaId: wanted },
+      );
+      if (wanted !== null && stored.status !== "retired") {
+        const [media] = await tx
+          .select({ state: mediaItems.state, publishedVersion: mediaItems.publishedVersion, owner: mediaItems.owner })
+          .from(mediaItems)
+          .where(eq(mediaItems.id, wanted))
+          .limit(1)
+          .for("share");
+        if (!media) errors.push("No such media item.");
+        else if (guardsMedia(body.stage)) {
+          errors.push(...mediaGuardProblems({ state: media.state, publishedVersion: media.publishedVersion, ownerIsDemo: isDemoPrincipal(this.config, media.owner) }));
+        }
+      }
+      if (errors.length > 0) throw invalid(errors);
+      const same = stored.prepStage === body.stage && stored.mediaId === wanted && canonicalJson(stored.prepEvidence) === canonicalJson(evidence);
+      if (same && !stale) return { kind: "unchanged" };
+      const [row] = await tx
+        .update(contentItems)
+        .set({
+          prepStage: body.stage,
+          prepEvidence: evidence,
+          mediaId: wanted,
+          version: sql`${contentItems.version} + 1`,
+          prepVersion: sql`${contentItems.version} + 1`,
+          source: "admin",
+          updatedAt: now,
+          updatedBy: principal,
+        })
+        .where(and(eq(contentItems.module, module), eq(contentItems.id, id), eq(contentItems.version, stored.version)))
+        .returning();
+      const fields = [
+        ...(stored.prepStage !== body.stage ? ["stage"] : []),
+        ...changedEvidenceFields(stored.prepEvidence, evidence),
+        ...(stored.mediaId !== wanted ? ["media"] : []),
+      ];
+      return {
+        kind: "changed",
+        row,
+        diff: [],
+        action: "content_prepare",
+        detail: {
+          id,
+          fromVersion: stored.version,
+          version: row?.version,
+          fromStage: stored.prepStage,
+          stage: body.stage,
+          media: stored.mediaId === wanted ? null : { from: formatMediaId(stored.mediaId), to: formatMediaId(wanted) },
+          fields,
+          ...(same ? { reconfirmed: true } : {}),
+        },
+      };
+    });
+    return { changed: result.changed, item: result.item };
+  }
+
   private async run(
     module: string,
     id: string,
@@ -156,7 +263,10 @@ export class ContentItemEditService {
       stored: ContentItemRow,
       existing: Map<string, ExistingItem>,
       now: SQL,
-    ) => Promise<{ kind: "unchanged" } | { kind: "changed"; row: ContentItemRow | undefined; diff: FieldDiff[]; action: AdminAuditAction }>,
+    ) => Promise<
+      | { kind: "unchanged" }
+      | { kind: "changed"; row: ContentItemRow | undefined; diff: FieldDiff[]; action: AdminAuditAction; detail?: Record<string, unknown> }
+    >,
   ): Promise<ItemChange> {
     // Expected refusals are returned, not thrown, so the connection goes back to the pool instead of being destroyed.
     const outcome = await this.database.withTransaction(async (tx): Promise<Outcome> => {
@@ -181,7 +291,7 @@ export class ContentItemEditService {
           actor: principal,
           action: result.action,
           target: module,
-          detail: { id, fromVersion: stored.version, version: result.row.version, diff: result.diff },
+          detail: result.detail ?? { id, fromVersion: stored.version, version: result.row.version, diff: result.diff },
           createdAt: now,
         });
         return { ok: true, value: { changed: true, item: view(result.row), diff: result.diff } };

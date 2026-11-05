@@ -15,6 +15,8 @@ import { contentMappingFor } from "./content-modules.js";
 import { ContentItemEditService } from "./content-item-edit.service.js";
 import { ContentService } from "./content.service.js";
 import { MEDIA_ID_PATTERN } from "./item-media-id.js";
+import { preparationBody } from "./preparation/military-preparation.js";
+import type { PreparationBody } from "./preparation/military-preparation.js";
 import { XLSX_MIME } from "./xlsx.js";
 
 // dryRun and confirm are the only query parameters; anything else, or a bad value, is a 400.
@@ -172,6 +174,21 @@ export class ContentController {
   ) {
     const mapping = mappingFor(module);
     return this.edits.setMedia(mapping.module, itemId(id), body.expectedVersion, body.mediaId, principal);
+  }
+
+  /**
+   * Save the Military preparation (stage, evidence and linked photo) of one item. Optimistic on `version`; Military only (any other
+   * module is 404). See ContentItemEditService.prepare.
+   */
+  @Put(":module/items/:id/preparation")
+  async prepareItem(
+    @Principal() principal: string,
+    @Param("module") module: string,
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(preparationBody, 'Expected { version: integer, stage, evidence: {...}, mediaId: "med-<n>" | null } and nothing else.')) body: PreparationBody,
+  ) {
+    const mapping = mappingFor(module);
+    return this.edits.prepare(mapping.module, itemId(id), body, principal);
   }
 
   @Post(":module/items/:id/retire")

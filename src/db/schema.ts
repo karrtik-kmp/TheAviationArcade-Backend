@@ -24,6 +24,7 @@ import type {
   ContentSource,
   ContentStatus,
   EditorialKind,
+  PrepStage,
   EditorialStatus,
   MediaContentType,
   MediaRightsStatement,
@@ -516,6 +517,12 @@ export const contentItems = pgTable(
     cardKey: text("card_key"),
     // The linked image, if any (PUT /v1/admin/content/.../media). Media is never deleted, so no ON DELETE action.
     mediaId: bigint("media_id", { mode: "number" }).references(() => mediaItems.id),
+    // Military preparation (docs/plans/website-content.md W3, migration 0023): all three null (never prepared) or all set. `prep_version`
+    // is the item version the preparation save produced; any later import, edit, relink, retire or restore bumps `version` past it, so
+    // the preparation is then stale. Staff evidence only; never a question, answer or hint.
+    prepStage: text("prep_stage").$type<PrepStage>(),
+    prepEvidence: jsonb("prep_evidence"),
+    prepVersion: integer("prep_version"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     updatedBy: text("updated_by").notNull(),
@@ -528,6 +535,12 @@ export const contentItems = pgTable(
     check("content_items_status_check", sql`${t.status} IN ('approved', 'retired')`),
     check("content_items_source_check", sql`${t.source} IN ('client_sheet', 'admin')`),
     check("content_items_version_check", sql`${t.version} >= 1`),
+    // Rule, not an enumeration (see RULE_CHECKS in test/schema-parity.ts): the three preparation columns are all null or all set.
+    check(
+      "content_items_prep_all_or_none_check",
+      sql`(${t.prepStage} IS NULL AND ${t.prepEvidence} IS NULL AND ${t.prepVersion} IS NULL) OR (${t.prepStage} IS NOT NULL AND ${t.prepEvidence} IS NOT NULL AND ${t.prepVersion} IS NOT NULL)`,
+    ),
+    check("content_items_prep_stage_check", sql`${t.prepStage} IN ('missing_photo', 'rights_checked', 'content_prepared', 'previewed', 'approved')`),
   ],
 );
 
@@ -545,7 +558,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare')`,
     ),
   ],
 );

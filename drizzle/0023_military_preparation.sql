@@ -1,0 +1,7 @@
+ALTER TABLE "admin_audit" DROP CONSTRAINT "admin_audit_action_check";--> statement-breakpoint
+ALTER TABLE "content_items" ADD COLUMN "prep_stage" text;--> statement-breakpoint
+ALTER TABLE "content_items" ADD COLUMN "prep_evidence" jsonb;--> statement-breakpoint
+ALTER TABLE "content_items" ADD COLUMN "prep_version" integer;--> statement-breakpoint
+ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_action_check" CHECK ("admin_audit"."action" IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare'));--> statement-breakpoint
+ALTER TABLE "content_items" ADD CONSTRAINT "content_items_prep_all_or_none_check" CHECK (("content_items"."prep_stage" IS NULL AND "content_items"."prep_evidence" IS NULL AND "content_items"."prep_version" IS NULL) OR ("content_items"."prep_stage" IS NOT NULL AND "content_items"."prep_evidence" IS NOT NULL AND "content_items"."prep_version" IS NOT NULL));--> statement-breakpoint
+ALTER TABLE "content_items" ADD CONSTRAINT "content_items_prep_stage_check" CHECK ("content_items"."prep_stage" IN ('missing_photo', 'rights_checked', 'content_prepared', 'previewed', 'approved'));

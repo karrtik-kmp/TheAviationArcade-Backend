@@ -1,10 +1,30 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.23.0
+  version: 0.24.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.24.0 (Military preparation, wave W3 commit 1; docs/plans/website-content.md). Releases are the next commit and are NOT in this version.**
+    Built: `PUT /v1/admin/content/{module}/items/{id}/preparation` (admin only; the `aircraft-identifier-military` module only, any other
+    module is 404). Body, strict: `{ version, stage, evidence, mediaId: "med-<n>" | null }`; `evidence` is `{ photoSource: "" | "media" |
+    "licensed", licenseUrl, permission, attribution, referenceUrl, checklist: { identity, answers, crop, clipperCard }, notes }` and
+    carries NO answer, distractor, alias, hint or reveal (those keys are 400: the question comes only from the client's sheet). Stages
+    (`PrepStage`): `missing_photo`, `rights_checked`, `content_prepared`, `previewed`, `approved`; they move forward one at a time and
+    back to any earlier one; the rules are cumulative (rights_checked: a source, permission of 10+ characters, attribution of 2+;
+    content_prepared: an https `referenceUrl`; previewed: `checklist.crop`; approved: every checklist item), and an approved to approved
+    save that changes the evidence or the photo is refused. **Media guard:** from `rights_checked` on, a set `mediaId` must be a
+    PUBLISHED photo not owned by the shared demo account (422 `content_invalid` with `errors[]`); at `missing_photo` any existing photo
+    may be linked. A retired item cannot be prepared (422). A save sets `media_id` (null unlinks), bumps the item `version`, sets
+    `prep_version` to the new version and writes one `content_prepare` audit row; an unchanged save of a current preparation writes
+    nothing. **Guarded media link:** `PUT .../items/{id}/media` on a Military item whose preparation is at `rights_checked` or later now
+    applies the same media guard (422 `content_invalid` with `errors[]`); at `missing_photo`, or with no preparation, it behaves as
+    before. **Preparation on items:** every `ContentItem` gains `preparation: { stage, evidence, stale } | null` (additive; null for a
+    never prepared item and for every other module). `stale` is true once the item version has moved past the preparation save (a sheet
+    re-import, edit, relink, retire or restore bumps it): prepare again; re-saving a stale preparation, even unchanged, re-confirms it
+    (a write). New schemas `PrepStage`, `PrepEvidence`, `ContentItemPreparation`, `ContentItemPreparationRequest`,
+    `ContentItemPreparationChange`. `ADMIN_AUDIT_ACTIONS` gains `content_prepare`. Nothing here reaches a player.
 
     **Changelog 0.23.0 (staff editorial desks and the public Plane of the Day read, wave W1; docs/plans/website-content.md).** Built:
     `GET` and `POST /v1/admin/editorial/{kind}/items` and `PUT /v1/admin/editorial/{kind}/items/{id}` (admin only; `kind` is `identifier`
@@ -3320,7 +3340,9 @@ paths:
         (`expectedVersion`, as on the edit route); a change bumps the item version, sets `source` to `admin` and writes one
         `content_media_link` audit row (the `diff` is one `media` entry). Runs in one transaction under the module's write lock. Linking the stored value is 200 with
         `changed: false`. An unknown `mediaId` is 422 `media_invalid`; an unknown module or item is 404 `not_found`. Any existing media
-        item may be linked, whatever its state (draft, published or withdrawn); readers only ever see the published version. A spreadsheet import
+        item may be linked, whatever its state (draft, published or withdrawn); readers only ever see the published version. **Exception (0.24.0):** on a
+        Military item whose preparation is at `rights_checked` or later, a set `mediaId` must be a published photo not owned by the shared demo account
+        (422 `content_invalid` with `errors[]`; unlinking is never guarded). A spreadsheet import
         never changes the link (the export carries a trailing `Media Id` column that the import ignores). The link counts as a staff write for the client-sheet replay rule.
       parameters:
         - $ref: "#/components/parameters/ContentModule"
@@ -3358,14 +3380,83 @@ paths:
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
-          description: "`media_invalid`: `mediaId` names no media item. Nothing was written."
+          description: "`media_invalid`: `mediaId` names no media item. `content_invalid` (with `errors[]`): a Military item at `rights_checked` or later needs a published, non-demo photo. Nothing was written."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
-          x-error-codes: [media_invalid]
+          x-error-codes: [media_invalid, content_invalid]
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/Error" }
+                  - { $ref: "#/components/schemas/EditorialInvalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/{module}/items/{id}/preparation:
+    put:
+      tags: [admin]
+      operationId: saveContentItemPreparation
+      summary: Save the Military preparation of an item
+      description: |
+        Admin only; the `aircraft-identifier-military` module only (any other module is 404 `not_found`). Saves the stage, the evidence and the
+        linked photo of one item in ONE write, optimistic on the item `version`. Stages move forward one at a time and back to any earlier
+        one; the rules are cumulative (see the 0.24.0 changelog); an approved to approved save that changes the evidence or the photo is
+        refused ("Step an approved package back to Previewed before changing it."). From `rights_checked` on, a set `mediaId` must be a
+        published photo that the shared demo account does not own (read under a share lock, so a concurrent withdraw cannot slip through).
+        The evidence holds no answer, distractor, alias, hint or reveal: such keys are 400. A retired item is refused. A save sets
+        `media_id` (null unlinks), bumps the item version, sets `prep_version` to the new version and writes one `content_prepare` audit row
+        (`{ id, fromVersion, version, fromStage, stage, media, fields }`, field names only, never the text); an unchanged save of a current
+        preparation is 200 `changed: false` and writes nothing; an unchanged save of a STALE one (below approved) re-confirms it: a write whose audit detail has `reconfirmed: true`. Runs in one transaction under the module's write lock.
+        Recorded, not delivered: nothing here reaches a player.
+      parameters:
+        - $ref: "#/components/parameters/ContentModule"
+        - $ref: "#/components/parameters/ContentItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentItemPreparationRequest" }
+      responses:
+        "200":
+          description: "The item as it is now. `changed: false` means nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentItemPreparationChange" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/UnknownRoute" }
+        "409":
+          description: |
+            `version_conflict`: `version` is not the item's stored version. `import_in_progress`: an import or another edit holds the
+            module's write lock; retry after `Retry-After` seconds (that response only). Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [version_conflict, import_in_progress]
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: |
+            `content_invalid`: the item is retired, a stage rule or the approved lock is broken, `mediaId` names no media item, or the photo fails the media guard.
+            A STALE approved package (the item changed after approval: relink, sheet re-import, edit) cannot be saved approved to approved even with the stored values: "This package changed since approval. Step it back to Previewed and preview it again." A stale package below approved may be re-confirmed in place.
+            `errors` lists EVERY reason found, in plain English. Nothing was changed.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EditorialInvalid" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
@@ -4191,8 +4282,13 @@ components:
     ContentItem:
       type: object
       additionalProperties: false
-      required: [id, rank, status, source, version, data, mediaId, updatedAt]
+      required: [id, rank, status, source, version, data, mediaId, preparation, updatedAt]
       properties:
+        preparation:
+          description: "Military preparation (0.24.0); null for an item never prepared and for every other module. `stale`: the item changed after the preparation was saved, so prepare it again."
+          oneOf:
+            - { $ref: "#/components/schemas/ContentItemPreparation" }
+            - { type: "null" }
         mediaId:
           type: [string, "null"]
           description: The linked image (`med-<n>`), null when none. Set by `PUT .../items/{id}/media`; a link or unlink is one `media` entry in the change `diff`.
@@ -4205,6 +4301,54 @@ components:
           type: object
           description: Module payload. Military Aircraft Identifier is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter is `{ answer, wrong[3], sourceFile }` (IATA codes).
         updatedAt: { type: string, format: date-time }
+    PrepStage:
+      type: string
+      enum: [missing_photo, rights_checked, content_prepared, previewed, approved]
+    PrepEvidence:
+      type: object
+      additionalProperties: false
+      required: [photoSource, licenseUrl, permission, attribution, referenceUrl, checklist, notes]
+      description: What staff record about a photo's rights and its preview. No answer, distractor, alias, hint or reveal (those keys are 400).
+      properties:
+        photoSource: { type: string, enum: ["", media, licensed], description: "`media`: the linked backend photo; `licensed`: a separately licensed photograph (needs an https `licenseUrl`)." }
+        licenseUrl: { type: string, maxLength: 600 }
+        permission: { type: string, maxLength: 2400, description: At least 10 characters (trimmed) from rights_checked on. }
+        attribution: { type: string, maxLength: 160, description: At least 2 characters (trimmed) from rights_checked on. }
+        referenceUrl: { type: string, maxLength: 600, description: An https link that confirms the aircraft identity; needed from content_prepared on. }
+        checklist:
+          type: object
+          additionalProperties: false
+          required: [identity, answers, crop, clipperCard]
+          properties:
+            identity: { type: boolean }
+            answers: { type: boolean }
+            crop: { type: boolean, description: Needed from previewed on. }
+            clipperCard: { type: boolean }
+        notes: { type: string, maxLength: 2400 }
+    ContentItemPreparation:
+      type: object
+      additionalProperties: false
+      required: [stage, evidence, stale]
+      properties:
+        stage: { $ref: "#/components/schemas/PrepStage" }
+        evidence: { $ref: "#/components/schemas/PrepEvidence" }
+        stale: { type: boolean, description: True once the item version has moved past the preparation save. }
+    ContentItemPreparationRequest:
+      type: object
+      additionalProperties: false
+      required: [version, stage, evidence, mediaId]
+      properties:
+        version: { type: integer, minimum: 1, maximum: 2147483647, description: The item version the caller read. }
+        stage: { $ref: "#/components/schemas/PrepStage" }
+        evidence: { $ref: "#/components/schemas/PrepEvidence" }
+        mediaId: { type: [string, "null"], pattern: "^med-[1-9][0-9]{0,14}$", description: "The linked photo; null unlinks. From rights_checked on a set photo must be published and not demo-owned." }
+    ContentItemPreparationChange:
+      type: object
+      additionalProperties: false
+      required: [changed, item]
+      properties:
+        changed: { type: boolean, description: False when nothing was written. }
+        item: { $ref: "#/components/schemas/ContentItem" }
     ContentItemList:
       type: object
       additionalProperties: false

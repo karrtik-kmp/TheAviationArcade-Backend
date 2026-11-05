@@ -21,6 +21,8 @@ import type { ContentModuleMapping, ImportIssue, ParsedSheet, StoredItem } from 
 import { lockContentModule, readContentStamp } from "./content-lock.js";
 import { compareIds } from "./content-modules.js";
 import { formatMediaId } from "./item-media-id.js";
+import { preparationView } from "./preparation/military-preparation.js";
+import type { PreparationView } from "./preparation/military-preparation.js";
 import { ContentDocumentsService } from "./documents/content-documents.service.js";
 import { planHash, planImport } from "./import-plan.js";
 import { CONTENT_STATUSES, type ContentStatus } from "../db/enums.js";
@@ -80,6 +82,8 @@ export type ItemView = {
   data: unknown;
   /** The linked image (`med-<n>`), null when none. */
   mediaId: string | null;
+  /** Military preparation (W3); null when never prepared and for every other module. `stale`: the item changed after the save. */
+  preparation: PreparationView | null;
   updatedAt: string;
 };
 
@@ -305,6 +309,7 @@ export class ContentService {
         version: r.version,
         data: r.data,
         mediaId: formatMediaId(r.mediaId),
+        preparation: preparationView(r),
         updatedAt: r.updatedAt.toISOString(),
       }));
   }
