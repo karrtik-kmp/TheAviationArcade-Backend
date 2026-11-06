@@ -83,6 +83,9 @@ the same.
 - Credential check (2026-11-06, read-only, a made-up purchase token): token exchange 200; Play API 401 `permissionDenied`
   while the Play invite propagates. Done when the check answers 404 for the made-up token. RTDN topic `projects/airplane-games-9fe1e/topics/Airplane-Games-IAP-Playstore` created 2026-11-06 (P4 subscribes to it; no push
   subscription yet). Products, testers: not yet.
+- **Google Play complete (2026-11-06, `stores:check` passed):** `aa.hints.5`, `aa.hints.15`, `aa.miles.5000`, `aa.miles.25000` ACTIVE;
+  subscriptions `aa.firstclass.monthly` (one base plan, P1M) and `aa.firstclass.yearly` (one base plan, P1Y) ACTIVE; `aa.firstclass`
+  base plans INACTIVE (never sold). History:
 - Play products (2026-11-06): the four one-time products exist (`aa.miles.5000` ACTIVE; `aa.hints.5`, `aa.hints.15`, `aa.miles.25000`
   still DRAFT). A single subscription `aa.firstclass` with two base plans was created first; Unity IAP 5.4.4 can only buy the first
   offer of a subscription, so it is deactivated and never sold. Needed instead: `aa.firstclass.monthly` and `aa.firstclass.yearly`,
