@@ -83,7 +83,12 @@ the same.
 - Credential check (2026-11-06, read-only, a made-up purchase token): token exchange 200; Play API 401 `permissionDenied`
   while the Play invite propagates. Done when the check answers 404 for the made-up token. RTDN topic `projects/airplane-games-9fe1e/topics/Airplane-Games-IAP-Playstore` created 2026-11-06 (P4 subscribes to it; no push
   subscription yet). Products, testers: not yet.
-- Apple: not started.
+- Play products (2026-11-06): the four one-time products exist (`aa.miles.5000` ACTIVE; `aa.hints.5`, `aa.hints.15`, `aa.miles.25000`
+  still DRAFT). A single subscription `aa.firstclass` with two base plans was created first; Unity IAP 5.4.4 can only buy the first
+  offer of a subscription, so it is deactivated and never sold. Needed instead: `aa.firstclass.monthly` and `aa.firstclass.yearly`,
+  **one auto-renewing base plan each**.
+- Apple (2026-11-06): In-App Purchase key `9XXJXK6ZC3`, Issuer ID and Apple ID `6822261921` set; sandbox accepts the key
+  (4040010); production answers 401 until the app has a production release (the backend falls back to sandbox).
 
 **Checking the keys (`stores:check`).** Read-only; prints statuses and reasons, never a key or token; run only with the owner's
 sign-off. Locally (PowerShell, in `Backend/`, real Firebase project inline for this run only):

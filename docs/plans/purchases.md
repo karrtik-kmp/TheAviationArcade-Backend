@@ -619,6 +619,120 @@ backup clone copies the working tree (it would then hold a second copy of the ke
 Apple is added the same way later (`STORE_ENABLED=apple,google`, the `.p8` at `/etc/aviation-arcade/secrets/apple-iap.p8`).
 Not in P-K: notifications (P4 needs the public HTTPS push endpoint), the acknowledge sweeper, refunds.
 
+## Wave P-G: one Google subscription with two base plans (DROPPED 2026-11-06, kept for the record)
+
+**Dropped (user, 2026-11-06).** Unity IAP 5.4.4 cannot buy a chosen base plan: its Google `LaunchBillingFlow` takes the first
+subscription offer ("We currently only support 1 base plan", package source `Runtime/Stores/Android/GooglePlay/AAR/Models/BillingClient.cs`,
+checked by the Unity session), so `aa.firstclass` with two base plans cannot be sold correctly. Ruling: Play gets two subscriptions
+`aa.firstclass.monthly` and `aa.firstclass.yearly`, one auto-renewing base plan each, matching iOS and the catalog; `aa.firstclass` is
+deactivated and never sold (its id stays used). No backend change. The draft below is not built.
+
+User decision (2026-11-06): Google Play has **one** subscription `aa.firstclass` with two auto-renewing base plans `monthly` (P1M)
+and `yearly` (P1Y), both ACTIVE; Google ids are permanent and the user keeps it. Apple has no base plans: iOS keeps two products
+`aa.firstclass.monthly` and `aa.firstclass.yearly`. The four one-time ids are the same on both stores.
+
+### What the code assumes today
+
+- One id for both stores: `store_products.product_id` is the PK ("the same id in the App Store and Google Play",
+  `src/db/schema.ts:1066-1074`); `store_transactions.product_id` and `store_subscriptions.product_id` FK to it.
+- Lookup by the client's id before any store call (`src/store/catalog.ts:14-17`, `purchases.service.ts:85-88`); verified product must
+  equal the body's, else 422 (`:101`); grant re-reads by `transaction.productId` (`:141`).
+- The grant already stores the catalog id (`purchase-grant.ts:57, :113`).
+- Google adapter keeps the line item whose `productId === reference.productId` (`google-store-verifier.ts:209-211`); `offerDetails.basePlanId`
+  is not read; ⚠️ the subscription acknowledge uses `transaction.productId` in its path (`:109-114`), so `VerifiedTransaction.productId`
+  must stay the **Google** id.
+- `stores-check` expects the six catalog ids, Pass ids as Play subscriptions (`stores-check.ts:44-45, 195-220`).
+- Setup guide `docs/setup/store-credentials.md:62` still says to create Play subscriptions `aa.firstclass.monthly` / `.yearly`.
+
+### Decisions (recommended)
+
+**D1. Catalog: a nullable Google mapping on the existing Pass rows.** Catalog id stays the PK and is the Apple id. Columns
+`google_product_id text NULL`, `google_base_plan_id text NULL`; rule CHECK: both null, or `kind = 'first_class_pass'` and both set;
+pattern CHECKs (product: the catalog pattern; base plan `^[a-z0-9][a-z0-9-]{0,62}$`, verify against Play's rules);
+`UNIQUE (google_product_id, google_base_plan_id)` (`store_products_google_plan`). Effective Google identity: consumable = its own id,
+no base plan; mapped Pass = the mapping; unmapped Pass = not sold on Google. **Set once**: null → value allowed by an edit; changing
+or clearing is 422 (renewals keep resolving; a past transaction's Google id stays derivable). Rejected: per-store rows (changes the PK
+two FKs, entitlements, staff filters and audit use); a consumable override (ids are equal today).
+
+**D2. Android sends the Google product id the purchase carries** (`aa.firstclass` for the Pass; one-time ids unchanged). No body
+schema change, no base plan in the body: an unfinished purchase replayed at store init does not carry its base plan (⚠️ verify against
+the current Billing Library reference), and the server trusts only the verified answer. `PurchasesService.submit`:
+1. Candidates (`findStoreCandidates(db, store, productId)`): Apple = row with that `product_id`; Google = rows whose effective Google id
+   equals it. Sellable only; none → pending before any store call.
+2. Mixed kinds among candidates (staff error; Play forbids a shared id) → pending + error log.
+3. Verify with `{ kind }`, reference unchanged; `transaction.productId` stays the store id (acknowledge path).
+4. `transaction.productId !== reference.productId` → 422 (unchanged).
+5. Match the row whose effective identity equals (`transaction.productId`, `transaction.basePlanId`); none (unknown base plan, unmapped
+   Pass, base plan on a consumable) → **200 pending**, nothing written or acknowledged, error log naming the base plan.
+6. Grant with the matched row's catalog id (re-read by catalog id under the lock; kind guards unchanged).
+Effects: on Google the catalog id `aa.firstclass.monthly` is pending before any store call; Apple unchanged. ⚠️ A Google Pass on a base
+plan with no row stays unacknowledged and Google refunds it after 3 days (today's rule for unknown products): staff create the row before
+activating a new base plan.
+
+**D3. `GET /v1/store/products` gains `google: { productId, basePlanId? }`** when sold on Google (consumables: same id; mapped Passes:
+`aa.firstclass` + base plan; absent for an unmapped Pass). The Apple id is always `productId`.
+
+**D4. Period and expiry.** Period from the row (selected by the verified base plan); expiry from the store's `lineItems[].expiryTime` as
+today. ASSUMPTION test: a renewal on one token whose base plan changed grants under the row its base plan maps to; the subscription row
+keeps its first `product_id`; `first_class_until` = MAX. ⚠️ Unity must not offer monthly↔yearly switching before P4.
+
+**D5. Migration `0025_store_google_base_plans`** (generated; second generate no changes) plus a hand-appended backfill for demo rows only
+(`... WHERE product_id = 'aa.firstclass.monthly' AND demo AND google_product_id IS NULL`, likewise yearly; dev and prod have no demo rows).
+Rule CHECK in `RULE_CHECKS`. Admin PUT strict body adds `googleSubscription: { productId, basePlanId }` optional: 400 on pattern; 422 on a
+consumable; create omitted = null; edit omitted = keep; value → other value 422; duplicate pair 422 (pre-check + residual 23505 on
+`store_products_google_plan`). Audit: create detail and edit diff carry `googleSubscription`; no new action. Views: `AdminStoreProduct`
+gains `googleSubscription | null`; `StoreProduct` gains `google`; staff purchases and entitlements unchanged (catalog id). **openapi 0.27.0**
+with a changelog (`google`, `googleSubscription`, the `StoreProductId` and `StorePurchaseGoogleRequest.productId` wording, the new pending
+case, catalog ids in responses). No new route or error code.
+
+**D6. stores-check:** expected Google ids derived through the effective identity: the four one-time products, and subscription
+`aa.firstclass` with base plans `monthly` and `yearly` each ACTIVE (WARN on a missing or non-ACTIVE plan, wrong type, optional billing
+period ≠ `passPeriod`). WARNs keep exit 0.
+
+**D7. Unity** (brief below). **D8. Dev catalog (K3):** the two Pass PUTs add `googleSubscription`; `DEMO_PRODUCTS` gains the mappings.
+
+### Slices and ownership
+
+| Slice | Files |
+|---|---|
+| G1 schema + catalog (first) | `src/db/schema.ts`, `drizzle/0025_*`, `src/store/catalog.ts`, `demo-products.ts`, `store-admin.controller.ts`, `store-catalog.service.ts`, `test/store-helpers.ts`, `test/schema-parity.ts`, store catalog / schema / products tests |
+| G2 purchase path (after G1) | `src/purchases/store-verifier.ts` (`basePlanId` on `VerifiedTransaction`), `google-store-verifier.ts` (read `offerDetails.basePlanId`; missing on a subscription → transient), Apple/none (null), `fake-store-verifier.ts` (optional `~<basePlanId>`), `purchases.service.ts`, purchases and adapter tests, Google fixtures |
+| G3 stores-check (after G1, parallel with G2) | `src/purchases/stores-check.ts`, its test |
+| Lead | openapi 0.27.0 + parity test, setup guide, ARCHITECTURE, TASKS, README, messages to Unity and the website |
+
+### Tests (summary)
+
+Schema refusals and the unique pair; catalog create/edit/set-once/duplicate/consumable refusal; listed `google`; adapter parses
+`basePlanId` (ASSUMPTION: `offerDetails.basePlanId` is the field, confirmed by the first sandbox purchase), missing base plan transient,
+acknowledge path uses `aa.firstclass`; purchases (fake): Google `aa.firstclass~monthly` grants `aa.firstclass.monthly` (and yearly),
+unknown base plan pending with nothing written, Google catalog id pending without a verifier call, Apple unchanged, unmapped Pass pending,
+mixed kinds pending; renewal-with-changed-plan ASSUMPTION; stores-check plan cases.
+
+### Not built
+
+Per-store rows; consumable override; Apple mapping column; base plan in the POST body; Google ids on transactions or staff views; a
+platform query; plan changes, linked tokens, deferred replacement (P4).
+
+### ⚠️ Open points for the gate
+
+- Unity IAP 5.4.4 must be able to buy a chosen base plan (offer token) of one subscription; if not, Android Pass purchase is blocked
+  client-side regardless of this wave. Unity to confirm first.
+- New base-plan mismatch is 200 pending, while a Google line-item mismatch stays 503 transient.
+- `storePurchase.productId` (catalog id) differs from the id Android sent for the Pass.
+- The website's catalog desk must learn `googleSubscription` to create Passes (edits keep working).
+
+### Brief for Unity (API 0.27.0)
+
+1. Google: the Pass is one subscription `aa.firstclass` with base plans `monthly` and `yearly`; iOS keeps `aa.firstclass.monthly` /
+   `.yearly`; hints and Miles keep one id.
+2. `GET /v1/store/products` gives `google: { productId, basePlanId? }`; absent = not on Android. iOS buys `productId`; Android buys
+   `google.productId` with the offer of `google.basePlanId`. Please confirm IAP 5.x can buy a chosen base plan.
+3. `POST /v1/purchases` on Google: `productId` = the id the Play purchase carries (`aa.firstclass`), never `aa.firstclass.monthly`.
+4. `storePurchase.productId` and entitlements `productId` are always the catalog id.
+5. New pending case: a base plan the catalog does not know.
+6. No in-app monthly↔yearly switching before P4.
+
+
 ## Next waves
 
 P-E Miles packs (monetization U11, built) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
