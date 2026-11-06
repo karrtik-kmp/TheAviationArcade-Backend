@@ -351,6 +351,43 @@ describe("stores:check Apple", () => {
     expect(text(result.lines)).toContain("FAIL  Apple production: HTTP 401 code=none (JWT rejected: check the key, Key ID, Issuer ID and bundle id)");
   });
 
+  it.each([401, 403])("production %i with a sandbox 4040010 is a WARN and the exit code follows the sandbox (pass)", async (status) => {
+    const net = appleNet((environment) => (environment === "production" ? new Response(null, { status }) : json(404, { errorCode: 4040010 })));
+    const result = await run(env(apple), net.fetchFn, NOT_ROOT);
+    expect(result.code).toBe(0);
+    expect(text(result.lines)).toContain(
+      `WARN  Apple production: HTTP ${status} (refused until the app has a production release; the backend falls back to sandbox. The key is proven by the sandbox answer)`,
+    );
+    expect(text(result.lines)).toContain("PASS  Apple sandbox: HTTP 404 code=4040010");
+    expect(text(result.lines)).not.toContain("FAIL");
+  });
+
+  it("production 401 with a sandbox 401 is still a FAIL", async () => {
+    const net = appleNet(() => new Response(null, { status: 401 }));
+    const result = await run(env(apple), net.fetchFn, NOT_ROOT);
+    expect(result.code).toBe(1);
+    expect(text(result.lines)).toContain("FAIL  Apple production: HTTP 401 code=none (JWT rejected");
+    expect(text(result.lines)).toContain("FAIL  Apple sandbox: HTTP 401 code=none (JWT rejected");
+    expect(text(result.lines)).not.toContain("WARN  Apple production");
+  });
+
+  it("production 401 with an inconclusive sandbox answer (5xx, 429) is INCONCLUSIVE, not 'JWT rejected'", async () => {
+    for (const answer of [() => json(500, { errorCode: 5000000 }), () => new Response("{}", { status: 429 })]) {
+      const net = appleNet((environment) => (environment === "production" ? new Response(null, { status: 401 }) : answer()));
+      const result = await run(env(apple), net.fetchFn, NOT_ROOT);
+      expect(result.code).toBe(1);
+      expect(text(result.lines)).toContain("INCONCLUSIVE  Apple production: HTTP 401 not proven (production refused; the sandbox answer was inconclusive)");
+      expect(text(result.lines)).not.toContain("JWT rejected");
+    }
+  });
+
+  it("production 401 with a sandbox 4000006 (auth ok) proves the key: WARN for production", async () => {
+    const net = appleNet((environment) => (environment === "production" ? new Response(null, { status: 401 }) : json(400, { errorCode: 4000006 })));
+    const result = await run(env(apple), net.fetchFn, NOT_ROOT);
+    expect(text(result.lines)).toContain("WARN  Apple production: HTTP 401 (refused until the app has a production release");
+    expect(text(result.lines)).not.toContain("JWT rejected");
+  });
+
   it("4000006 (auth ok, probe id malformed) and other answers are INCONCLUSIVE; 429 is rate limited", async () => {
     const malformed = await run(env(apple), appleNet(() => json(400, { errorCode: 4000006 })).fetchFn, NOT_ROOT);
     expect(malformed.code).toBe(1);

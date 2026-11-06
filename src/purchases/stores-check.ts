@@ -275,6 +275,12 @@ async function checkGoogle(fetchFn: typeof fetch, config: GoogleStoreConfig, rep
 
 async function checkApple(fetchFn: typeof fetch, config: AppleStoreConfig, report: Report): Promise<void> {
   report.info(`Apple App Store Server API, bundle ${config.bundleId}`);
+  // Until the app has a production release Apple answers the production API with 401 (no body) for a valid JWT. The backend
+  // falls back to sandbox, so a production refusal is only a failure when the sandbox answer does not prove the key.
+  let productionRefusal: number | undefined;
+  let productionRefusalCode: number | "none" = "none";
+  let sandboxProved = false;
+  let sandboxRejected = false;
   for (const environment of ["production", "sandbox"] as const) {
     const transactionId = String(randomInt(100_000_000_000_000, 300_000_000_000_000));
     try {
@@ -285,10 +291,18 @@ async function checkApple(fetchFn: typeof fetch, config: AppleStoreConfig, repor
       if (error instanceof APIException) {
         const code = typeof error.apiError === "number" ? error.apiError : null;
         if (code === APIError.TRANSACTION_ID_NOT_FOUND) {
+          if (environment === "sandbox") sandboxProved = true;
           report.pass(`Apple ${environment}: HTTP ${error.httpStatusCode} code=${code} (JWT accepted, the made-up transaction is unknown, as expected)`);
         } else if (code === APIError.INVALID_TRANSACTION_ID) {
+          if (environment === "sandbox") sandboxProved = true;
           report.inconclusive(`Apple ${environment}: HTTP ${error.httpStatusCode} code=${code} (auth ok, but the probe id was refused as malformed; use a numeric id)`);
         } else if (error.httpStatusCode === 401 || error.httpStatusCode === 403) {
+          if (environment === "production") {
+            productionRefusal = error.httpStatusCode;
+            productionRefusalCode = code ?? "none";
+            continue;
+          }
+          sandboxRejected = true;
           report.fail(`Apple ${environment}: HTTP ${error.httpStatusCode} code=${code ?? "none"} (JWT rejected: check the key, Key ID, Issuer ID and bundle id)`);
         } else {
           report.inconclusive(`Apple ${environment}: HTTP ${error.httpStatusCode} code=${code ?? "none"}`);
@@ -298,6 +312,17 @@ async function checkApple(fetchFn: typeof fetch, config: AppleStoreConfig, repor
       } else {
         report.inconclusive(`Apple ${environment}: no usable answer (${error instanceof Error ? safeCode(error.name) : "unknown"}); network, or the key could not sign`);
       }
+    }
+  }
+  if (productionRefusal !== undefined) {
+    if (sandboxProved) {
+      report.warn(
+        `Apple production: HTTP ${productionRefusal} (refused until the app has a production release; the backend falls back to sandbox. The key is proven by the sandbox answer)`,
+      );
+    } else if (sandboxRejected) {
+      report.fail(`Apple production: HTTP ${productionRefusal} code=${productionRefusalCode} (JWT rejected: check the key, Key ID, Issuer ID and bundle id)`);
+    } else {
+      report.inconclusive(`Apple production: HTTP ${productionRefusal} not proven (production refused; the sandbox answer was inconclusive)`);
     }
   }
   report.info("      not covered here: APPLE_APP_APPLE_ID, the root certificates and OCSP; the first real sandbox purchase exercises them");

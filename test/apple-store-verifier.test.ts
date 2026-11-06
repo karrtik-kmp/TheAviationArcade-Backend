@@ -326,6 +326,80 @@ describe("Apple adapter: not found in both environments", () => {
   });
 });
 
+describe("Apple adapter: production refused until the first release", () => {
+  const WARN_LINE = (status: number) =>
+    `purchase.verify store=apple environment=production status=${status} reason=production_refused_falling_back_to_sandbox (expected until the app has a production release; an error follows if the sandbox cannot settle it)`;
+
+  it.each([401, 403])("production %i then sandbox finds the transaction: granted from the sandbox, with one warn line", async (status) => {
+    const warns: string[] = [];
+    vi.spyOn(Logger.prototype, "warn").mockImplementation((message: unknown) => void warns.push(String(message)));
+    const { verifier, calls } = verifierWith({ production: new APIException(status), sandbox: await sign(consumable({ environment: "Sandbox" })) });
+    const t = expectValid(await verifier.verify(ref(), context, signal()));
+    expect(t.environment).toBe("sandbox");
+    expect(calls).toEqual(["production", "sandbox"]);
+    expect(warns).toEqual([WARN_LINE(status)]);
+  });
+
+  it("production 401 then a sandbox payload that says Production is transient (the environment check still applies)", async () => {
+    const { verifier } = verifierWith({ production: new APIException(401), sandbox: await sign(consumable()) });
+    expect((await verifier.verify(ref(), context, signal())).kind).toBe("transient");
+  });
+
+  it.each([401, 403])("production %i then sandbox %i is transient with the credentials error log", async (status) => {
+    const errors: string[] = [];
+    vi.spyOn(Logger.prototype, "error").mockImplementation((message: unknown) => void errors.push(String(message)));
+    const { verifier, calls } = verifierWith({ production: new APIException(status), sandbox: new APIException(status) });
+    expect(await verifier.verify(ref(), context, signal())).toEqual({ kind: "transient" });
+    expect(calls).toEqual(["production", "sandbox"]);
+    expect(errors.some((l) => l.includes("environment=sandbox") && l.includes("reason=apple_rejected_credentials"))).toBe(true);
+  });
+
+  it.each([401, 403])("ASSUMPTION: production refused (%i) and sandbox not found is transient, never invalid", async (status) => {
+    const logs: string[] = [];
+    vi.spyOn(Logger.prototype, "log").mockImplementation((message: unknown) => void logs.push(String(message)));
+    const { verifier, calls } = verifierWith({ production: new APIException(status) });
+    const jws = await sign(consumable({ transactionId: "2000000999" }));
+    for (const r of [ref(), ref({ jws })]) {
+      expect(await verifier.verify(r, context, signal())).toEqual({ kind: "transient" });
+    }
+    expect(calls).toEqual(["production", "sandbox", "production", "sandbox"]);
+    expect(logs.some((l) => l.includes("reason=production_unverifiable"))).toBe(true);
+    expect(logs.some((l) => l.includes("outcome=invalid"))).toBe(false);
+  });
+
+  it("production refused and sandbox not found also logs the production_unverifiable ERROR line", async () => {
+    const errors: string[] = [];
+    vi.spyOn(Logger.prototype, "error").mockImplementation((message: unknown) => void errors.push(String(message)));
+    await verifierWith({ production: new APIException(401) }).verifier.verify(ref(), context, signal());
+    expect(errors).toContain(
+      "purchase.verify store=apple environment=production reason=production_unverifiable (production refused the JWT while sandbox accepted it: expected until the app has a production release; after release this means production purchases cannot be verified, check APPLE_IAP_KEY_ID, APPLE_IAP_ISSUER_ID, APPLE_BUNDLE_ID and the App Store Connect agreements)",
+    );
+  });
+
+  it("production 401 then sandbox INVALID_TRANSACTION_ID is invalid (the one way a refused production still ends invalid)", async () => {
+    const { verifier } = verifierWith({ production: new APIException(401), sandbox: new APIException(400, APIError.INVALID_TRANSACTION_ID, "bad") });
+    expect(await verifier.verify(ref(), context, signal())).toEqual({ kind: "invalid", reason: "invalid_transaction_id" });
+  });
+
+  it("production 401 then a sandbox 5xx is transient", async () => {
+    const { verifier } = verifierWith({ production: new APIException(401), sandbox: new APIException(503) });
+    expect((await verifier.verify(ref(), context, signal())).kind).toBe("transient");
+  });
+
+  it("the real HTTP client: production 401 with no body, sandbox 200, is granted", async () => {
+    const key = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const jws = await sign(consumable({ environment: "Sandbox" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.startsWith("https://api.storekit.apple.com/") ? new Response(null, { status: 401 }) : new Response(JSON.stringify({ signedTransactionInfo: jws }), { status: 200 }),
+      ),
+    );
+    const verifier = new AppleStoreVerifier(config(key), { enableOnlineChecks: false, loadRootCertificates: () => [chain.rootDer] });
+    expect(expectValid(await verifier.verify(ref(), context, signal())).environment).toBe("sandbox");
+  });
+});
+
 describe("Apple adapter: API errors", () => {
   it("INVALID_TRANSACTION_ID (4000006) is invalid", async () => {
     const { verifier } = verifierWith({ production: new APIException(400, APIError.INVALID_TRANSACTION_ID, "bad") });

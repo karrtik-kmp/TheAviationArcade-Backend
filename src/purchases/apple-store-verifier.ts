@@ -170,6 +170,7 @@ function hashed(value: string): string {
 type Lookup =
   | { kind: "found"; signedTransactionInfo: string }
   | { kind: "not_found" }
+  | { kind: "refused" }
   | { kind: "result"; result: VerifyResult };
 
 export class AppleStoreVerifier implements StoreVerifier {
@@ -243,9 +244,15 @@ export class AppleStoreVerifier implements StoreVerifier {
   ): Promise<{ result: VerifyResult; environment: string; reason: string }> {
     let answered: AppleEnvironmentName | undefined;
     let signedTransactionInfo: string | undefined;
+    let productionRefused = false;
     for (const environment of ENVIRONMENTS) {
       const lookup = await this.lookup(environment, reference.transactionId, signal);
       if (lookup.kind === "result") return { result: lookup.result, environment, reason: reasonOf(lookup.result) };
+      if (lookup.kind === "refused") {
+        // Apple refuses the production API (401, no body) until the app has a production release: ask the sandbox next.
+        productionRefused = true;
+        continue;
+      }
       if (lookup.kind === "found") {
         answered = environment;
         signedTransactionInfo = lookup.signedTransactionInfo;
@@ -254,6 +261,13 @@ export class AppleStoreVerifier implements StoreVerifier {
     }
 
     if (answered === undefined || signedTransactionInfo === undefined) {
+      // Production could not be checked, so "not in the sandbox" proves nothing: never call the purchase invalid.
+      if (productionRefused) {
+        this.logger.error(
+          "purchase.verify store=apple environment=production reason=production_unverifiable (production refused the JWT while sandbox accepted it: expected until the app has a production release; after release this means production purchases cannot be verified, check APPLE_IAP_KEY_ID, APPLE_IAP_ISSUER_ID, APPLE_BUNDLE_ID and the App Store Connect agreements)",
+        );
+        return { result: { kind: "transient" }, environment: "none", reason: "production_unverifiable" };
+      }
       return this.notFoundInBoth(reference, signal);
     }
     return this.decodeAndMap(answered, signedTransactionInfo, reference, signal);
@@ -278,6 +292,12 @@ export class AppleStoreVerifier implements StoreVerifier {
         if (code === APIError.TRANSACTION_ID_NOT_FOUND) return { kind: "not_found" };
         if (code === APIError.INVALID_TRANSACTION_ID) {
           return { kind: "result", result: { kind: "invalid", reason: "invalid_transaction_id" } };
+        }
+        if (environment === "production" && (error.httpStatusCode === 401 || error.httpStatusCode === 403)) {
+          this.logger.warn(
+            `purchase.verify store=apple environment=production status=${error.httpStatusCode} reason=production_refused_falling_back_to_sandbox (expected until the app has a production release; an error follows if the sandbox cannot settle it)`,
+          );
+          return { kind: "refused" };
         }
         if (error.httpStatusCode === 401 || error.httpStatusCode === 403) {
           this.logger.error(

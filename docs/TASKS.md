@@ -117,6 +117,13 @@ sit in the repo's own `secrets/` folder (exact name, not a symlink or junction, 
 "approve with changes"), code-reviewer ("ship after fixes", all fixed). Verified: typecheck clean; `npm test` 45 files / 1098;
 `npm run test:e2e` 43 files / 1190 on a fresh database; `nest build` ok; `contracts/` unchanged. Not run yet: the live check
 (owner sign-off). K3 (live catalog rows on dev) and K4 (dev-server rollout) are operator steps.
+**Apple production 401 fallback (2026-11-06):** the live check showed Apple production answering 401 to a JWT that sandbox
+accepts (app never released; Apple staff, developer.apple.com/forums/thread/806452: production APIs stay locked until a production
+release). The verifier now asks sandbox after a production 401/403 (warn), a refused production plus sandbox not-found is transient
+with an ERROR line (`production_unverifiable`), never invalid; `stores:check` reports it as WARN when sandbox proves the key. Live:
+Google token + order reads ok (made-up token 400 `invalid`, recorded as an ASSUMPTION), product lists 204 until the AAB and products
+exist; Apple sandbox 4040010 (key, Key ID `9XXJXK6ZC3`, Issuer ID and bundle id proven). Code review "ship after fixes" (all fixed).
+Verified: typecheck clean; `npm test` 45 files / 1116; `npm run test:e2e` 43 files / 1190 on a fresh database; `nest build` ok.
 
 **Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**
 
