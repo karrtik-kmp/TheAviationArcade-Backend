@@ -255,6 +255,21 @@ describe("GoogleStoreVerifier endpoint choice and the other-endpoint retry", () 
     expect(h.api()).toHaveLength(2);
   });
 
+  it("ASSUMPTION: the documented token-level reasons (notFound, purchaseTokenNoLongerValid, subscriptionNoLongerAvailable) are what Google sends; the two strings the adapter once named are not accepted", async () => {
+    const reason = (status: number, text: string) => json(status, { error: { code: status, errors: [{ reason: text }] } });
+    const both = async (first: Response, second: Response) => {
+      const h = harness(byPath({ [PRODUCT_GET]: () => first, [SUB_GET]: () => second }));
+      return h.verifier.verify(productRef, { kind: "miles_pack" }, signal());
+    };
+    expect((await both(reason(404, "notFound"), reason(410, "subscriptionNoLongerAvailable"))).kind).toBe("invalid");
+    expect((await both(reason(410, "purchaseTokenNoLongerValid"), reason(410, "subscriptionNoLongerAvailable"))).kind).toBe("invalid");
+    // The old, undocumented strings do not make a token invalid.
+    expect(await both(reason(404, "notFound"), reason(410, "subscriptionPurchaseNoLongerAvailable"))).toEqual({ kind: "transient" });
+    expect(await both(reason(404, "notFound"), reason(404, "purchaseTokenDoesNotMatchProductId"))).toEqual({ kind: "transient" });
+    // purchaseTokenMismatch is documented as 400, and a 400 is never token-level here (fails safe).
+    expect(await both(reason(400, "purchaseTokenMismatch"), reason(400, "purchaseTokenMismatch"))).toEqual({ kind: "transient" });
+  });
+
   it("ASSUMPTION: token-level reason strings (notFound, purchaseTokenNoLongerValid) are what Google sends; confirm on the first real sandbox call", async () => {
     // Fixtures above are the recorded strings. A 404 on both without a token-level reason is ours to fix, never invalid.
     const h = harness(byPath({ [PRODUCT_GET]: () => json(404, fixture("error-application-not-found")), [SUB_GET]: () => json(404, fixture("error-application-not-found")) }));

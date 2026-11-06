@@ -33,6 +33,7 @@ npm run test:e2e              # API tests against airplane_games_test (refuses a
 npm run db:generate           # new migration from src/db/schema.ts (never edit an applied one)
 npm run contracts:write       # builds, then regenerates contracts/*.json (see contracts/README.md); commit the result
 npm run bunny:check           # builds, then probes Bunny Storage (upload/read/delete one object). Needs real credentials: only with the owner's sign-off
+npm run stores:check          # builds, then read-only checks of the configured Apple / Google keys. Live calls: only with the owner's sign-off
 ```
 
 `.env` points at `demo-airplane-games` and accepts unsigned Firebase Auth Emulator tokens. Start the
@@ -74,7 +75,7 @@ keys. Players created this way live in your local database only.
 | `DEMO_ACCOUNT_UID` | Optional. The Firebase uid of the website's shared demo account (a password handed to testers); same uid rules as any principal (1-128 characters, no `:` or `/`, no control characters), otherwise startup fails. The derived principal `firebase:<FIREBASE_PROJECT_ID>:<uid>` can never hold `photographer` or `admin`: the roles guard ignores any such row, and request, approve, admin grant, `roles:grant` and `media:import` refuse it (ADR-0002 follow-up, incident 2026-11-04). Not a secret. Revoke, reject and block still work, so cleanup is possible. Set it wherever the demo account exists |
 | `STORE_VERIFIER` | `none` (default), `fake` or `stores`. Who checks store purchases. `none`: `POST /v1/purchases` answers 503 `store_unavailable` (the app keeps the purchase pending). `fake`: the deterministic test store (see "Purchases"); a startup error when `APP_ENV=production`, and outside `APP_ENV=test` unless `FIREBASE_PROJECT_ID` starts with `demo-`. `stores`: the real Apple and Google verifiers, for the stores whose settings are given (below); refused with a `demo-` project outside `APP_ENV=test` |
 | `APPLE_BUNDLE_ID`, `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID`, `APPLE_APP_APPLE_ID`, `APPLE_IAP_KEY_FILE` or `APPLE_IAP_KEY` | Apple App Store Server API (all or none; one key form). Only with `STORE_VERIFIER=stores`. Owner steps: [docs/setup/store-credentials.md](docs/setup/store-credentials.md) |
-| `GOOGLE_PLAY_PACKAGE_NAME`, `GOOGLE_PLAY_SERVICE_ACCOUNT_FILE` or `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Google Play Developer API (all or none; one key form). Only with `STORE_VERIFIER=stores` |
+| `GOOGLE_PLAY_PACKAGE_NAME`, `GOOGLE_PLAY_SERVICE_ACCOUNT_FILE` or `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Google Play Developer API (all or none; one key form). Only with `STORE_VERIFIER=stores`. A key file may be outside the repo or in its own git-ignored `secrets/` folder (not in production) |
 | `STORE_ENABLED` | Production with `stores` only: `apple`, `google` or `apple,google`, matching the configured stores |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 

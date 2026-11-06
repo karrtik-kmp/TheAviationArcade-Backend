@@ -39,13 +39,16 @@ const JWT_LIFETIME_S = 3600;
 
 /**
  * ASSUMPTION: the reason strings Google gives when a token does not exist or is no longer valid. Taken from the Play Developer API
- * error references; confirmed by the first real sandbox call. Only 404 / 410 with one of these (on both endpoints) is `invalid`.
+ * error reference (developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2, fetched 2026-11-06:
+ * notFound 404, purchaseTokenNoLongerValid 410, subscriptionNoLongerAvailable 410, purchaseTokenMismatch 400); confirmed by the first
+ * real sandbox call. Only 404 / 410 with one of these (on both endpoints) is `invalid`, so the 400 `purchaseTokenMismatch` never
+ * matches today: a 400 stays transient, which fails safe.
  */
 const TOKEN_LEVEL_REASONS: ReadonlySet<string> = new Set([
   "notFound",
   "purchaseTokenNoLongerValid",
-  "subscriptionPurchaseNoLongerAvailable",
-  "purchaseTokenDoesNotMatchProductId",
+  "subscriptionNoLongerAvailable",
+  "purchaseTokenMismatch",
 ]);
 
 const VALID_SUBSCRIPTION_STATES: ReadonlySet<string> = new Set([

@@ -107,6 +107,17 @@ function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 class SignalingAppStoreServerAPIClient extends AppStoreServerAPIClient implements AppleTransactionClient {
   private readonly signals = new AsyncLocalStorage<AbortSignal>();
 
+  constructor(
+    signingKey: string,
+    keyId: string,
+    issuerId: string,
+    bundleId: string,
+    environment: Environment,
+    private readonly fetchFn: typeof fetch = (input, init) => fetch(input, init),
+  ) {
+    super(signingKey, keyId, issuerId, bundleId, environment);
+  }
+
   getTransactionInfo(transactionId: string, signal?: AbortSignal): Promise<TransactionInfoResponse> {
     if (signal === undefined) return super.getTransactionInfo(transactionId);
     return this.signals.run(signal, () => super.getTransactionInfo(transactionId));
@@ -124,7 +135,7 @@ class SignalingAppStoreServerAPIClient extends AppStoreServerAPIClient implement
     const callerSignal = this.signals.getStore();
     const timeout = AbortSignal.timeout(HTTP_TIMEOUT_MS);
     const url = (this as unknown as { urlBase: string }).urlBase + path + "?" + parsedQueryParameters.toString();
-    const response = await fetch(url, {
+    const response = await this.fetchFn(url, {
       method,
       headers,
       body: requestBody as BodyInit | undefined,
@@ -137,6 +148,11 @@ class SignalingAppStoreServerAPIClient extends AppStoreServerAPIClient implement
     }
     return response as never;
   }
+}
+
+/** The adapter's own API client factory, also used by `npm run stores:check` (with its own fetch, so a test can stay offline). */
+export function createAppleTransactionClient(environment: AppleEnvironmentName, config: AppleStoreConfig, fetchFn?: typeof fetch): AppleTransactionClient {
+  return new SignalingAppStoreServerAPIClient(config.privateKeyPem, config.keyId, config.issuerId, config.bundleId, LIBRARY_ENVIRONMENT[environment], fetchFn);
 }
 
 function defaultRootCertificates(): Buffer[] {
@@ -170,8 +186,7 @@ export class AppleStoreVerifier implements StoreVerifier {
     if (roots.length === 0) throw new Error("No Apple root certificates found (certs/apple)");
     const createClient =
       options.createClient ??
-      ((environment, apple) =>
-        new SignalingAppStoreServerAPIClient(apple.privateKeyPem, apple.keyId, apple.issuerId, apple.bundleId, LIBRARY_ENVIRONMENT[environment]));
+      ((environment, apple) => createAppleTransactionClient(environment, apple));
     const createVerifier =
       options.createVerifier ??
       ((environment, apple, rootCertificates, online) =>

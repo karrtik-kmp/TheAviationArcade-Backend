@@ -1,6 +1,6 @@
 import { createPrivateKey } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Global, Module } from "@nestjs/common";
 import { importPKCS8 } from "jose";
@@ -470,12 +470,35 @@ function repoRoot(): string {
   return fileURLToPath(new URL("../../", import.meta.url));
 }
 
-/** A key file must sit outside the repo (both the working directory and the repo root), so a key can never be where git or the Docker context sees it. */
-function readKeyFile(setting: string, path: string): string {
+/** The one folder inside the repo that may hold a key file for local development (git and Docker both ignore it). */
+const LOCAL_KEY_FOLDER = "secrets";
+
+/**
+ * True when `real` lies in `<repo>/secrets` and that folder is a plain directory: its path (below the real repo root) is already
+ * canonical (so it is not a symlink or junction, and no parent hop leads elsewhere) and `lstat` says directory. `real` is itself a
+ * realpath, so a symlink inside the folder that points back into the repo resolves outside the folder and is refused.
+ */
+function insideLocalKeyFolder(real: string, realRepo: string): boolean {
+  try {
+    const folder = join(realRepo, LOCAL_KEY_FOLDER);
+    return readdirSync(realRepo).includes(LOCAL_KEY_FOLDER) && lstatSync(folder).isDirectory() && realpathSync(folder) === folder && isInsideAnyRoot(real, [folder]);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A key file must sit outside the repo (both the working directory and the repo root), so a key can never be where git or the Docker
+ * context sees it. The one exception is `<repo>/secrets/` (see `insideLocalKeyFolder`), only when APP_ENV is not production: a server's
+ * keys live in /etc/aviation-arcade/secrets/. `options` exists for tests.
+ */
+export function readKeyFile(setting: string, path: string, appEnv: AppEnv, options: { cwd?: string; repoRoot?: string } = {}): string {
   let real: string;
   try {
     real = realpathSync(resolve(path));
-    if (isInsideAnyRoot(real, [realpathSync(process.cwd()), realpathSync(repoRoot())])) real = "";
+    const realRepo = realpathSync(options.repoRoot ?? repoRoot());
+    const inside = isInsideAnyRoot(real, [realpathSync(options.cwd ?? process.cwd()), realRepo]);
+    if (inside && !(appEnv !== "production" && insideLocalKeyFolder(real, realRepo))) real = "";
   } catch {
     throw storeConfigError(setting);
   }
@@ -551,7 +574,7 @@ function parseStoresConfig(
     ];
     if (bad.length > 0) throw storeConfigError(bad.join(", "));
     const setting = env.APPLE_IAP_KEY_FILE !== undefined ? "APPLE_IAP_KEY_FILE" : "APPLE_IAP_KEY";
-    const pem = env.APPLE_IAP_KEY_FILE !== undefined ? readKeyFile(setting, env.APPLE_IAP_KEY_FILE) : (env.APPLE_IAP_KEY ?? "").replace(/\\n/g, "\n");
+    const pem = env.APPLE_IAP_KEY_FILE !== undefined ? readKeyFile(setting, env.APPLE_IAP_KEY_FILE, appEnv) : (env.APPLE_IAP_KEY ?? "").replace(/\\n/g, "\n");
     checkPem(setting, pem, "ec");
     apple = {
       bundleId: env.APPLE_BUNDLE_ID ?? "",
@@ -576,7 +599,7 @@ function parseStoresConfig(
     }
     if (!ANDROID_PACKAGE.test(env.GOOGLE_PLAY_PACKAGE_NAME ?? "")) throw storeConfigError("GOOGLE_PLAY_PACKAGE_NAME");
     const setting = env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE !== undefined ? "GOOGLE_PLAY_SERVICE_ACCOUNT_FILE" : "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON";
-    const text = env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE !== undefined ? readKeyFile(setting, env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE) : (env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON ?? "");
+    const text = env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE !== undefined ? readKeyFile(setting, env.GOOGLE_PLAY_SERVICE_ACCOUNT_FILE, appEnv) : (env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON ?? "");
     let json: Record<string, unknown> | undefined;
     try {
       const value: unknown = JSON.parse(text);
@@ -631,6 +654,38 @@ export async function importStoreKeys(config: Pick<AppConfig, "apple" | "google"
       throw storeConfigError("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
     }
   }
+}
+
+/** The store settings only, with the same fields (and so the same trimming and empty-means-unset rules) as `loadConfig`. */
+const storesEnvSchema = envSchema.pick({
+  APP_ENV: true,
+  FIREBASE_PROJECT_ID: true,
+  STORE_VERIFIER: true,
+  STORE_ENABLED: true,
+  APPLE_BUNDLE_ID: true,
+  APPLE_IAP_KEY_ID: true,
+  APPLE_IAP_ISSUER_ID: true,
+  APPLE_APP_APPLE_ID: true,
+  APPLE_IAP_KEY_FILE: true,
+  APPLE_IAP_KEY: true,
+  GOOGLE_PLAY_PACKAGE_NAME: true,
+  GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: true,
+  GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: true,
+});
+
+/**
+ * The server's own rules for the store settings, without a database or the other settings (used by `npm run stores:check`):
+ * parse, run `parseStoresConfig`, then import the keys. Side-effect free apart from reading a key file. Errors name settings only.
+ */
+export async function parseStoresEnv(env: NodeJS.ProcessEnv): Promise<{ appEnv: AppEnv; apple: AppleStoreConfig | undefined; google: GoogleStoreConfig | undefined }> {
+  const parsed = storesEnvSchema.safeParse(env);
+  if (!parsed.success) {
+    const names = [...new Set(parsed.error.issues.map((issue) => issue.path.join(".")))];
+    throw new Error(`Invalid environment configuration: ${names.join(", ")}`);
+  }
+  const stores = parseStoresConfig(parsed.data, parsed.data.APP_ENV, parsed.data.FIREBASE_PROJECT_ID);
+  await importStoreKeys(stores);
+  return { appEnv: parsed.data.APP_ENV, ...stores };
 }
 
 const UGS_REQUIRED = [

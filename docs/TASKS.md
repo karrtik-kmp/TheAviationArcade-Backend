@@ -106,6 +106,17 @@ device reaches). ASSUMPTIONs to confirm on the first sandbox calls: Google token
 a refunded purchase. Open user decisions: final product ids (permanent in both stores), Play Cloud project, where the first sandbox
 purchase runs. Next waves: P4 notifications, refunds (R5), grace, acknowledge sweeper → ads and Pass hint grants → P5 Status Point
 boosts → final store ids.
+**P-K K0-K2 built 2026-11-06 (no API change, no migration):** `npm run stores:check` (`scripts/stores-check.mjs` over
+`src/purchases/stores-check.ts`): read-only live check of the configured stores with the server's own config rules
+(`parseStoresEnv`). Google: token exchange, list one-time products and subscriptions (proves Play access and the package, reports
+missing / mistyped / inactive catalog ids as WARN), probe a made-up token on productsv2 and subscriptionsv2; Apple: Get Transaction
+Info for a made-up numeric id on production and sandbox through the adapter's own client. Prints statuses and reasons only
+(long token-like runs redacted); refuses root, `APP_ENV=test`, a missing or odd `APP_ENV`; warns when `STORE_VERIFIER` in the
+environment is not `stores`. K0: Google reason strings corrected against the API reference (still fail-safe). K2: a key file may
+sit in the repo's own `secrets/` folder (exact name, not a symlink or junction, never in production). Reviews: devops-expert (plan,
+"approve with changes"), code-reviewer ("ship after fixes", all fixed). Verified: typecheck clean; `npm test` 45 files / 1098;
+`npm run test:e2e` 43 files / 1190 on a fresh database; `nest build` ok; `contracts/` unchanged. Not run yet: the live check
+(owner sign-off). K3 (live catalog rows on dev) and K4 (dev-server rollout) are operator steps.
 
 **Client and owner questions (asked 2026-11-04; mirror into Unity `docs/implementation/CLIENT_CONTENT_IMPORT.md`):**
 

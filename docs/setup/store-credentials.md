@@ -85,6 +85,13 @@ the same.
   subscription yet). Products, testers: not yet.
 - Apple: not started.
 
+**Checking the keys (`stores:check`).** Read-only; prints statuses and reasons, never a key or token; run only with the owner's
+sign-off. Locally (PowerShell, in `Backend/`, real Firebase project inline for this run only):
+`$env:FIREBASE_PROJECT_ID="airplane-games-auth-20261022"; $env:GOOGLE_PLAY_PACKAGE_NAME="com.airplane.games";
+$env:GOOGLE_PLAY_SERVICE_ACCOUNT_FILE="H:/Work/TheAviationArcade/Backend/secrets/play-service-account.json"; npm run stores:check`
+(then remove the three variables). On the dev server, as the app user, without a build and before editing the env file: see
+`docs/plans/purchases.md` wave P-K, K4 step 2. Exit 0 = every configured store passed; a WARN names a missing or mistyped product.
+
 ## What the backend does with them
 
 | Value | Environment variable (planned) |
