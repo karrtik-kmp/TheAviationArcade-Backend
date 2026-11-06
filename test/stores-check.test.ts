@@ -263,6 +263,15 @@ describe("stores:check Google", () => {
       expect(text(result.lines)).toContain("INCONCLUSIVE  Play access not proven by this check (one-time product list: HTTP 500 reason=backendError)");
       expect(text(result.lines)).toContain("INCONCLUSIVE  Play access not proven by this check (subscription list: HTTP 502 reason=none)");
     });
+
+    it("204 No Content on the lists (seen live before the Play invite grants product access) is INCONCLUSIVE, never a PASS", async () => {
+      const net = network(healthyGoogle({ oneTime: () => new Response(null, { status: 204 }), subs: () => new Response(null, { status: 204 }) }));
+      const result = await run(env(google), net.fetchFn, NOT_ROOT);
+      expect(result.code).toBe(1);
+      expect(text(result.lines)).not.toContain("PASS  Play access");
+      expect(text(result.lines)).toContain("INCONCLUSIVE  Play access not proven by this check (one-time product list: HTTP 204 reason=noContent");
+      expect(text(result.lines)).toContain("INCONCLUSIVE  Play access not proven by this check (subscription list: HTTP 204 reason=noContent");
+    });
   });
 
   describe("token probe", () => {

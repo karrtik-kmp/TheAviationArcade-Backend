@@ -123,6 +123,9 @@ async function googleGet(fetchFn: typeof fetch, accessToken: string, path: strin
       headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    // Seen live 2026-11-06: before the Play invite grants product access, the list reads answer 204 No Content (no body) where an
+    // empty list would be 200 `{}`. A 204 proves nothing, so it is never "ok".
+    if (response.status === 204) return { kind: "http", status: 204, reason: "noContent", message: "no body; the service account may not be allowed to view this app's products yet" };
     const body = await readJson(response);
     return response.ok ? { kind: "ok", body: body ?? {} } : googleError(response.status, body);
   } catch {
