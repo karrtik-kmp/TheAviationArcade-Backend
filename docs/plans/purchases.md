@@ -538,6 +538,87 @@ production beyond App Review.
 Verification: `npm run typecheck`, `npm test`, `npm run test:e2e` from PowerShell, one full run; `nest build` + start with Apple
 configured from a throwaway test key proves the import.
 
+## Wave P-K: store credential check and going live with the keys (approved with changes, revised 2026-11-06)
+
+Reviewed by devops-expert ("approve with changes"; all required changes folded in). User decisions 2026-11-06: product ids final;
+Play project `airplane-games-9fe1e`; the first real sandbox purchase runs on the **dev server** (`dev.api.playairplanegames.com`,
+APP_ENV=production, real Firebase project, settings in `/etc/aviation-arcade/backend-dev.env`, keys in `/etc/aviation-arcade/secrets/`);
+the six Play products exist; iOS on dev may see live rows while Apple is unconfigured (iOS purchases stay pending, 503); keep a
+local key copy in `Backend/secrets/`, locked down. Google first; Apple not started.
+
+**K0. Adapter reason strings (tiny fix).** `TOKEN_LEVEL_REASONS` in `src/purchases/google-store-verifier.ts:44-49` names two strings
+absent from Google's reference (`subscriptionPurchaseNoLongerAvailable`, `purchaseTokenDoesNotMatchProductId`). Replace them with
+the documented ones (`subscriptionNoLongerAvailable` 410, `purchaseTokenMismatch` 400) per
+developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2 (fetched 2026-11-06), keep the rule "invalid only
+when both endpoints say token-level", and update the ASSUMPTION test. Fails safe either way.
+
+**K1. `scripts/stores-check.mjs`** (`npm run stores:check` locally; on the server run without a build, see K4).
+- Store settings parsed by a new exported, side-effect-free `parseStoresEnv(env)` in `src/config/` that does the same trim and
+  empty-to-undefined preprocessing as `loadConfig`, then `parseStoresConfig` + `importStoreKeys`: the server's own rules. The script
+  exports `run(env, fetchImpl)`; `process.loadEnvFile(".env")` runs only in the entry point, never under tests.
+- Refuses to run as root (`process.getuid?.() === 0`): a pass as root does not prove the app user can read the 0640 key.
+- Locally it needs a real `FIREBASE_PROJECT_ID` passed inline for the check only (the store group is refused with a `demo-`
+  project); `APP_ENV=test` as a workaround is refused by the script.
+- **Google**, one line per step, explicit table (not the adapter's set):
+  - token exchange: 200 = ok; anything else = **fail** with `error` / `error_description`.
+  - access proof: `GET .../applications/{pkg}/oneTimeProducts` and `.../subscriptions` (Play Developer API monetization list
+    reads). 200 = **pass**: Play access and the package are proven; also report whether each of the six catalog ids exists with the
+    right type (one-time vs subscription; base plan active) and list missing or mistyped ids. 401/403 = **fail** with Google's
+    reason (API not enabled, Play invite missing or not yet active). 404 `applicationNotFound` = **fail** (package). If listing is
+    not permitted, print "Play access not proven by this check".
+  - token probe: `productsv2` and `subscriptionsv2` for a made-up token. 400 `invalidValue`, 404 `notFound`, 410
+    `purchaseTokenNoLongerValid` = **pass** (auth and API work, token unknown); 401/403 = **fail**; anything else = **inconclusive**
+    (exit 1, reason printed).
+- **Apple** (when configured): Get Transaction Info for a made-up **numeric** transaction id on production and sandbox, through the
+  adapter's own client factory (named in the code; `SignalingAppStoreServerAPIClient` is not exported). 4040010 = **pass**; 4000006 =
+  "auth ok, use a numeric id"; 401 (no body) = **fail** "JWT rejected (key, Key ID, Issuer ID or bundle id)". Does not exercise
+  `APPLE_APP_APPLE_ID`, the root certificates or OCSP: the first real sandbox purchase does.
+- Prints statuses, reason strings and product ids only: never a token, key, key contents, key path contents or JWT. Exit 0 only if
+  every configured store passes; nothing configured = exit 1, "no request was sent".
+- Tests (unit, fetch fake): pass, every fail and inconclusive mode, the missing/mistyped product report, root refusal, nothing printed
+  that looks like a key or token, and **read-only proven**: the only calls are `POST https://oauth2.googleapis.com/token`, `GET`s to
+  `androidpublisher.googleapis.com` and Apple `GET`s; no acknowledge, no DB module imported, no Pub/Sub.
+
+**K2. Local key folder, hardened.** Allow a key file inside the repo only when all hold: its realpath is under the lexical
+`realpath(repoRoot()) + sep + "secrets"`; `realpathSync(<repo>/secrets)` equals that path (the folder is not a symlink or junction);
+`lstat` says it is a directory; and `APP_ENV !== "production"` (server keys live only in `/etc/aviation-arcade/secrets/`). Every
+other rule of `readKeyFile` is unchanged, so a symlink inside `secrets/` pointing back into the repo stays refused. Tests: the
+allowed case, `secrets` as a symlink/junction to `src/`, a symlink inside `secrets/` to a repo file, production refusal; ignore
+behaviour: `git check-ignore -q secrets/probe.json` succeeds even with a nested `secrets/.gitignore` containing `!*`, and
+`.dockerignore` has an exact `secrets` line with no later `!secrets`. **Owner, not this session:** add a deny rule so agents cannot
+read `secrets/` (for example `permissions.deny: ["Read(./secrets/**)"]` in the user's Claude settings) and check whether the E:
+backup clone copies the working tree (it would then hold a second copy of the key).
+
+**K3. Catalog rows on dev (operator, after K4 passes; prod untouched).**
+1. `GET /v1/admin/store/products` on dev: confirm none of the six ids exists (dev runs APP_ENV=production, so no demo rows can have
+   been seeded). If one exists, stop and plan a fix; a demo row's id can never become live (`store-catalog.service.ts:132-157`).
+2. Six `PUT /v1/admin/store/products/:productId` creates (no `version`, `demo: false`) with `kind` and `hints` / `miles` /
+   `passPeriod` from `src/store/demo-products.ts`. Rollback: `POST /v1/admin/store/products/:productId/retire`.
+3. Prod: no rows and `STORE_VERIFIER=none` stay as they are (a live row with `none` would leave paid purchases pending).
+
+**K4. Server rollout (operator steps with the owner's sign-off; recorded in the setup guide).**
+0. Prerequisites: the dev app is registered in pm2 (`server/README.md:136-145`), and `backend-deploy.sh dev` has deployed a commit
+   containing P2-P3 and P-K.
+1. Key: `install -o root -g aviation -m 0640 <uploaded tmp> /etc/aviation-arcade/secrets/google-play.json`, then `shred -u` the
+   temp copy.
+2. Check before editing anything, variables inline (they take priority over `--env-file`), as the app user, no build:
+   `sudo runuser -u aviation -- env STORE_VERIFIER=stores STORE_ENABLED=google GOOGLE_PLAY_PACKAGE_NAME=com.airplane.games
+   GOOGLE_PLAY_SERVICE_ACCOUNT_FILE=/etc/aviation-arcade/secrets/google-play.json node --env-file=/etc/aviation-arcade/backend-dev.env
+   scripts/stores-check.mjs` from `/var/www/dev.api.playairplanegames.com`.
+3. Back up the env file (`install -o root -g aviation -m 0640`), set the four lines in `backend-dev.env`, `apm2 restart
+   aviation-backend-dev --update-env`, check readiness and the start-up line naming `google`; delete the backup once healthy.
+   Never `export` store variables in the shell that runs pm2 (`--update-env` would copy them into the app).
+4. Rollback: restore the backup, or set `STORE_VERIFIER=none` **and** comment out every `GOOGLE_PLAY_*` and `STORE_ENABLED` line
+   (stray store settings stop the backend from booting, `config.module.ts:522-526`), then restart.
+5. Rotation: new key in `airplane-games-9fe1e`, install, check, restart, delete the old key id in Cloud IAM, update the local
+   `secrets/` copy.
+6. Done when, after the first sandbox purchase: `purchase.verify outcome=granted environment=sandbox` and
+   `purchase.acknowledge outcome=ok` in `apm2 logs`, the row in `GET /v1/admin/store/purchases`, and the order acknowledged in Play
+   Console. (pm2 has no logrotate configured in `server/`; flagged to the server owner.)
+
+Apple is added the same way later (`STORE_ENABLED=apple,google`, the `.p8` at `/etc/aviation-arcade/secrets/apple-iap.p8`).
+Not in P-K: notifications (P4 needs the public HTTPS push endpoint), the acknowledge sweeper, refunds.
+
 ## Next waves
 
 P-E Miles packs (monetization U11, built) → P2 Apple adapter (`@apple/app-store-server-library`, sandbox key) → P3 Google adapter (+ acknowledge sweeper) → P4 ASSN v2 /
