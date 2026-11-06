@@ -73,6 +73,17 @@ the same.
 
 **Send to the backend session:** the project id, the service account email, the path of the JSON key file, and the topic name.
 
+## Status (2026-11-06)
+
+- Product ids above declared **final** by the user (2026-11-06).
+- Google: Cloud project `airplane-games-9fe1e` (separate from the Firebase auth project), service account
+  `airplane-games-play-ac@airplane-games-9fe1e.iam.gserviceaccount.com`, JSON key kept locally at `Backend/secrets/play-service-account.json`
+  (git- and docker-ignored; the backend refuses a key path inside the repo, so enabling `STORE_VERIFIER=stores` needs a path outside
+  the repo or the inline form). Play Android Developer API enabled; Play Console invite sent 2026-11-06.
+- Credential check (2026-11-06, read-only, a made-up purchase token): token exchange 200; Play API 401 `permissionDenied`
+  while the Play invite propagates. Done when the check answers 404 for the made-up token. Topic, products, testers: not yet.
+- Apple: not started.
+
 ## What the backend does with them
 
 | Value | Environment variable (planned) |

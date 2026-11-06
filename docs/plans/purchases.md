@@ -520,9 +520,11 @@ production beyond App Review.
 
 - Where the first real sandbox purchase runs: a local backend with the real Firebase project (an exception to "local uses only
   `demo-airplane-games`") on a LAN address the device reaches, or wait for hosting.
-- Store product ids are permanent in both stores: create the products only with final ids (Unity Q4), or declare the current
-  ids final.
-- Play and Pub/Sub project: a separate Cloud project is recommended over the Firebase auth project.
+- ~~Store product ids~~ **Decided (user, 2026-11-06):** the current ids are final: `aa.hints.5`, `aa.hints.15`, `aa.miles.5000`,
+  `aa.miles.25000`, `aa.firstclass.monthly`, `aa.firstclass.yearly` (this answers Unity Q4 for the backend; Unity to be told).
+  Their catalog rows are still `demo: true` and must be flipped to live once the store products exist.
+- ~~Play and Pub/Sub project~~ **Decided (user, 2026-11-06):** a separate Cloud project, `airplane-games-9fe1e`; service account
+  `airplane-games-play-ac@airplane-games-9fe1e.iam.gserviceaccount.com`. Owner setup status in `docs/setup/store-credentials.md`.
 
 ### Ownership
 
