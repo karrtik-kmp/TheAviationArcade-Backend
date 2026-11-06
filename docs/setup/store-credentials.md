@@ -81,7 +81,8 @@ the same.
   (git- and docker-ignored; the backend refuses a key path inside the repo, so enabling `STORE_VERIFIER=stores` needs a path outside
   the repo or the inline form). Play Android Developer API enabled; Play Console invite sent 2026-11-06.
 - Credential check (2026-11-06, read-only, a made-up purchase token): token exchange 200; Play API 401 `permissionDenied`
-  while the Play invite propagates. Done when the check answers 404 for the made-up token. Topic, products, testers: not yet.
+  while the Play invite propagates. Done when the check answers 404 for the made-up token. RTDN topic `projects/airplane-games-9fe1e/topics/Airplane-Games-IAP-Playstore` created 2026-11-06 (P4 subscribes to it; no push
+  subscription yet). Products, testers: not yet.
 - Apple: not started.
 
 ## What the backend does with them
