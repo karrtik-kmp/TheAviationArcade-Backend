@@ -219,7 +219,9 @@ function reportCatalog(report: Report, oneTime: Json[], subscriptions: Json[]): 
   if (attention > 0) report.warn(`${attention} of ${EXPECTED.length} catalog product ids need attention in Play Console (this does not change the exit code)`);
 }
 
-const REASON_PASS = new Set(["400:invalidValue", "404:notFound", "410:purchaseTokenNoLongerValid"]);
+// 400 invalid ("Invalid Value") is what Google actually answered for a made-up token on the live run of 2026-11-06, once the
+// service account could read orders (it was 401 permissionDenied before); the reference documents invalidValue.
+const REASON_PASS = new Set(["400:invalidValue", "400:invalid", "404:notFound", "410:purchaseTokenNoLongerValid"]);
 
 async function checkGoogle(fetchFn: typeof fetch, config: GoogleStoreConfig, report: Report): Promise<void> {
   report.info(`Google Play, package ${config.packageName}`);

@@ -277,6 +277,7 @@ describe("stores:check Google", () => {
   describe("token probe", () => {
     it.each([
       ["400 invalidValue", () => googleError(400, "invalidValue")],
+      ["ASSUMPTION: 400 invalid (seen live 2026-11-06 for a made-up token)", () => googleError(400, "invalid", "Invalid Value")],
       ["404 notFound", () => googleError(404, "notFound")],
       ["410 purchaseTokenNoLongerValid", () => googleError(410, "purchaseTokenNoLongerValid")],
     ])("%s passes", async (_name, answer) => {
