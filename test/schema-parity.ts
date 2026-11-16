@@ -30,6 +30,7 @@ import {
   TRIP_OUTCOMES,
   TRIP_STATUSES,
 } from "../src/db/enums.js";
+import { MEDIA_IMPORT_SOURCE_SYSTEMS } from "../src/content/media/media-import.js";
 import * as schema from "../src/db/schema.js";
 import { CARD_MODULES } from "../src/rules/clipper-cards.js";
 import { FIELD_AWARD_IDS } from "../src/rules/field-awards.js";
@@ -47,6 +48,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "rounds.rounds_promoted_to_check": RANKS,
   "miles_ledger.miles_ledger_kind_check": MILES_LEDGER_KINDS,
   "hint_ledger.hint_ledger_kind_check": HINT_LEDGER_KINDS,
+  "media_imports.media_imports_source_system_check": MEDIA_IMPORT_SOURCE_SYSTEMS,
   "content_imports.content_imports_module_check": MODULE_IDS,
   "content_items.content_items_module_check": MODULE_IDS,
   "content_items.content_items_rank_check": RANKS,
@@ -102,7 +104,6 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "media_items.media_items_published_state_check",
   "store_products.store_products_kind_rule_check",
   "store_transactions.store_transactions_kind_rule_check",
-  "media_imports.media_imports_source_system_check",
   "content_items.content_items_prep_all_or_none_check",
   "editorial_items.editorial_items_identifier_rule_check",
   "editorial_items.editorial_items_potd_rule_check",

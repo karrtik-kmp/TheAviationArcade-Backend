@@ -249,6 +249,63 @@ imported, would import, already imported (a re-run is safe) or refused with the 
 failure, 2 refused by arguments, settings or manifest, 3 entries refused and none imported, 4 partial success. Audit actor
 `operator:<os user>`. Never run `--yes` against the real store without the user's sign-off.
 
+### Dev demo seed (scenario E4)
+
+An operator command that loads the client's content into a DEV backend (plan [demo-seed](docs/plans/demo-seed.md), section G). There is no
+HTTP route for it, and it publishes nothing:
+
+```
+npm run demo:seed-content -- --docs <docs dir> --delivery <2026-09-28 dir> --owner <uid>                 # dry run: prints, writes nothing
+npm run demo:seed-content -- --docs <docs dir> --delivery <2026-09-28 dir> --owner <uid> --yes           # writes
+                             [--photographer <uid>]... [--photographers <file: one uid per line, # comments>]
+```
+
+`--docs` holds `Military Airplane Identifier v1.xlsx` and its `Military Airplane Identifier - Pictures*` folder; `--delivery` is the
+client folder with `Airplane Identifier v1.xlsx`, `Airplane Games - Game Play.xlsx` and the `Airplane Identifier-*` and
+`Plane of the Day-*` folders. Both are read-only (no links followed, size caps). `--owner` is the staff photographer (or admin) account
+that owns every photo; a bare Firebase uid is bound to the configured project. It must already hold the role: list it with
+`--photographer` to grant it in the same run. The dry run prints the target (host, port, database, `APP_ENV`, Firebase project, blob
+store, owner and photographer principals, and a warning for any principal the backend has never seen: it cannot prove a uid exists in
+Firebase) and one line per role, question set, photo, link and Plane of the Day entry, with counts. It uses a store that refuses every
+write, so it can never write a blob.
+
+What it loads, each through the write path the Admin uses (nothing is written twice):
+
+- **Photographer roles:** each `--photographer` gets `photographer` through the operator grant (audited as `operator:<os user>`), from
+  no row or a pending request. A rejected, revoked or blocked row is refused ("an admin decided this"), so a re-run never overturns a staff decision.
+- **Questions:** the Military sheet (31 rows) and the Identifier sheet (31 questions: `ai-a8` and `ai-a14` are left out as Unity does,
+  `ai-a11-2` and `ai-a18-2` are the second question on a shared photo) as a normal content import. A module whose stored content
+  would change (an update or a retirement) is refused with the difference listed; the seed never overwrites staff-edited content.
+- **Photos:** one `unverified` draft per image file (30 Military, 31 Identifier, 5 Plane of the Day), owned by `--owner`, with the rights
+  statement `v1_authorised` stated by the operator: **with `--yes` you state the client's licence for these photos.** Credit and licence
+  are set at upload and never refilled: Military credit is the sheet's Photographer with licence name "Unsplash License" (a row with no
+  photographer gets no credit and is reported); Identifier credit "Josh M (@iamjoshmark)" and Plane of the Day credit "<Photographer> (@handle)",
+  both with **no licence name** (the user is asked before publishing). Sheet names are matched exactly, then ignoring case, then by stem
+  when the sheet has no image extension (each non-exact match is reported). `mil-a5` (the C-17) has no photo and none is substituted.
+- **Links:** an item gets its photo only when it has none and staff never linked or cleared one.
+- **Plane of the Day:** the five entries become drafts (title, aircraft, photographer, Instagram link, credit `@handle`, description;
+  the factual source stays empty and is reported) **only once their photo is published**. Until then they are listed as waiting.
+
+**Publishing stays with the user.** After the first run, set a licence name on a photo in the Admin and publish it; the next run creates
+exactly that Plane of the Day draft. A re-run with nothing new writes nothing (the report says unchanged). A second `--yes` run at the
+same time is refused by a database lock.
+
+**Refusals (exit 2, before connecting):** unknown or missing arguments; a `demo-` Firebase project; a `DATABASE_URL` with no database name,
+a name ending `_prod` (any `APP_ENV`), or, under `APP_ENV=production`, any name not ending `_dev`; `--yes` without `BLOB_STORE=bunny` or
+with `DEMO_ACCOUNT_UID` unset; an owner or photographer that is not a valid uid, is a full principal of another project, or is the demo
+account; folders that are not the client's. Exit codes after that are as `media:import`: 0 fine, 1 failure, 3 refused and nothing done,
+4 partial.
+
+**Running it on dev (needs the user's sign-off; not done by any agent).** The dev backend runs `APP_ENV=production` against
+`airplane_games_dev`, whose Postgres listens on the server's 127.0.0.1 with `verify-full`, and the files are on the user's PC. Either:
+
+1. copy the two folders to the server (read-only for the app user) and run the command there as the app user with the dev env file
+   (`BLOB_STORE=bunny`, `DEMO_ACCOUNT_UID` and the Bunny settings come from it); or
+2. open an SSH tunnel from the PC to the server's Postgres and run it locally with a dev env file whose `DATABASE_URL` uses the tunnel,
+   the CA (`DATABASE_CA_CERT`) and the database hostname the certificate is valid for.
+
+Run the dry run first and read it, then `--yes`.
+
 ## Purchases (wave P)
 
 Plan [docs/plans/purchases.md](docs/plans/purchases.md). The catalog is server data in `store_products`, edited by admins. Seed

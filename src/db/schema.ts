@@ -461,7 +461,7 @@ export const mediaImports = pgTable(
   },
   (t) => [
     primaryKey({ name: "media_imports_pk", columns: [t.sourceSystem, t.sourceId] }),
-    check("media_imports_source_system_check", sql`${t.sourceSystem} = 'd1'`),
+    check("media_imports_source_system_check", sql`${t.sourceSystem} IN ('d1', 'demo-seed')`),
     check("media_imports_source_id_check", sql`length(${t.sourceId}) BETWEEN 1 AND 128`),
     check("media_imports_owner_check", sql`length(${t.owner}) BETWEEN 1 AND 256`),
     check("media_imports_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),

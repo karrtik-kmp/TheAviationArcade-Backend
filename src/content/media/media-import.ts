@@ -29,6 +29,8 @@ import type { CheckedImage } from "./media.service.js";
 export const MANIFEST_FILE = "manifest.json";
 const MAX_MANIFEST_BYTES = 10 * 1024 * 1024;
 const MAX_ENTRIES = 5000;
+/** The values `media_imports.source_system` accepts (its CHECK): the D1 import and the dev demo seed. */
+export const MEDIA_IMPORT_SOURCE_SYSTEMS = ["d1", "demo-seed"] as const;
 const SOURCE_SYSTEM = "d1";
 const CREDIT_MAX = 200;
 
@@ -335,18 +337,19 @@ type Prepared = {
   rightsEvidence: string | null;
 };
 
-class ClaimLost extends ExpectedRollback {}
+/** Thrown inside a claim transaction when another run won the claim: rolls the item back. */
+export class ClaimLost extends ExpectedRollback {}
 
 const refuse = (code: RefusalCode, detail: string): Refusal => ({ ok: false, code, detail });
 const DEMO_OWNER_DETAIL = "the owner is the shared demo account, which cannot own imported photos (it never holds the photographer role).";
-const operatorName = (operator: string): string => `operator:${operator}`.slice(0, 256);
+export const operatorName = (operator: string): string => `operator:${operator}`.slice(0, 256);
 
 /**
  * Whether the account has an ACTIVE `photographer` role, or an ACTIVE `admin` one: the API's `holds()` (src/auth/roles.ts,
  * ADR-0002 decision 3) treats admin as holding photographer, and this check follows it. A revoked, blocked, pending or rejected row
  * does not count. The email-verified condition of the API cannot apply here: there is no token.
  */
-async function holdsPhotographer(db: Pick<Database, "select">, principal: string): Promise<boolean> {
+export async function holdsPhotographer(db: Pick<Database, "select">, principal: string): Promise<boolean> {
   const rows = await db
     .select({ role: accountRoles.role })
     .from(accountRoles)
@@ -357,11 +360,11 @@ async function holdsPhotographer(db: Pick<Database, "select">, principal: string
   return rows.length > 0;
 }
 
-async function findClaim(db: Pick<Database, "select">, sourceId: string) {
+export async function findClaim(db: Pick<Database, "select">, sourceSystem: string, sourceId: string) {
   const [row] = await db
     .select()
     .from(mediaImports)
-    .where(and(eq(mediaImports.sourceSystem, SOURCE_SYSTEM), eq(mediaImports.sourceId, sourceId)))
+    .where(and(eq(mediaImports.sourceSystem, sourceSystem), eq(mediaImports.sourceId, sourceId)))
     .limit(1);
   return row;
 }
@@ -371,7 +374,7 @@ function classifyClaim(claim: NonNullable<Awaited<ReturnType<typeof findClaim>>>
   return { same: claim.owner === owner && claim.sha256 === sha256, mediaId: mediaIdOf(claim.mediaId) };
 }
 
-function describeFailure(error: unknown): string {
+export function describeFailure(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   // Safe fields only (never a stack, URL or config), as scripts/roles-grant.mjs does.
   const name = error instanceof Error ? error.constructor.name : "Error";
@@ -386,7 +389,7 @@ function describeFailure(error: unknown): string {
  */
 async function prepare(entry: ImportEntry, dir: string, ctx: ImportContext, service: MediaService): Promise<Refusal | Prepared | { ok: "already"; mediaId: string }> {
   if (entry.status === "rejected") return refuse("rejected", "D1 status is rejected; rejected proposals are not imported.");
-  const claim = await findClaim(ctx.database.db, entry.sourceId);
+  const claim = await findClaim(ctx.database.db, SOURCE_SYSTEM, entry.sourceId);
   if (claim) {
     const c = classifyClaim(claim, entry.owner, entry.sha256);
     return c.same
@@ -489,7 +492,7 @@ async function writeEntry(entry: ImportEntry, prepared: Prepared, ctx: ImportCon
     return { sourceId: entry.sourceId, status: "imported", mediaId: mediaIdOf(outcome.mediaId) };
   } catch (error) {
     if (!(error instanceof ClaimLost)) throw error;
-    const claim = await findClaim(ctx.database.db, entry.sourceId);
+    const claim = await findClaim(ctx.database.db, SOURCE_SYSTEM, entry.sourceId);
     if (!claim) throw new Error("Import claim vanished after a lost race.");
     const c = classifyClaim(claim, entry.owner, image.sha256);
     return c.same

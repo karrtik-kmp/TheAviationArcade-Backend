@@ -51,6 +51,9 @@ Rules that hold for every wave:
      `identifier` questions is the client sheet via 5.Q slice I3. Source-scan ASSUMPTION test: no file under `src/rounds`,
      `src/rules`, `src/content/documents` or `src/content/releases` reads `editorial_items`.
    - **The 5 client Plane of the Day entries are not seeded** into the desk (that would be a prefill); staff create them.
+     **Superseded 2026-11-16 (user ruling, brief `backend-firebase-project-and-demo-seed.md`):** the dev demo seed creates them as
+     drafts once their photos are published (`docs/plans/demo-seed.md` §G). WC-3's "Unsplash License" for the Identifier photos is
+     superseded by the same brief (ask the user).
 4. **Identifier does not fit `ContentModuleMapping`**: the interface is sheet-centred (`src/content/content-module.ts:47-65`),
    a client-sheet import retires rows the file doesn't list (`:14-17`), `ItemStatus` is `approved | retired` (`:35`), and the
    desk payload is editorial. So both desks get their own table `editorial_items`; `content_items`, `ItemStatus` and

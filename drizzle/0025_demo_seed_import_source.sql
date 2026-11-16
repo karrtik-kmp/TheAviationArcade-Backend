@@ -1,0 +1,2 @@
+ALTER TABLE "media_imports" DROP CONSTRAINT "media_imports_source_system_check";--> statement-breakpoint
+ALTER TABLE "media_imports" ADD CONSTRAINT "media_imports_source_system_check" CHECK ("media_imports"."source_system" IN ('d1', 'demo-seed'));
