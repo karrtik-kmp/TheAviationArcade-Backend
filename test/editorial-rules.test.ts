@@ -14,6 +14,7 @@ import {
   normaliseEditorialData,
   parseEditorialId,
   publishErrors,
+  relyOnFactualSourceWaiver,
   validDate,
   validInstagram,
 } from "../src/content/editorial/editorial-rules.js";
@@ -174,6 +175,37 @@ describe("publishErrors", () => {
 
   it("does not require the staff-typed credit (the public credit is the media licence credit)", () => {
     expect(publishErrors("plane-of-the-day", "published", good({ credit: "" }), "2026-11-05")).toEqual([]);
+  });
+});
+
+describe("publishErrors with the dev-demo factual-source waiver", () => {
+  const waive = { waiveEmptyFactualSource: true };
+  const SOURCE = ["Add an https factual source."];
+
+  it("lets a Plane of the Day item with an EMPTY source through, scheduled or published, and says it relied on the waiver", () => {
+    for (const status of ["scheduled", "published"] as const) {
+      expect(publishErrors("plane-of-the-day", status, good({ factualSource: "" }), "2026-11-05", waive)).toEqual([]);
+      expect(relyOnFactualSourceWaiver("plane-of-the-day", status, good({ factualSource: "" }), waive)).toBe(true);
+    }
+    expect(relyOnFactualSourceWaiver("plane-of-the-day", "draft", good({ factualSource: "" }), waive)).toBe(false);
+    expect(relyOnFactualSourceWaiver("plane-of-the-day", "published", good({ factualSource: "https://example.com/s" }), waive)).toBe(false);
+  });
+
+  it("still refuses a non-empty source that is not https, and every other Plane of the Day rule", () => {
+    expect(publishErrors("plane-of-the-day", "published", good({ factualSource: "http://example.com" }), "2026-11-05", waive)).toEqual(SOURCE);
+    expect(publishErrors("plane-of-the-day", "published", good({ factualSource: "example.com" }), "2026-11-05", waive)).toEqual(SOURCE);
+    expect(publishErrors("plane-of-the-day", "published", good({ factualSource: "", title: "ab", description: "short" }), null, waive)).toEqual([
+      "Add a descriptive title (at least 3 characters).",
+      "Add the photo's factual context (at least 15 characters).",
+      "Choose the date this Plane of the Day is for.",
+    ]);
+  });
+
+  it("never waives the Aircraft Identifier kind, and without the option an empty source is refused as before", () => {
+    expect(publishErrors("identifier", "published", good({ factualSource: "" }), null, waive)).toEqual(SOURCE);
+    expect(relyOnFactualSourceWaiver("identifier", "published", good({ factualSource: "" }), waive)).toBe(false);
+    expect(publishErrors("plane-of-the-day", "published", good({ factualSource: "" }), "2026-11-05")).toEqual(SOURCE);
+    expect(publishErrors("plane-of-the-day", "published", good({ factualSource: "" }), "2026-11-05", { waiveEmptyFactualSource: false })).toEqual(SOURCE);
   });
 });
 

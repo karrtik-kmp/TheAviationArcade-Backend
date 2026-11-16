@@ -21,6 +21,8 @@ delete process.env.BLOB_STORE;
 delete process.env.TRUST_PROXY;
 // The demo-account rule is set per test (test/demo-account.e2e.test.ts); a developer's value must not switch it on elsewhere.
 delete process.env.DEMO_ACCOUNT_UID;
+// Nor the dev-demo waiver (docs/plans/dev-licence-waiver.md): test/dev-demo-waiver.e2e.test.ts sets it per app.
+delete process.env.DEV_DEMO_WAIVER;
 
 // Local throwaway default (matches docker-compose.yml). Never the dev database.
 const DEFAULT_TEST_DATABASE_URL =

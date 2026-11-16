@@ -19,6 +19,7 @@ import {
   formatEditorialId,
   normaliseEditorialData,
   publishErrors,
+  relyOnFactualSourceWaiver,
 } from "./editorial-rules.js";
 import type { EditorialData } from "./editorial-rules.js";
 import { toEditorialView, toPublicFeature } from "./editorial-view.js";
@@ -117,9 +118,12 @@ export class EditorialService {
           };
         }
         const shape = normaliseEditorialData(change.data);
+        let factualSourceWaived = false;
         const errors = [...shape.errors, ...dateKeyErrors(kind, change.dateKey)];
         if (shape.data !== null) {
-          errors.push(...publishErrors(kind, change.status, shape.data, change.dateKey));
+          const waiver = { waiveEmptyFactualSource: this.config.devDemoWaiver === "dev-demo" };
+          errors.push(...publishErrors(kind, change.status, shape.data, change.dateKey, waiver));
+          factualSourceWaived = relyOnFactualSourceWaiver(kind, change.status, shape.data, waiver);
           if (change.status === "scheduled" || change.status === "published") errors.push(...(await this.mediaProblems(tx, stored.mediaId, true)));
         }
         if (errors.length > 0 || shape.data === null) return { ok: false, error: invalid(errors) };
@@ -159,6 +163,7 @@ export class EditorialService {
             fromDateKey: stored.dateKey,
             dateKey: change.dateKey,
             fields,
+            ...(factualSourceWaived ? { factualSourceWaived: "dev-demo" } : {}),
           },
           createdAt: now,
         });

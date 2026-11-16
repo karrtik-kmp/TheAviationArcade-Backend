@@ -465,6 +465,72 @@ describe("apply on synthetic folders", () => {
   });
 });
 
+describe("DEV_DEMO_WAIVER: no credit on dev for Military photos the client's sheet gives no photographer", () => {
+  const creditRows = async (source: string) =>
+    (
+      await sql.query(
+        `SELECT v.credit_name, v.credit_required, v.licence_name, v.licence_waiver, i.media_id, a.detail
+         FROM media_imports i JOIN media_versions v ON v.media_id = i.media_id
+         LEFT JOIN admin_audit a ON a.action = 'media_import' AND a.target = 'med-' || i.media_id
+         WHERE i.source_id = $1`,
+        [source],
+      )
+    ).rows;
+
+  it("with the switch: that photo gets creditRequired false, no name, the audit flag and a note; every other photo is unchanged; an admin can publish it", async () => {
+    const saved = config;
+    config = { ...config, devDemoWaiver: "dev-demo" };
+    try {
+      const report = await seed(await loaded(await syntheticFolders()), "apply");
+      expect(report.lines.filter((l) => l.status === "failed" || l.status === "refused")).toEqual([]);
+      const waived = (await creditRows("mil/MA_test_5.jpg"))[0]!;
+      expect(waived).toMatchObject({ credit_name: null, credit_required: false, licence_name: "Unsplash License", licence_waiver: null });
+      expect(waived.detail).toMatchObject({ creditWaived: "dev-demo", credit: null });
+      expect(hasNote(report, "mil/MA_test_5.jpg", "credit not required (dev-demo waiver)")).toBe(true);
+      // Everything else: credit still required, no flag. The unused Military photo and the Identifier and Plane of the Day photos included.
+      for (const source of ["mil/MA_test_1.jpg", "mil/MA_extra.png", "ai/ai-a1.jpg", "potd/pod-1.jpg"]) {
+        const row = (await creditRows(source))[0]!;
+        expect(row.credit_required, source).toBe(true);
+        expect(row.detail, source).not.toHaveProperty("creditWaived");
+      }
+      expect(await count("media_versions v JOIN media_imports i ON i.media_id = v.media_id", "WHERE i.source_system = 'demo-seed' AND NOT v.credit_required")).toBe(1);
+
+      const mediaId = waived.media_id as number;
+      const revision = (await sql.query("SELECT revision FROM media_items WHERE id = $1", [mediaId])).rows[0].revision as number;
+      await new MediaService(database, blobs, config).publish(ADMIN, mediaId, revision);
+      expect((await sql.query("SELECT state FROM media_items WHERE id = $1", [mediaId])).rows[0].state).toBe("published");
+    } finally {
+      config = saved;
+    }
+  });
+
+  it("without the switch the same photo stays creditRequired true, has no flag, and cannot be published", async () => {
+    const report = await seed(await loaded(await syntheticFolders()), "apply");
+    const row = (await creditRows("mil/MA_test_5.jpg"))[0]!;
+    expect(row).toMatchObject({ credit_name: null, credit_required: true });
+    expect(row.detail).not.toHaveProperty("creditWaived");
+    expect(hasNote(report, "mil/MA_test_5.jpg", "no credit in the client's sheet")).toBe(true);
+    expect(hasNote(report, "mil/MA_test_5.jpg", "dev-demo")).toBe(false);
+    const revision = (await sql.query("SELECT revision FROM media_items WHERE id = $1", [row.media_id])).rows[0].revision as number;
+    await expect(new MediaService(database, blobs, config).publish(ADMIN, row.media_id as number, revision)).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("a re-run with the switch turned on after the upload reports the stored setting honestly and changes nothing", async () => {
+    const folders = await syntheticFolders();
+    await seed(await loaded(folders), "apply");
+    const saved = config;
+    config = { ...config, devDemoWaiver: "dev-demo" };
+    try {
+      const again = await seed(await loaded(folders), "apply");
+      expect((await creditRows("mil/MA_test_5.jpg"))[0]).toMatchObject({ credit_required: true });
+      expect(hasNote(again, "mil/MA_test_5.jpg", "already uploaded, so this run did not change whether a credit is required")).toBe(true);
+      expect(hasNote(again, "mil/MA_test_5.jpg", "dev-demo")).toBe(false);
+    } finally {
+      config = saved;
+    }
+  });
+});
+
 describe("review fixes", () => {
   it("a failed content step uploads none of that module's photos and says so; the other module goes on", async () => {
     const inputs = await loaded(await syntheticFolders());
@@ -660,6 +726,41 @@ describe.skipIf(!haveReal)("the client's real files", () => {
     expect(await count("editorial_items")).toBe(1);
     const data = (await sql.query("SELECT data FROM editorial_items")).rows[0].data;
     expect(data).toMatchObject({ title: "Beneath the Heartbeat", aircraft: "Boeing 737", photographer: "Josh M", credit: "@iamjoshmark", instagram: "https://www.instagram.com/iamjoshmark/" });
+  }, 180_000);
+
+  it("with DEV_DEMO_WAIVER the four Military photos with no photographer in the sheet (rows 17, 26, 28, 29) need no credit and publish; the other 62 are unchanged", async () => {
+    const saved = config;
+    config = { ...config, devDemoWaiver: "dev-demo" };
+    try {
+      const result = await loadSeedInputs(REAL_DOCS, REAL_DELIVERY);
+      if (!result.ok) throw new Error(result.error);
+      const report = await seed(result.inputs, "apply");
+      expect(report.lines.filter((l) => l.status === "refused" || l.status === "failed")).toEqual([]);
+      const rows = (
+        await sql.query(
+          `SELECT i.source_id, i.media_id, v.credit_name, v.credit_required, a.detail->>'creditWaived' AS waived
+           FROM media_imports i JOIN media_versions v ON v.media_id = i.media_id
+           LEFT JOIN admin_audit a ON a.action = 'media_import' AND a.target = 'med-' || i.media_id
+           WHERE i.source_system = 'demo-seed'`,
+        )
+      ).rows;
+      expect(rows).toHaveLength(66);
+      const noCredit = rows.filter((r) => r.source_id.startsWith("mil/") && r.credit_name === null);
+      expect(noCredit).toHaveLength(4);
+      expect(noCredit.every((r) => r.credit_required === false && r.waived === "dev-demo")).toBe(true);
+      const others = rows.filter((r) => !noCredit.includes(r));
+      expect(others).toHaveLength(62);
+      expect(others.every((r) => r.credit_required === true && r.waived === null)).toBe(true);
+      expect(report.lines.filter((l) => l.status === "note" && (l.detail ?? "").includes("credit not required (dev-demo waiver)"))).toHaveLength(4);
+      const media = new MediaService(database, blobs, config);
+      for (const r of noCredit) {
+        const revision = (await sql.query("SELECT revision FROM media_items WHERE id = $1", [r.media_id])).rows[0].revision as number;
+        await media.publish(ADMIN, r.media_id as number, revision);
+      }
+      expect(await count("media_items", "WHERE owner = $1 AND state = 'published'", [OWNER])).toBe(4);
+    } finally {
+      config = saved;
+    }
   }, 180_000);
 });
 

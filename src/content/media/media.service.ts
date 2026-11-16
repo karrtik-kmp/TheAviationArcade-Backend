@@ -469,7 +469,10 @@ export class MediaService {
         return { ok: false, error: new ApiError(409, "nothing_to_publish", "The draft is already the published version; nothing to publish.") };
       }
       const draft = await this.readVersion(tx, mediaId, item.draftVersion);
-      if (!draft.licenceName) {
+      // DEV_DEMO_WAIVER: with no licence name the version is stamped with the waiver; a draft with a licence name never is. A
+      // withdrawn version that was published under the waiver keeps it (and fails here when the switch is off).
+      const waived = !draft.licenceName && this.config.devDemoWaiver === "dev-demo" ? ("dev-demo" as const) : null;
+      if (!draft.licenceName && waived === null) {
         return { ok: false, error: new ApiError(422, "content_invalid", "The draft's licence needs a licence name before it can be published.") };
       }
       if (draft.creditRequired && !draft.creditName) {
@@ -484,7 +487,7 @@ export class MediaService {
       const [published] = await tx
         .update(mediaVersions)
         // The FIRST go-live time is kept when a withdrawn draft is published again.
-        .set({ publishedAt: sql`COALESCE(${mediaVersions.publishedAt}, ${now.toISOString()}::timestamptz)` })
+        .set({ publishedAt: sql`COALESCE(${mediaVersions.publishedAt}, ${now.toISOString()}::timestamptz)`, ...(waived !== null ? { licenceWaiver: waived } : {}) })
         .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, draft.version)))
         .returning();
       if (!published) throw new Error("Media version was not published.");
@@ -500,6 +503,7 @@ export class MediaService {
           publishedVersion: draft.version,
           revision: updated.revision,
           sha256: draft.sha256,
+          ...(waived !== null ? { licenceWaived: waived } : {}),
         },
         createdAt: now,
       });

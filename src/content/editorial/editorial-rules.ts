@@ -141,11 +141,26 @@ export function dateKeyErrors(kind: EditorialKind, dateKey: string | null): stri
  * What a `scheduled` or `published` item needs beyond the shape (website `editorialErrors` plus the desk save checks). Every
  * unmet rule is listed. The photo rules (published, not demo-owned, licence credit set) need the database and are the service's.
  */
-export function publishErrors(kind: EditorialKind, status: EditorialStatus, data: EditorialData, dateKey: string | null): string[] {
+export type PublishOptions = {
+  /**
+   * DEV_DEMO_WAIVER: a Plane of the Day item with an EMPTY factual source passes. A non-empty source that is not https is still
+   * refused, and the Aircraft Identifier kind is never waived.
+   */
+  waiveEmptyFactualSource?: boolean;
+};
+
+/** True when `publishErrors` let this item through only because the factual source is empty and the waiver is on. */
+export function relyOnFactualSourceWaiver(kind: EditorialKind, status: EditorialStatus, data: EditorialData, options: PublishOptions = {}): boolean {
+  return (
+    options.waiveEmptyFactualSource === true && kind === "plane-of-the-day" && (status === "scheduled" || status === "published") && data.factualSource === ""
+  );
+}
+
+export function publishErrors(kind: EditorialKind, status: EditorialStatus, data: EditorialData, dateKey: string | null, options: PublishOptions = {}): string[] {
   if (status !== "scheduled" && status !== "published") return [];
   const errors: string[] = [];
   if (codePoints(data.title.trim()) < 3) errors.push("Add a descriptive title (at least 3 characters).");
-  if (!data.factualSource.startsWith("https://")) errors.push("Add an https factual source.");
+  if (!data.factualSource.startsWith("https://") && !relyOnFactualSourceWaiver(kind, status, data, options)) errors.push("Add an https factual source.");
   if (kind === "identifier") {
     if (status === "scheduled") errors.push("Aircraft Identifier supports draft or published content, not daily scheduling.");
     const options = [data.correctAnswer, ...data.distractors].map((s) => s.trim().toLowerCase());

@@ -1,10 +1,17 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.27.0
+  version: 0.27.1
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.27.1 (dev demo waiver; docs/plans/dev-licence-waiver.md; descriptions only, no schema, route or code change for any client; migration 0026 adds the database column `media_versions.licence_waiver`, which no response carries).**
+    On a DEV backend started with `DEV_DEMO_WAIVER=dev-demo` (startup is refused unless the database name ends `_dev`, so never production)
+    a photo may be published with `licenceName: null` (its public `ImageRef` and Plane of the Day feature are served as usual) and a
+    Plane of the Day item may be scheduled or published with an empty `factualSource`. The waiver is recorded in the database and in
+    the audit details (`media_publish.licenceWaived`, `editorial_save.factualSourceWaived`), never in a response. Production rules
+    are unchanged.
 
     **Changelog 0.27.0 (Aircraft Identifier import, slice I3; docs/plans/demo-seed.md; staff-only, no change for the game, no API schema change; migration 0025 only widens `media_imports.source_system` for the operator demo seed).**
     Built: the module `identifier` (commercial Aircraft Identifier) becomes importable, exportable, listable and editable on the
@@ -3387,7 +3394,7 @@ paths:
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
-          description: "`content_invalid`: the draft's licence has no `licenceName`, `creditRequired` is true and `credit` is empty, or the draft has no `v1_*` rights statement. Nothing was written."
+          description: "`content_invalid`: the draft's licence has no `licenceName` (unless the dev-demo waiver is on: see the 0.27.1 changelog), `creditRequired` is true and `credit` is empty, or the draft has no `v1_*` rights statement. Nothing was written."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -3976,7 +3983,8 @@ paths:
         `draft` and `archived` need only a well-formed `data` (strings of at most 2400 code points, CRLF turned into LF, no control
         character other than a line feed, text trimmed on store, exactly 3 distractors, `instagram` empty or a handle or an https
         link, `difficulty` empty or a Rank). `scheduled` and `published` also need: a title of at least 3 characters, an https
-        `factualSource` and, for `identifier`, a correct answer and three distractors that are all different (ignoring case and
+        `factualSource` (on a dev backend with the dev-demo waiver on, a `plane-of-the-day` item may have an EMPTY `factualSource`; a
+        non-empty one must still be https, and `identifier` is never waived) and, for `identifier`, a correct answer and three distractors that are all different (ignoring case and
         spacing) and a `difficulty` Rank, and, for `plane-of-the-day`, a description of at least 15 characters and a `dateKey`; and
         the linked photo must be published, not demo-owned, with a licence credit on its published version. `identifier` items have
         no `dateKey` and are never `scheduled`. Every problem found is returned at once in `errors` (422 `content_invalid`).
@@ -6333,7 +6341,8 @@ components:
       description: |
         The licence of ONE file version (a published credit is frozen with its file). Any field except `creditRequired` is null
         until a staff member fills it in. A version can be published only with a `licenceName` and, when `creditRequired`, a `credit`
-        (422 `content_invalid` otherwise).
+        (422 `content_invalid` otherwise). On a dev backend with the dev-demo waiver on, a published version may have
+        `licenceName: null` (changelog 0.27.1); production never does.
       properties:
         credit: { type: [string, "null"], minLength: 1, maxLength: 200, description: The photographer or rights holder to credit. }
         licenceName: { type: [string, "null"], minLength: 1, maxLength: 200 }
@@ -6562,7 +6571,7 @@ components:
           type: string
           description: "Empty or the item's Rank, a backend rank id (`trainee`, `first-officer`, `captain`, `check-airman`, `chief-pilot`). The website maps display names."
           maxLength: 2400
-        factualSource: { type: string, maxLength: 2400, description: Must start with `https://` before the item can be scheduled or published. }
+        factualSource: { type: string, maxLength: 2400, description: Must start with `https://` before the item can be scheduled or published (a dev-demo waiver may allow it empty for `plane-of-the-day`; see the description of the save route). }
     EditorialItem:
       type: object
       additionalProperties: false

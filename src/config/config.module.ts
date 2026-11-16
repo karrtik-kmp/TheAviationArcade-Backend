@@ -2,12 +2,13 @@ import { createPrivateKey } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Global, Module } from "@nestjs/common";
+import { Global, Logger, Module } from "@nestjs/common";
 import { importPKCS8 } from "jose";
 import { parse as parseConnectionString } from "pg-connection-string";
 import { z } from "zod";
 import { accountPrincipalFor } from "../accounts/account-principal.js";
 import { emulatorTokensAllowed } from "../auth/firebase.js";
+import { databaseNameOf, devDatabaseRefusal } from "./dev-database.js";
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
 
@@ -63,6 +64,12 @@ export type AppConfig = {
    * but nothing needs it in logs.
    */
   demoPrincipal?: string | undefined;
+  /**
+   * DEV_DEMO_WAIVER=dev-demo (docs/plans/dev-licence-waiver.md): a photo may go live without a licence name and a Plane of the Day
+   * item without a factual source. Startup is refused unless the database name ends _dev, or APP_ENV=test with a demo- project; a
+   * name ending _prod is refused always. Undefined = off (production behaviour).
+   */
+  devDemoWaiver?: "dev-demo" | undefined;
 };
 
 export type AppleStoreConfig = {
@@ -237,6 +244,8 @@ const envSchema = z.object({
   UGS_MIRROR_MIN_INTERVAL_SEC: optionalInt(0, 3600),
   /** Firebase uid of the website's shared demo account. Optional; when set, that account can never hold photographer/admin. */
   DEMO_ACCOUNT_UID: optionalText,
+  /** Dev database only: waive the photo licence name and the Plane of the Day factual source. Empty = unset; the only value is dev-demo. */
+  DEV_DEMO_WAIVER: z.preprocess((value) => (typeof value === "string" && value.trim() === "" ? undefined : value), z.literal("dev-demo").optional()),
 });
 
 /** Parse the environment once. Fails fast, naming the bad variables but never their values. */
@@ -278,6 +287,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_MIRROR_MAX_PER_MIN,
     UGS_MIRROR_MIN_INTERVAL_SEC,
     DEMO_ACCOUNT_UID,
+    DEV_DEMO_WAIVER,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -397,6 +407,14 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     demoPrincipal = accountPrincipalFor(DEMO_ACCOUNT_UID, FIREBASE_PROJECT_ID);
     if (demoPrincipal === undefined) throw new Error("Invalid environment configuration: DEMO_ACCOUNT_UID");
   }
+  // The waiver may only run against a dev database (name ends _dev) or the test suite (APP_ENV=test with a demo- project); a name
+  // ending _prod is refused under every APP_ENV. Name only, never the database name or URL.
+  if (DEV_DEMO_WAIVER !== undefined) {
+    const testSuite = APP_ENV === "test" && FIREBASE_PROJECT_ID.startsWith("demo-");
+    if (devDatabaseRefusal(databaseNameOf(DATABASE_URL), !testSuite) !== null) {
+      throw new Error("Invalid environment configuration: DEV_DEMO_WAIVER is allowed only with a database whose name ends _dev (or the test suite)");
+    }
+  }
   return {
     appEnv: APP_ENV,
     databaseUrl: DATABASE_URL,
@@ -423,6 +441,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     cdn,
     ugs,
     demoPrincipal,
+    devDemoWaiver: DEV_DEMO_WAIVER,
   };
 }
 
@@ -735,6 +754,11 @@ function parseUgsConfig(
       useFactory: async (): Promise<AppConfig> => {
         const config = loadConfig(process.env);
         await importStoreKeys(config);
+        if (config.devDemoWaiver !== undefined) {
+          new Logger("Config").warn(
+            "DEV_DEMO_WAIVER=dev-demo is ON: photos may be published without a licence name and Plane of the Day items without a factual source. Dev database only; never copy these rows to production.",
+          );
+        }
         return config;
       },
     },

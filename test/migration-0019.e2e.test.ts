@@ -79,7 +79,7 @@ describe("migration 0019", () => {
 
       expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(items);
       const after = (await pool.query("SELECT * FROM media_versions ORDER BY media_id")).rows;
-      expect(after.map(({ rights_statement, rights_stated_by, rights_stated_at, description, ...rest }) => rest)).toEqual(versions);
+      expect(after.map(({ rights_statement, rights_stated_by, rights_stated_at, description, licence_waiver, ...rest }) => rest)).toEqual(versions);
       expect(after.every((r) => r.rights_statement === null && r.rights_stated_by === null && r.rights_stated_at === null && r.description === null)).toBe(true);
       expect((await pool.query("SELECT count(*)::int AS n FROM admin_audit")).rows[0].n).toBe(audit);
 

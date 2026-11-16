@@ -58,6 +58,8 @@ export const MEDIA_UPLOAD_OPERATIONS = ["create", "version"] as const;
 export const MEDIA_RIGHTS_STATEMENTS = ["v1_own", "v1_authorised", "d1_private_review"] as const;
 /** The statements a published version may carry (the publishable CHECK). Also the only ones the API accepts. */
 export const MEDIA_PUBLISHABLE_RIGHTS = ["v1_own", "v1_authorised"] as const;
+/** The dev-demo waiver a published version may carry instead of a licence name (docs/plans/dev-licence-waiver.md, migration 0026). */
+export const MEDIA_LICENCE_WAIVERS = ["dev-demo"] as const;
 /** Store catalog and purchases (docs/plans/purchases.md, migration 0020). */
 export const STORE_PRODUCT_KINDS = ["hint_pack", "first_class_pass", "miles_pack"] as const;
 export const STORE_PRODUCT_STATUSES = ["active", "retired"] as const;
@@ -95,6 +97,7 @@ export type MediaState = (typeof MEDIA_STATES)[number];
 export type MediaContentType = (typeof MEDIA_CONTENT_TYPES)[number];
 export type MediaRightsStatement = (typeof MEDIA_RIGHTS_STATEMENTS)[number];
 export type MediaPublishableRights = (typeof MEDIA_PUBLISHABLE_RIGHTS)[number];
+export type MediaLicenceWaiver = (typeof MEDIA_LICENCE_WAIVERS)[number];
 export type MediaUploadOperation = (typeof MEDIA_UPLOAD_OPERATIONS)[number];
 export type StoreProductKind = (typeof STORE_PRODUCT_KINDS)[number];
 export type StoreProductStatus = (typeof STORE_PRODUCT_STATUSES)[number];

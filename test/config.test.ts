@@ -64,6 +64,66 @@ describe("loadConfig", () => {
     });
   });
 
+  describe("DEV_DEMO_WAIVER (docs/plans/dev-licence-waiver.md)", () => {
+    const real = (database: string, over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+      ...production,
+      DATABASE_URL: `postgres://user:s3cret-pass@db.internal:5432/${database}`,
+      ...over,
+    });
+
+    it("is off by default and when empty", () => {
+      expect(loadConfig(local).devDemoWaiver).toBeUndefined();
+      expect(loadConfig(real("airplane_games_prod")).devDemoWaiver).toBeUndefined();
+      expect(loadConfig({ ...local, DEV_DEMO_WAIVER: "  " }).devDemoWaiver).toBeUndefined();
+    });
+
+    it("is accepted on a database ending _dev, in production too", () => {
+      expect(loadConfig(real("airplane_games_dev", { DEV_DEMO_WAIVER: "dev-demo" })).devDemoWaiver).toBe("dev-demo");
+      expect(loadConfig(real("airplane_games_dev", { DEV_DEMO_WAIVER: "dev-demo", APP_ENV: "local", FIREBASE_PROJECT_ID: "airplane-games-9fe1e" })).devDemoWaiver).toBe("dev-demo");
+    });
+
+    it("is accepted under APP_ENV=test with a demo- project on any named database", () => {
+      const test = { ...local, APP_ENV: "test", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/airplane_games_test", DEV_DEMO_WAIVER: "dev-demo" };
+      expect(loadConfig(test).devDemoWaiver).toBe("dev-demo");
+    });
+
+    it("refuses a _prod database under every APP_ENV, test included", () => {
+      const url = "postgres://u:s3cret-pass@h:5432/airplane_games_prod";
+      const envs: Record<string, NodeJS.ProcessEnv> = {
+        local: { ...local, DATABASE_URL: url, DEV_DEMO_WAIVER: "dev-demo" },
+        test: { ...local, APP_ENV: "test", DATABASE_URL: url, DEV_DEMO_WAIVER: "dev-demo" },
+        production: real("airplane_games_prod", { DEV_DEMO_WAIVER: "dev-demo" }),
+      };
+      for (const [appEnv, env] of Object.entries(envs)) {
+        const text = message(env);
+        expect(text, appEnv).toContain("DEV_DEMO_WAIVER");
+        expect(text).not.toContain("s3cret-pass");
+        expect(text).not.toContain("airplane_games_prod");
+      }
+    });
+
+    it("refuses a name that does not end _dev (outside the test suite) and a URL that names no database", () => {
+      expect(message(real("airplane_games", { DEV_DEMO_WAIVER: "dev-demo" }))).toContain("DEV_DEMO_WAIVER");
+      expect(message({ ...local, DATABASE_URL: "postgres://u:p@127.0.0.1:5433/airplane_games_test", DEV_DEMO_WAIVER: "dev-demo" })).toContain("DEV_DEMO_WAIVER");
+      expect(message({ ...local, DATABASE_URL: "postgres://u:p@127.0.0.1:5433/", DEV_DEMO_WAIVER: "dev-demo" })).toContain("DEV_DEMO_WAIVER");
+      expect(message({ ...local, APP_ENV: "test", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/", DEV_DEMO_WAIVER: "dev-demo" })).toContain("DEV_DEMO_WAIVER");
+    });
+
+    it("APP_ENV=test with a non-demo project does not open the test exemption", () => {
+      const env = { APP_ENV: "test", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/airplane_games_test", FIREBASE_PROJECT_ID: "airplane-games-9fe1e", DEV_DEMO_WAIVER: "dev-demo" };
+      expect(message(env)).toContain("DEV_DEMO_WAIVER");
+      expect(loadConfig({ ...env, DATABASE_URL: "postgres://u:p@127.0.0.1:5433/airplane_games_dev" }).devDemoWaiver).toBe("dev-demo");
+    });
+
+    it("refuses any other value, naming the variable and not the value", () => {
+      for (const bad of ["true", "1", "DEV-DEMO", "dev-demo,x"]) {
+        const text = message(real("airplane_games_dev", { DEV_DEMO_WAIVER: bad }));
+        expect(text, bad).toContain("DEV_DEMO_WAIVER");
+        expect(text, bad).not.toContain(`"${bad}"`);
+      }
+    });
+  });
+
   describe("DEMO_ACCOUNT_UID", () => {
     it("is unset by default and when blank", () => {
       expect(loadConfig(local).demoPrincipal).toBeUndefined();

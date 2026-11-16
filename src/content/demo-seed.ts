@@ -5,6 +5,7 @@ import { accountPrincipalFor, isDemoPrincipal, uidOfAccountPrincipal } from "../
 import { RoleStore } from "../accounts/role-store.js";
 import { ApiError } from "../common/errors.js";
 import type { AppConfig } from "../config/config.module.js";
+import { devDatabaseRefusal } from "../config/dev-database.js";
 import { databaseNow } from "../database/clock.js";
 import { DatabaseService, ExpectedRollback } from "../database/database.module.js";
 import type { Database, Tx } from "../database/database.module.js";
@@ -83,11 +84,10 @@ export function seedRefusal(config: SeedConfig, dbName: string | null | undefine
   if (config.firebaseProjectId.startsWith("demo-")) {
     return `FIREBASE_PROJECT_ID is ${config.firebaseProjectId}, a demo- project: the seed loads content for a real project only (airplane-games-9fe1e).`;
   }
-  if (!dbName) return "DATABASE_URL names no database; the seed needs to know which one it writes to.";
-  if (dbName.endsWith("_prod")) return `The database "${dbName}" is a production database (name ends _prod); the demo seed never runs against it.`;
-  if (config.appEnv === "production" && !dbName.endsWith("_dev")) {
-    return `APP_ENV=production runs the seed only against a database whose name ends _dev; this one is "${dbName}".`;
-  }
+  const database = devDatabaseRefusal(dbName, config.appEnv === "production");
+  if (database === "no-database") return "DATABASE_URL names no database; the seed needs to know which one it writes to.";
+  if (database === "prod") return `The database "${dbName}" is a production database (name ends _prod); the demo seed never runs against it.`;
+  if (database === "not-dev") return `APP_ENV=production runs the seed only against a database whose name ends _dev; this one is "${dbName}".`;
   if (args.yes && config.blobStore !== "bunny") {
     return `--yes needs BLOB_STORE=bunny (this run has "${config.blobStore}"): the images must go to the real store, and a memory store is lost when the command ends.`;
   }
@@ -404,7 +404,11 @@ async function steps(
           })
           .map((row) => String(row["photographer"] ?? "").trim())
           .find((c) => c !== "") ?? "";
-      return { kind: "mil", dir: inputs.military.dir, file, credit, licence: UNSPLASH_LICENCE, noCreditNote: items.length === 0 ? "no question uses this photo, so no credit" : "no credit in the client's sheet", unused: items.length === 0 ? "no question" : undefined };
+      // DEV_DEMO_WAIVER: a photo a question uses, whose sheet row names no photographer, is loaded with credit not required (never a
+      // made-up name). A photo no question uses is left as it was.
+      const waiveCredit = credit === "" && items.length > 0 && ctx.config.devDemoWaiver === "dev-demo";
+      const noCreditNote = items.length === 0 ? "no question uses this photo, so no credit" : waiveCredit ? "no credit in the client's sheet; credit not required (dev-demo waiver)" : "no credit in the client's sheet";
+      return { kind: "mil", dir: inputs.military.dir, file, credit, licence: UNSPLASH_LICENCE, noCreditNote, waiveCredit, unused: items.length === 0 ? "no question" : undefined };
     }),
     ...(identifier.failed ? [] : inputs.identifier.files).map((file): PhotoPlan => {
       const items = identifier.items.filter((i) => aiMatches.get(i.id)?.file === file);
@@ -422,7 +426,15 @@ async function steps(
     outcomes.set(subject, { usable: result.status === "done" || result.status === "unchanged" || result.status === "would", ...(result.mediaId !== undefined ? { mediaId: result.mediaId } : {}) });
     if (result.status !== "refused" && result.status !== "failed") {
       if (plan.unused !== undefined) push({ section: "photo", subject, status: "note", detail: `photo has ${plan.unused}` });
-      if (plan.credit === "" && plan.noCreditNote !== "") push({ section: "photo", subject, status: "note", detail: plan.noCreditNote });
+      if (plan.credit === "" && plan.noCreditNote !== "") {
+        // The credit setting is written only when this run inserts the version; an already uploaded photo keeps what it has, so the
+        // note must not claim the waiver (or its absence) for it.
+        const detail =
+          result.status === "unchanged" && plan.unused === undefined
+            ? "no credit in the client's sheet; already uploaded, so this run did not change whether a credit is required"
+            : plan.noCreditNote;
+        push({ section: "photo", subject, status: "note", detail });
+      }
     }
   }
 
@@ -585,6 +597,8 @@ type PhotoPlan = {
   credit: string;
   licence: string | null;
   noCreditNote: string;
+  /** True only under DEV_DEMO_WAIVER for a Military photo with no credit in the sheet: version 1 gets creditRequired false. */
+  waiveCredit?: boolean;
   /** Why no question or entry uses this photo, or undefined when one does. */
   unused: string | undefined;
 };
@@ -653,7 +667,7 @@ async function seedPhoto(
           width: image.width,
           height: image.height,
           creditName: credit.value,
-          creditRequired: true,
+          creditRequired: plan.waiveCredit !== true,
           licenceName: plan.licence,
           rightsStatement: "v1_authorised",
           // The operator states the client's licence, not the photographer.
@@ -680,6 +694,7 @@ async function seedPhoto(
             rightsStatement: "v1_authorised",
             credit: credit.value,
             licence: plan.licence,
+            ...(plan.waiveCredit === true ? { creditWaived: "dev-demo" } : {}),
             note: "Loaded by the dev demo seed as an unverified draft; the operator stated the client's licence (v1_authorised). Nothing is published.",
           },
           createdAt: now,

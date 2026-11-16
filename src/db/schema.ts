@@ -30,6 +30,7 @@ import type {
   ReleaseDealRule,
   ReleaseFlightKind,
   MediaContentType,
+  MediaLicenceWaiver,
   MediaRightsStatement,
   MediaState,
   MediaUploadOperation,
@@ -391,6 +392,9 @@ export const mediaVersions = pgTable(
     creditName: text("credit_name"),
     creditRequired: boolean("credit_required").notNull(),
     licenceName: text("licence_name"),
+    // Set only on a published version that went live with no licence name, under the dev-demo switch (DEV_DEMO_WAIVER,
+    // docs/plans/dev-licence-waiver.md, migration 0026). Never in the API; the audit detail `licenceWaived` says the same.
+    licenceWaiver: text("licence_waiver").$type<MediaLicenceWaiver>(),
     licenceUrl: text("licence_url"),
     sourceUrl: text("source_url"),
     attributionText: text("attribution_text"),
@@ -432,12 +436,14 @@ export const mediaVersions = pgTable(
       sql`(${t.rightsStatement} IS NULL) = (${t.rightsStatedBy} IS NULL) AND (${t.rightsStatement} IS NULL) = (${t.rightsStatedAt} IS NULL)`,
     ),
     check("media_versions_description_check", sql`${t.description} IS NULL OR length(${t.description}) BETWEEN 1 AND 2000`),
+    check("media_versions_licence_waiver_check", sql`${t.licenceWaiver} IN ('dev-demo')`),
+    check("media_versions_licence_waiver_rule_check", sql`${t.licenceWaiver} IS NULL OR (${t.licenceName} IS NULL AND ${t.publishedAt} IS NOT NULL)`),
     // A NULL statement would pass an IN test (NULL is not false), hence the explicit IS NOT NULL.
-    // Migration 0019 adds this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
+    // Migrations 0019 and 0026 add this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
     // statement and stay as they are, while every new or changed row must satisfy it.
     check(
       "media_versions_publishable_check",
-      sql`${t.publishedAt} IS NULL OR (${t.licenceName} IS NOT NULL AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL) AND ${t.rightsStatement} IS NOT NULL AND ${t.rightsStatement} IN ('v1_own', 'v1_authorised'))`,
+      sql`${t.publishedAt} IS NULL OR ((${t.licenceName} IS NOT NULL OR ${t.licenceWaiver} IS NOT NULL) AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL) AND ${t.rightsStatement} IS NOT NULL AND ${t.rightsStatement} IN ('v1_own', 'v1_authorised'))`,
     ),
   ],
 );
