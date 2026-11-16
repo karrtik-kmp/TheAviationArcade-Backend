@@ -8,7 +8,7 @@ const PACKAGE = "com.airplane.games";
 const API = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${PACKAGE}`;
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const ACCESS_TOKEN = "ya29.access-token-that-must-never-be-printed-0123456789";
-const REAL_PROJECT = "airplane-games-auth-20261022";
+const REAL_PROJECT = "airplane-games-9fe1e";
 const NOT_ROOT = { uid: 1000 };
 
 const json = (status: number, body: unknown): Response =>

@@ -314,7 +314,7 @@ describe("mirror policy", () => {
   });
 
   it("the copy's uid is the Firebase uid in the principal, and a non-Firebase principal is refused", () => {
-    expect(uidOfPrincipal("firebase:airplane-games-auth-20261022:AbC123xyz")).toBe("AbC123xyz");
+    expect(uidOfPrincipal("firebase:airplane-games-9fe1e:AbC123xyz")).toBe("AbC123xyz");
     expect(uidOfPrincipal("firebase:p:with:colon")).toBe("with:colon");
     expect(() => uidOfPrincipal("ugs:p:u")).toThrow();
     expect(() => uidOfPrincipal("firebase:p:")).toThrow();
@@ -322,7 +322,7 @@ describe("mirror policy", () => {
 });
 
 describe("UGS config", () => {
-  const base = { APP_ENV: "local", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/db", FIREBASE_PROJECT_ID: "airplane-games-auth-20261022" };
+  const base = { APP_ENV: "local", DATABASE_URL: "postgres://u:p@127.0.0.1:5433/db", FIREBASE_PROJECT_ID: "airplane-games-9fe1e" };
   const full = {
     UGS_PROJECT_ID: PROJECT,
     UGS_ENVIRONMENT_ID: ENV,

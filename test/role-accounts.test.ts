@@ -22,7 +22,7 @@ describe("principal validator: exactly firebase:<configured project>:<uid>", () 
   it.each([
     ["an empty uid", principal("")],
     ["a uid over 128 characters", principal("x".repeat(129))],
-    ["another project", principal("abc", "airplane-games-auth-20261022")],
+    ["another project (the retired one, never re-keyed)", principal("abc", "airplane-games-auth-20261022")],
     ["no prefix", "abc"],
     ["a different scheme", `google:${PROJECT}:abc`],
     ["a colon in the uid", principal("a:b")],

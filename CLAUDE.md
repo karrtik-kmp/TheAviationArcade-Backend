@@ -19,7 +19,8 @@ sign-off.
 - Privileges come only from the backend `account_roles` table (docs/adr/ADR-0002): `player` at signup, `photographer`
   by request + admin approval, `admin` only by grant (or the audited `roles:grant` command). Guards read roles per
   request; photographer/admin also need a verified email. No env allowlist grants anything (`STAFF_EMAILS` retired).
-- Cloud project `airplane-games-auth-20261022`; local/tests use only `demo-airplane-games`. Unsigned
+- Cloud project `airplane-games-9fe1e` (ruling 2026-11-16; the old `airplane-games-auth-20261022` is retired and its principals
+  are never re-keyed); local/tests use only `demo-airplane-games`. Unsigned
   emulator tokens are accepted for exactly that demo project. Never commit `.env*` (except
   `.env.example`), keys or Bunny passwords.
 - File/blob storage is Bunny Storage (S3 API), as on the website; private by default. See

@@ -42,7 +42,7 @@ mint tokens. Emulator tokens are honoured only for exactly `demo-airplane-games`
 can never accept them.
 
 To accept real sign-ins from the cloud project locally (e.g. a Unity build signed in with Firebase), set
-`FIREBASE_PROJECT_ID=airplane-games-auth-20261022` and `ALLOW_EMULATOR_TOKENS=false` (in `.env` or the
+`FIREBASE_PROJECT_ID=airplane-games-9fe1e` and `ALLOW_EMULATOR_TOKENS=false` (in `.env` or the
 shell; shell values win). No credentials are needed: the backend only fetches Google's public signing
 keys. Players created this way live in your local database only.
 
@@ -52,7 +52,7 @@ keys. Players created this way live in your local database only.
 |---|---|
 | `APP_ENV` | Required: `local`, `test` or `production`. `.env` is never loaded when it is `production` |
 | `DATABASE_URL` | Postgres connection string |
-| `FIREBASE_PROJECT_ID` | `demo-airplane-games` locally; `airplane-games-auth-20261022` in production |
+| `FIREBASE_PROJECT_ID` | `demo-airplane-games` locally; `airplane-games-9fe1e` on the dev and production servers (ruling 2026-11-16). The old project `airplane-games-auth-20261022` is retired: its tokens are refused, and rows keyed `firebase:airplane-games-auth-20261022:<uid>` stay as they are (a principal is project + uid, never re-keyed or matched by email) |
 | `ALLOW_EMULATOR_TOKENS` | Local only. Production refuses to boot with it on, or with a `demo-` project |
 | `HOST` / `PORT` | Default `127.0.0.1` / `3000`. Use `0.0.0.0` inside a container |
 | `DB_POOL_MAX` | Default 10. Statement/lock timeouts 5 s, idle-in-transaction 15 s |
@@ -207,7 +207,9 @@ stored: receipts and the append-only audit log carry the admin's principal. Deta
 
 ### First admin
 
-The first admin (and recovery when no active admin is left) is granted by the operator, not the API:
+The first admin (and recovery when no active admin is left) is granted by the operator, not the API. On the dev backend
+(`FIREBASE_PROJECT_ID=airplane-games-9fe1e`), the user first signs up on `dev.playairplanegames.com`, copies the uid from the
+Firebase console of `airplane-games-9fe1e`, then runs this once on the server:
 
 ```
 npm run roles:grant -- <firebase-uid> [--email <address>] --yes

@@ -48,7 +48,7 @@ the same.
 ## Google (Google Cloud + Play Console)
 
 1. **Cloud project.** console.cloud.google.com: create a **separate project for Play** (for example
-   `airplane-games-play`), recommended over the Firebase auth project `airplane-games-auth-20261022` so a key-carrying service
+   `airplane-games-play`), recommended over the Firebase auth project `airplane-games-9fe1e` so a key-carrying service
    account never sits next to production auth. If you use the Firebase project anyway, give this account no IAM roles. Pub/Sub
    may need billing enabled. An organization policy (`iam.disableServiceAccountKeyCreation`, default on for organizations
    created since 2024) can block key download, and `iam.allowedPolicyMemberDomains` can block the Play grant in step 6; personal
@@ -95,7 +95,7 @@ the same.
 
 **Checking the keys (`stores:check`).** Read-only; prints statuses and reasons, never a key or token; run only with the owner's
 sign-off. Locally (PowerShell, in `Backend/`, real Firebase project inline for this run only):
-`$env:FIREBASE_PROJECT_ID="airplane-games-auth-20261022"; $env:GOOGLE_PLAY_PACKAGE_NAME="com.airplane.games";
+`$env:FIREBASE_PROJECT_ID="airplane-games-9fe1e"; $env:GOOGLE_PLAY_PACKAGE_NAME="com.airplane.games";
 $env:GOOGLE_PLAY_SERVICE_ACCOUNT_FILE="H:/Work/TheAviationArcade/Backend/secrets/play-service-account.json"; npm run stores:check`
 (then remove the three variables). On the dev server, as the app user, without a build and before editing the env file: see
 `docs/plans/purchases.md` wave P-K, K4 step 2. Exit 0 = every configured store passed; a WARN names a missing or mistyped product.

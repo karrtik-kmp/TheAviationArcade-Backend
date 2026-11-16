@@ -13,7 +13,7 @@ import {
 } from "../src/auth/firebase.js";
 import { emulatorToken } from "./tokens.js";
 
-const PROJECT = "airplane-games-auth-20261022";
+const PROJECT = "airplane-games-9fe1e";
 let privateKey: CryptoKey;
 let resolver: JWTVerifyGetKey;
 
@@ -71,6 +71,12 @@ describe("verifyFirebaseToken", () => {
     await expect(
       verifyFirebaseToken(await signed({}, "someone-else"), production, resolver),
     ).rejects.toThrow();
+  });
+
+  it("rejects a token from the retired project airplane-games-auth-20261022 (ruling 2026-11-16)", async () => {
+    await expect(
+      verifyFirebaseToken(await signed({}, "airplane-games-auth-20261022"), production, resolver),
+    ).rejects.toBeInstanceOf(InvalidTokenError);
   });
 
   it("rejects an expired token", async () => {

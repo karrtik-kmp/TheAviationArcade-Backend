@@ -456,7 +456,7 @@ describe("scripts/store-seed-demo.mjs", () => {
       env: {
         ...process.env,
         APP_ENV: "production",
-        FIREBASE_PROJECT_ID: "airplane-games-auth-20261022",
+        FIREBASE_PROJECT_ID: "airplane-games-9fe1e",
         ALLOW_EMULATOR_TOKENS: "false",
         BLOB_STORE: "none",
         BUNNY_CDN_HOST: "my-zone.b-cdn.net",

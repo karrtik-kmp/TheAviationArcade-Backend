@@ -16,7 +16,7 @@ const local = {
 const productionNoCdn = {
   APP_ENV: "production",
   DATABASE_URL: "postgres://user:s3cret-pass@db.internal:5432/db",
-  FIREBASE_PROJECT_ID: "airplane-games-auth-20261022",
+  FIREBASE_PROJECT_ID: "airplane-games-9fe1e",
 };
 
 const production = { ...productionNoCdn, BUNNY_CDN_HOST: "my-zone.b-cdn.net", BUNNY_CDN_TOKEN_KEY: "0123456789abcdef-secret-key" };
@@ -72,7 +72,7 @@ describe("loadConfig", () => {
 
     it("derives firebase:<project>:<uid>, trimming the uid", () => {
       expect(loadConfig({ ...local, DEMO_ACCOUNT_UID: " demo-shared-uid " }).demoPrincipal).toBe("firebase:demo-airplane-games:demo-shared-uid");
-      expect(loadConfig({ ...production, DEMO_ACCOUNT_UID: "AbC123" }).demoPrincipal).toBe("firebase:airplane-games-auth-20261022:AbC123");
+      expect(loadConfig({ ...production, DEMO_ACCOUNT_UID: "AbC123" }).demoPrincipal).toBe("firebase:airplane-games-9fe1e:AbC123");
       expect(loadConfig({ ...local, DEMO_ACCOUNT_UID: "x".repeat(128) }).demoPrincipal).toBe(`firebase:demo-airplane-games:${"x".repeat(128)}`);
     });
 
@@ -306,7 +306,7 @@ describe("loadConfig", () => {
     });
 
     it("refuses fake against a real Firebase project in every APP_ENV, tests included", () => {
-      const realLocal = { ...local, FIREBASE_PROJECT_ID: "airplane-games-auth-20261022", ALLOW_EMULATOR_TOKENS: undefined };
+      const realLocal = { ...local, FIREBASE_PROJECT_ID: "airplane-games-9fe1e", ALLOW_EMULATOR_TOKENS: undefined };
       expect(message({ ...realLocal, STORE_VERIFIER: "fake" })).toContain("STORE_VERIFIER");
       expect(loadConfig({ ...realLocal, STORE_VERIFIER: "none" }).storeVerifier).toBe("none");
       expect(message({ ...realLocal, APP_ENV: "test", STORE_VERIFIER: "fake" })).toContain("STORE_VERIFIER");
@@ -391,7 +391,7 @@ describe("loadConfig", () => {
 });
 
 describe("STORE_VERIFIER=stores", () => {
-  const realLocal = { ...local, FIREBASE_PROJECT_ID: "airplane-games-auth-20261022", ALLOW_EMULATOR_TOKENS: undefined };
+  const realLocal = { ...local, FIREBASE_PROJECT_ID: "airplane-games-9fe1e", ALLOW_EMULATOR_TOKENS: undefined };
   const dir = mkdtempSync(join(tmpdir(), "store-config-"));
   let ecPem = "";
   let rsaPem = "";
