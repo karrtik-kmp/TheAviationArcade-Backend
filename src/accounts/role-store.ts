@@ -51,6 +51,8 @@ const DECIDABLE: Record<Decision, readonly AccountRole[]> = {
 export type DecisionOutcome = { ok: true; row: RoleRow } | { ok: false; error: ApiError };
 export type RequestOutcome = { ok: true; row: RoleRow; changed: boolean } | { ok: false; error: ApiError };
 
+export type GrantOutcome = { ok: true; row: RoleRow; changed: boolean } | { ok: false; error: ApiError };
+
 const blockedError = (): ApiError => new ApiError(403, "forbidden", "This account is blocked from the photographer role.");
 
 const ADVISORY_LOCK = sql`SELECT pg_advisory_xact_lock(hashtextextended('account-roles', 0))`;
@@ -341,6 +343,60 @@ export class RoleStore {
       }
       await audit(tx, { actor: by, action: "role_grant", principal, role: "admin", from: before ? snapshot(before) : null, to: snapshot(row), note, at });
       return { ok: true, row };
+    });
+  }
+
+  /**
+   * Operator-only grant of `photographer` by Firebase UID (user ruling 2026-11-16, ADR-0002 follow-up; the dev demo seed). An
+   * `admin` actor is refused 403: the API keeps request + approve. Only from NO row (inserted `active`) or `pending` (becomes
+   * `active`, revision + 1, `requestEmail` kept). `active` is a no-op (`changed: false`, nothing written). `rejected`, `revoked`
+   * and `blocked` mean an admin decided this: 409, nothing written, so a re-run never overturns a staff decision. The demo
+   * principal is refused before any read. One `role_grant` audit row per change, actor `operator:<id>`.
+   */
+  async grantPhotographer(actor: RoleActor, principal: string, note: string | null): Promise<GrantOutcome> {
+    if (actor.kind !== "operator") {
+      return { ok: false, error: new ApiError(403, "forbidden", "Only the operator command grants photographer directly; admins approve a request. Nothing was changed.") };
+    }
+    if (isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
+    return this.database.withTransaction(async (tx): Promise<GrantOutcome> => {
+      await lockAccountRoles(tx);
+      const at = await databaseNow(tx);
+      const by = actorName(actor);
+      const before = await readRow(tx, principal, "photographer");
+      if (before?.state === "active") return { ok: true, row: before, changed: false };
+      if (before && before.state !== "pending") {
+        return {
+          ok: false,
+          error: new ApiError(
+            409,
+            "version_conflict",
+            `The photographer role is ${before.state} at revision ${before.revision}: an admin decided this, so it must be decided again in the Admin. Nothing was changed.`,
+          ),
+        };
+      }
+      let row: RoleRow | undefined;
+      if (!before) {
+        [row] = await tx
+          .insert(accountRoles)
+          .values({ principal, role: "photographer", state: "active", requestedAt: at, decidedAt: at, decidedBy: by, note })
+          .returning();
+      } else {
+        [row] = await tx
+          .update(accountRoles)
+          .set({ state: "active", decidedAt: at, decidedBy: by, note, revision: sql`${accountRoles.revision} + 1` })
+          .where(
+            and(
+              eq(accountRoles.principal, principal),
+              eq(accountRoles.role, "photographer"),
+              eq(accountRoles.state, "pending"),
+              eq(accountRoles.revision, before.revision),
+            ),
+          )
+          .returning();
+      }
+      if (!row) throw new Error("Role grant was not stored."); // the lock makes this unreachable
+      await audit(tx, { actor: by, action: "role_grant", principal, role: "photographer", from: before ? snapshot(before) : null, to: snapshot(row), note, at });
+      return { ok: true, row, changed: true };
     });
   }
 

@@ -133,3 +133,16 @@ Fixed constraints:
 4. [ ] `npm run roles:grant` operator command (direct database, audited, refuses a principal from another Firebase
    project).
 5. [ ] Update this repo's `CLAUDE.md`, README and ARCHITECTURE; message the website session.
+
+## Follow-up ruling (user, 2026-11-16, operator photographer grant for the dev demo seed)
+
+Source: `../website/docs/intent/hosting-dev-demo.md` and the brief `../website/docs/briefs/backend-firebase-project-and-demo-seed.md`.
+
+The operator seed (`npm run demo:seed-content`, being built) may make the staff photographer that owns the demo photos, by
+Firebase UID, through `RoleStore.grantPhotographer`. Like `roles:grant`, it is an operator path (audited `role_grant`, actor
+`operator:<id>`), not an API route: an `admin` actor is refused, and admins keep request + approve.
+
+- Only from no row (inserted `active`) or `pending` (becomes `active`). An `active` row is a no-op, with no audit row.
+- It never overturns a decision: `rejected`, `revoked` and `blocked` rows are refused (409) and must be decided again in the Admin.
+- Never by email, only by UID (the principal of the configured Firebase project).
+- Never the shared demo account: refused before any read.
