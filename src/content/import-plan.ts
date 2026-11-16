@@ -77,7 +77,7 @@ const CONFLICT_HINT = "export, edit and re-import";
 
 export type PlanOptions = {
   kind: SheetKind;
-  mapping: Pick<ContentModuleMapping, "naturalKey" | "formatId" | "idNumber">;
+  mapping: Pick<ContentModuleMapping, "naturalKey" | "formatId" | "idNumber" | "keyIsId">;
 };
 
 /**
@@ -92,6 +92,9 @@ export type PlanOptions = {
  * - A blank or repeated natural key is a row error, into an empty module too (user, 2026-10-28), so later
  *   sheets can always match by it: we never guess a match.
  *
+ * A module with `keyIsId` (Identifier) is the same, except the "natural key" is the id itself: the parser derives it from the
+ * sheet, a stored item matches by its id, and an unmatched row is created under that id (no sequence).
+ *
  * Admin export (Id column: our export, edited): the Id is the identity.
  * - No Version: create if the id is new; unchanged if identical; otherwise a conflict.
  * - With Version: the id must exist and the version must equal the stored one; then update if it differs,
@@ -103,6 +106,9 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
   const issues: ImportIssue[] = [];
   const retirements: PlannedRetirement[] = [];
   const { kind, mapping } = options;
+  // keyIsId modules: the stored item's key is its id (ParsedRow.naturalKey is the id the sheet gives the row).
+  const keyIsId = mapping.keyIsId === true;
+  const storedKey = (stored: { id: string; data: unknown }) => (keyIsId ? stored.id : mapping.naturalKey(stored.data));
 
   const sameContent = (stored: ExistingItem, item: ParsedRow) =>
     stored.rank === item.rank && canonicalJson(stored.data) === canonicalJson(item.data);
@@ -114,7 +120,7 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
     const keys = new Map<string, string>();
     for (const stored of existing.values()) {
       maxNumber = Math.max(maxNumber, mapping.idNumber(stored.id) ?? 0);
-      keys.set(stored.id, mapping.naturalKey(stored.data));
+      keys.set(stored.id, storedKey(stored));
     }
     const idCeiling = maxNumber + parsed.length; // new ids continue the sequence; they may not jump
     for (const item of parsed) {
@@ -133,7 +139,12 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
       if (item.version === undefined) {
         if (!stored) {
           const number = mapping.idNumber(id);
-          if (number === undefined || number > idCeiling) {
+          if (keyIsId) {
+            if (number === undefined) {
+              issues.push({ row: item.row, id, level: "error", message: "Id is not a valid id for this module." });
+              continue;
+            }
+          } else if (number === undefined || number > idCeiling) {
             issues.push({
               row: item.row,
               id,
@@ -167,16 +178,18 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
     }
 
     // Natural keys stay unique and non-blank module-wide, so later client sheets can always match by them.
-    for (const r of rows) if (r.action !== "unchanged") keys.set(r.id, mapping.naturalKey(r.data));
+    for (const r of rows) if (r.action !== "unchanged") keys.set(r.id, keyIsId ? r.id : mapping.naturalKey(r.data));
     const owners = new Map<string, string[]>();
     for (const [id, key] of keys) owners.set(key, [...(owners.get(key) ?? []), id]);
     for (const r of rows) {
       if (r.action === "unchanged") continue;
-      const key = keys.get(r.id) ?? "";
+      // With keyIsId the id is the key and unique by construction, but the file name must still not be blank.
+      const key = keyIsId ? mapping.naturalKey(r.data) : (keys.get(r.id) ?? "");
       if (key === "") {
         issues.push({ row: r.row, id: r.id, level: "error", message: "File name is empty; every question needs a unique file name." });
         continue;
       }
+      if (keyIsId) continue;
       const others = (owners.get(key) ?? []).filter((other) => other !== r.id);
       if (others.length > 0) {
         issues.push({
@@ -191,7 +204,7 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
     const byKey = new Map<string, ExistingItem[]>();
     let maxNumber = 0;
     for (const stored of existing.values()) {
-      const key = mapping.naturalKey(stored.data);
+      const key = storedKey(stored);
       byKey.set(key, [...(byKey.get(key) ?? []), stored]);
       maxNumber = Math.max(maxNumber, mapping.idNumber(stored.id) ?? 0);
     }
@@ -233,6 +246,14 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
       }
       const stored = candidates[0];
       if (!stored) {
+        if (keyIsId) {
+          if (mapping.idNumber(key) === undefined) {
+            issues.push({ row: item.row, level: "error", message: `"${key}" is not a valid id for this module.` });
+            continue;
+          }
+          rows.push({ row: item.row, id: key, rank: item.rank, data: item.data, action: "create" });
+          continue;
+        }
         const id = mapping.formatId(maxNumber + 1);
         if (id === undefined) {
           issues.push({ row: item.row, level: "error", message: "Too many questions: there is no id left for this row." });
@@ -256,7 +277,7 @@ export function planImport(parsed: readonly ParsedRow[], existing: ReadonlyMap<s
 
     for (const stored of existing.values()) {
       if (stored.status === "approved" && !matched.has(stored.id)) {
-        retirements.push({ id: stored.id, naturalKey: mapping.naturalKey(stored.data), expectedVersion: stored.version });
+        retirements.push({ id: stored.id, naturalKey: storedKey(stored), expectedVersion: stored.version });
       }
     }
     retirements.sort((a, b) => (mapping.idNumber(a.id) ?? 0) - (mapping.idNumber(b.id) ?? 0) || (a.id < b.id ? -1 : 1));

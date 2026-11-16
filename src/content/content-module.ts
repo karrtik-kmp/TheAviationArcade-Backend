@@ -54,11 +54,22 @@ export interface ContentModuleMapping {
    * It does not judge the natural key's uniqueness (the planner does) and tolerates a blank one (import warns).
    */
   validatePayload(data: unknown): PayloadCheck;
-  /** Natural key of a stored payload; equals ParsedRow.naturalKey for the same question. */
+  /**
+   * Natural key of a stored payload; equals ParsedRow.naturalKey for the same question. With `keyIsId` it is display only:
+   * the planner never calls it, and it differs from ParsedRow.naturalKey (which is then the row's id).
+   */
   naturalKey(data: unknown): string;
+  /**
+   * The module's ids come from the sheet, not from a sequence. The parser puts each client-sheet row's id in
+   * `ParsedRow.naturalKey` (unique, non-blank); the planner matches a stored item by its id (not by its payload) and a created
+   * row takes that key as its id (it must satisfy `idNumber`, else a row error). Retirements, counts and `planHash` work as
+   * usual. An admin export may add any id of the right shape (no sequence ceiling), and the "file name unique module-wide"
+   * check does not apply. Military and Airport Spotter leave this unset.
+   */
+  readonly keyIsId?: true;
   /** The id for the Nth item of the module (Military: mil-a<N>), or undefined when N is beyond what an id can express. */
   formatId(n: number): string | undefined;
-  /** The N in an id made by formatId, or undefined for any other shape. */
+  /** The N in an id made by formatId, or undefined for any other shape (with `keyIsId`: the id shape check; a `-2` suffix keeps N). */
   idNumber(id: string): number | undefined;
   /** Header row plus one row per item (retired ones too, with a Status column that import ignores), in the order given, in the client's column wording. */
   exportRows(items: readonly StoredItem[]): (string | number)[][];

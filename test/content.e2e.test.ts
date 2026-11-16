@@ -181,7 +181,7 @@ describe("staff gate", () => {
 
 describe("import validation", () => {
   it("a module without a mapping, or an unknown one, is 404 not_found", async () => {
-    for (const module of ["atc-match", "identifier", "bogus"]) {
+    for (const module of ["atc-match", "call-sign-match", "bogus"]) {
       for (const [method, suffix] of [["post", "imports"], ["get", "items"], ["get", "export"]] as const) {
         const call = request(server)[method](`/v1/admin/content/${module}/${suffix}`).set(staff);
         const res = await (method === "post" ? call.set("Content-Type", XLSX_MIME).send(await clientSheet(1)) : call);
@@ -1035,7 +1035,7 @@ describe("trip coverage", () => {
   });
 
   it("a module with no content mapping is 404, for a known module id or an unknown name", async () => {
-    for (const module of ["identifier", "atc", "no-such-module"]) {
+    for (const module of ["call-sign-match", "atc", "no-such-module"]) {
       const res = await coverage({}, staff, `/v1/admin/content/${module}/trip-coverage`);
       expect(res.status, module).toBe(404);
       expect(res.body.error.code).toBe("not_found");

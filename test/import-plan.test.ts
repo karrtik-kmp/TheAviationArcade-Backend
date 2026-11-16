@@ -3,6 +3,7 @@ import type { ParsedRow, SheetKind } from "../src/content/content-module.js";
 import { canonicalJson, diffItem, planHash, planImport } from "../src/content/import-plan.js";
 import type { ExistingItem } from "../src/content/import-plan.js";
 import { compareIds } from "../src/content/content-modules.js";
+import { aircraftIdentifierMapping } from "../src/content/modules/aircraft-identifier.js";
 import { militaryMapping } from "../src/content/modules/military.js";
 
 const data = (answer: string, n = 0) => ({ answer, wrong: ["b", "c", "d"], sourceFile: `f${n}.jpg`, photographer: "P" });
@@ -269,5 +270,106 @@ describe("helpers", () => {
 
   it("compareIds sorts naturally: mil-a2 before mil-a10", () => {
     expect(["mil-a10", "mil-a2", "mil-a1"].sort(compareIds)).toEqual(["mil-a1", "mil-a2", "mil-a10"]);
+  });
+});
+
+describe("planImport: keyIsId modules (Identifier: the id comes from the sheet)", () => {
+  const idata = (answer: string, file: string) => ({ answer, wrong: ["b", "c", "d"], sourceFile: file });
+  /** A client-sheet row: the parser puts the id it derived in naturalKey. */
+  const irow = (key: string, answer = "A", rank: ParsedRow["rank"] = "trainee", file = "ai-a1.jpg"): ParsedRow => ({
+    row: 4,
+    id: undefined,
+    naturalKey: key,
+    version: undefined,
+    rank,
+    data: idata(answer, file),
+  });
+  const istored = (id: string, answer = "A", file = "ai-a1.jpg", version = 1, status: ExistingItem["status"] = "approved"): [string, ExistingItem] => [
+    id,
+    { id, rank: "trainee", status, version, data: idata(answer, file) },
+  ];
+  const iplan = (rows: ParsedRow[], existing: [string, ExistingItem][], kind: SheetKind) =>
+    planImport(rows, new Map(existing), { kind, mapping: aircraftIdentifierMapping });
+
+  it("a client sheet creates each row under the id it carries, with gaps and a -2 suffix, no sequence", () => {
+    const p = iplan([irow("ai-a1"), irow("ai-a11", "B"), irow("ai-a11-2", "C"), irow("ai-a31", "D")], [], "client_sheet");
+    expect(p.issues).toEqual([]);
+    expect(p.rows.map((r) => [r.id, r.action])).toEqual([
+      ["ai-a1", "create"],
+      ["ai-a11", "create"],
+      ["ai-a11-2", "create"],
+      ["ai-a31", "create"],
+    ]);
+    expect(p.counts).toEqual({ created: 4, updated: 0, unchanged: 0, retired: 0 });
+  });
+
+  it("a key that is not an id of the module is a row error, never guessed", () => {
+    const p = iplan([irow("mil-a1"), irow("ai-a0"), irow("ai-a5-1")], [], "client_sheet");
+    expect(p.rows).toEqual([]);
+    expect(p.issues.map((i) => [i.level, i.message])).toEqual([
+      ["error", expect.stringContaining('"mil-a1" is not a valid id')],
+      ["error", expect.stringContaining('"ai-a0" is not a valid id')],
+      ["error", expect.stringContaining('"ai-a5-1" is not a valid id')],
+    ]);
+  });
+
+  it("a repeated key is a row error on the later row; a blank one too", () => {
+    const p = iplan([irow("ai-a1"), irow("ai-a1", "B"), irow("")], [], "client_sheet");
+    expect(p.rows.map((r) => r.id)).toEqual(["ai-a1"]);
+    expect(p.issues).toHaveLength(2);
+    expect(p.issues.every((i) => i.level === "error")).toBe(true);
+  });
+
+  it("matches stored items by id, not by file: two stored items on one photo are not ambiguous", () => {
+    const existing = [istored("ai-a11", "A", "ai-a11.jpg"), istored("ai-a11-2", "B", "ai-a11.jpg")];
+    const p = iplan([irow("ai-a11", "A", "trainee", "ai-a11.jpg"), irow("ai-a11-2", "B", "trainee", "ai-a11.jpg")], existing, "client_sheet");
+    expect(p.issues).toEqual([]);
+    expect(p.rows.map((r) => [r.id, r.action, r.expectedVersion])).toEqual([
+      ["ai-a11", "unchanged", 1],
+      ["ai-a11-2", "unchanged", 1],
+    ]);
+    expect(p.requiresConfirm).toBe(false);
+  });
+
+  it("a changed answer is an update with a diff (and needs confirmation); a changed file name is an update too, not a new item", () => {
+    const p = iplan([irow("ai-a1", "Changed", "trainee", "ai-a1.png")], [istored("ai-a1")], "client_sheet");
+    expect(p.rows).toHaveLength(1);
+    expect(p.rows[0]).toMatchObject({ id: "ai-a1", action: "update", expectedVersion: 1 });
+    expect(p.rows[0]?.diff?.map((d) => d.field)).toEqual(["answer", "sourceFile"]);
+    expect(p.requiresConfirm).toBe(true);
+  });
+
+  it("approved items the sheet no longer lists are retired, reported by id, in id order; retired ones return as approved", () => {
+    const p = iplan([irow("ai-a2")], [istored("ai-a1"), istored("ai-a2"), istored("ai-a10"), istored("ai-a10-2"), istored("ai-a3", "A", "x.jpg", 1, "retired")], "client_sheet");
+    expect(p.retirements).toEqual([
+      { id: "ai-a1", naturalKey: "ai-a1", expectedVersion: 1 },
+      { id: "ai-a10", naturalKey: "ai-a10", expectedVersion: 1 },
+      { id: "ai-a10-2", naturalKey: "ai-a10-2", expectedVersion: 1 },
+    ]);
+    const back = iplan([irow("ai-a3", "A", "trainee", "x.jpg")], [istored("ai-a3", "A", "x.jpg", 1, "retired")], "client_sheet");
+    expect(back.rows[0]).toMatchObject({ id: "ai-a3", action: "update", reactivate: true });
+  });
+
+  it("an admin export may add any id of the right shape (no sequence ceiling) and the file name need not be unique", () => {
+    const rows: ParsedRow[] = [
+      { ...irow("ai-a900", "N", "trainee", "ai-a1.jpg"), id: "ai-a900" },
+      { ...irow("ai-a1", "A", "trainee", "ai-a1.jpg"), id: "ai-a1" },
+    ];
+    const p = iplan(rows, [istored("ai-a1")], "admin_export");
+    expect(p.issues).toEqual([]);
+    expect(p.rows.map((r) => [r.id, r.action])).toEqual([
+      ["ai-a900", "create"],
+      ["ai-a1", "unchanged"],
+    ]);
+  });
+
+  it("an admin export refuses an id of the wrong shape, and editing one item beside another on the same photo is not a conflict", () => {
+    const bad = iplan([{ ...irow("x", "N"), id: "ai-a-9" }], [], "admin_export");
+    expect(bad.issues).toEqual([expect.objectContaining({ level: "error", id: "ai-a-9", message: expect.stringContaining("not a valid id") })]);
+
+    const existing = [istored("ai-a11", "A", "ai-a11.jpg"), istored("ai-a11-2", "B", "ai-a11.jpg")];
+    const edit = iplan([{ ...irow("ai-a11", "Edited", "trainee", "ai-a11.jpg"), id: "ai-a11", version: 1 }], existing, "admin_export");
+    expect(edit.issues).toEqual([]);
+    expect(edit.rows[0]).toMatchObject({ id: "ai-a11", action: "update" });
   });
 });

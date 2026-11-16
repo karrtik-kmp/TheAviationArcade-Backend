@@ -1,10 +1,11 @@
 import type { ContentModuleMapping } from "./content-module.js";
+import { aircraftIdentifierMapping } from "./modules/aircraft-identifier.js";
 import { airportSpotterMapping } from "./modules/airport-spotter.js";
 import { militaryMapping } from "./modules/military.js";
 
 /** Modules that can be imported and exported today. Others are 404 until their mapping exists. */
 const MAPPINGS: ReadonlyMap<string, ContentModuleMapping> = new Map(
-  [militaryMapping, airportSpotterMapping].map((mapping) => [mapping.module, mapping]),
+  [militaryMapping, airportSpotterMapping, aircraftIdentifierMapping].map((mapping) => [mapping.module, mapping]),
 );
 
 export function contentMappingFor(module: string): ContentModuleMapping | undefined {

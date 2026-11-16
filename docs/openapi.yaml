@@ -1,10 +1,18 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.26.0
+  version: 0.27.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.27.0 (Aircraft Identifier import, slice I3; docs/plans/demo-seed.md; staff-only, no change for the game, no API schema change; migration 0025 only widens `media_imports.source_system` for the operator demo seed).**
+    Built: the module `identifier` (commercial Aircraft Identifier) becomes importable, exportable, listable and editable on the
+    existing `/v1/admin/content/{module}/...` routes (imports, export, items, item edit, retire, restore, media link), and
+    `POST .../identifier/trip-coverage` now answers (policy `lower-ranks`). No new route and no schema change. Its ids come from the
+    sheet (the corrected photo file's stem, `ai-a<N>`, plus `-<k>` for the k-th kept question on one photo), not from a sequence:
+    the client's sheet gives `ai-a1`..`ai-a31` without `ai-a8` and `ai-a14` and with `ai-a11-2` and `ai-a18-2`, the same ids Unity
+    imports. The release routes stay Military-only (404 for `identifier`).
 
     **Changelog 0.26.0 (admin audit read, wave W4; docs/plans/website-content.md, ruling WC-4; staff-only, no change for the game, no migration).**
     Built: `GET /v1/admin/audit` (admin only; a photographer is 403). No query parameters: any key is 400 (`invalid_request`).
@@ -2190,7 +2198,20 @@ paths:
         Admin only. The body is the raw `.xlsx` (Content-Type
         `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; also bounded when
         unpacked). The first worksheet is read. Only modules with a mapping can be imported (today
-        `aircraft-identifier-military` and `airport-spotter`); any other module is 404 `not_found`.
+        `aircraft-identifier-military`, `airport-spotter` and `identifier`); any other module is 404 `not_found`.
+
+        `identifier` (commercial Aircraft Identifier; sheet "Airplane Identifier v1.xlsx", columns Level, Correct Answer,
+        Wrong Answer 1-3, file; other columns are ignored, there is no photographer column): payload
+        `{ answer, wrong[3], sourceFile }`. **Ids come from the sheet**, not from a sequence: the id is the corrected `file`
+        value's stem (`ai-a11.jpg` is `ai-a11`) and the k-th kept row on the same photo is `ai-a11-<k>` (k from 2); a client
+        sheet is matched to stored items by this id, and a new row is created under it (a stem that is not `ai-a<N>` is a row
+        error). A client sheet reproduces Unity's import: only its two fixes are applied (`Boing` becomes `Boeing` in the answer
+        labels; a file name `ai-a23/jpg` becomes `ai-a23.jpg`), each reported as a `warnings` entry starting `Corrected on import:`;
+        and the rows Unity leaves out (an empty answer cell, the correct answer repeated as a wrong one, or two equal wrong
+        answers, ignoring case) are skipped, each reported as a warning starting `Left out:`, and take no id. A row kept but
+        refused by the payload rules is a row error. Because later `-k` ids follow the kept rows in sheet order, fixing an
+        earlier left-out row on a shared photo renumbers them: the next import shows that as updates and retirements to confirm.
+        An admin export (with an `Id` column) is taken as written and may add any id of the right shape.
 
         `airport-spotter` (sheet "Airport Spotter v1.xlsx", columns LEVEL, Correct Airport, Wrong Airport 1-3, File
         name): items are `apt-a<N>` in sheet order, natural key = the `File name` value, payload
@@ -2357,8 +2378,8 @@ paths:
         422 `unknown_item_ids` and nothing is computed; a stored id that is not approved is not counted. An
         empty body, `{}` and `{ "itemIds": [] }` are valid (the last counts nothing). Any other field is 400.
 
-        Only modules with a content mapping AND a deal policy answer (today `aircraft-identifier-military`);
-        any other module is 404 `not_found` (`airport-spotter` is importable but has no deal policy yet, so it is
+        Only modules with a content mapping AND a deal policy answer (today `aircraft-identifier-military` and
+        `identifier`); any other module is 404 `not_found` (`airport-spotter` is importable but has no deal policy yet, so it is
         404 here). Order of checks: auth (401, 403), body size (413), body validation
         (400, then 415), and only then the module (404): a bad body for an unmapped module is 400, not 404.
       parameters:
@@ -2639,7 +2660,7 @@ paths:
       summary: Export content as a spreadsheet
       description: |
         Admin only. An `.xlsx` with columns `Id, Version, Level, Correct Answer, Wrong Answer 1, Wrong Answer 2,
-        Wrong Answer 3, file, Photographer, Status, Media Id` (Airport Spotter has its own answer columns; Level in the client wording), natural id order, retired
+        Wrong Answer 3, file, Photographer, Status, Media Id` (Airport Spotter has its own answer columns; Identifier has no Photographer column; Level in the client wording), natural id order, retired
         items included (`Status` is `approved` or `retired`). Edit it and import it again: the `Version`
         column makes the import an edit of exactly that version. The `Status` and `Media Id` columns (the last is the
         linked image, `med-<n>`, or blank) are informational and are ignored on import; an export never retires anything.
@@ -4026,7 +4047,7 @@ components:
       name: module
       in: path
       required: true
-      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military` and `airport-spotter`); others are 404.
+      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`, `airport-spotter` and `identifier`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
 
     ReleaseNumber:
@@ -4631,7 +4652,7 @@ components:
         version: { type: integer, minimum: 1, description: Bumped by every edit. }
         data:
           type: object
-          description: Module payload. Military Aircraft Identifier is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter is `{ answer, wrong[3], sourceFile }` (IATA codes).
+          description: Module payload. Military Aircraft Identifier is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter is `{ answer, wrong[3], sourceFile }` (IATA codes); Identifier is `{ answer, wrong[3], sourceFile }` (free text, four distinct answers).
         updatedAt: { type: string, format: date-time }
     PrepStage:
       type: string
@@ -4787,7 +4808,7 @@ components:
         rank: { $ref: "#/components/schemas/Rank" }
         data:
           type: object
-          description: The whole module payload (replaces the stored one). Military is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter is `{ answer, wrong[3], sourceFile }`.
+          description: The whole module payload (replaces the stored one). Military is `{ answer, wrong[3], sourceFile, photographer }`; Airport Spotter and Identifier are `{ answer, wrong[3], sourceFile }`.
     ContentItemVersionRequest:
       type: object
       additionalProperties: false
@@ -5094,7 +5115,7 @@ components:
             required: [id, naturalKey]
             properties:
               id: { type: string }
-              naturalKey: { type: string, description: "Military and Airport Spotter: the file name." }
+              naturalKey: { type: string, description: "Military and Airport Spotter: the file name. Identifier: the id (a stored item is matched by id there)." }
         warnings:
           type: array
           items: { $ref: "#/components/schemas/ImportIssue" }
