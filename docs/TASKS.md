@@ -740,7 +740,9 @@ when Google sign-in is offered; the project rule currently allows only email/pas
   waiver for an already uploaded photo; `DEV_DEMO_WAIVER` dropped from the e2e environment). Verified on a fresh
   `airplane_games_waiver2_test`: typecheck clean, `npm test` 47 files / 1189, `npm run test:e2e` 48 files / 1250 (before the two
   review fixes; after them `demo-seed` + `dev-demo-waiver` e2e 41/41), `db:generate` no changes. Not verified: the dev server
-  with the switch on, the Admin's own pre-checks (website side).
+  with the switch on, the Admin's own pre-checks (website side). 2026-11-17 follow-up review (approve; nits fixed): the plan's
+  "Putting the rule back" / "Still open" sections brought up to §G, `publishErrors`' waiver parameter renamed (it shadowed the
+  Identifier answer list); typecheck clean, `editorial-rules` 43/43. Still to re-run: the full e2e suite after the review fixes.
 
 - 2026-11-16 (wave E4: Aircraft Identifier import I3, operator photographer grant, dev demo seed; plan
   [plans/demo-seed.md](plans/demo-seed.md), brief `../website/docs/briefs/backend-firebase-project-and-demo-seed.md`): API

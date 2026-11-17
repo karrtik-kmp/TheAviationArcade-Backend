@@ -156,11 +156,11 @@ export function relyOnFactualSourceWaiver(kind: EditorialKind, status: Editorial
   );
 }
 
-export function publishErrors(kind: EditorialKind, status: EditorialStatus, data: EditorialData, dateKey: string | null, options: PublishOptions = {}): string[] {
+export function publishErrors(kind: EditorialKind, status: EditorialStatus, data: EditorialData, dateKey: string | null, waiver: PublishOptions = {}): string[] {
   if (status !== "scheduled" && status !== "published") return [];
   const errors: string[] = [];
   if (codePoints(data.title.trim()) < 3) errors.push("Add a descriptive title (at least 3 characters).");
-  if (!data.factualSource.startsWith("https://") && !relyOnFactualSourceWaiver(kind, status, data, options)) errors.push("Add an https factual source.");
+  if (!data.factualSource.startsWith("https://") && !relyOnFactualSourceWaiver(kind, status, data, waiver)) errors.push("Add an https factual source.");
   if (kind === "identifier") {
     if (status === "scheduled") errors.push("Aircraft Identifier supports draft or published content, not daily scheduling.");
     const options = [data.correctAnswer, ...data.distractors].map((s) => s.trim().toLowerCase());

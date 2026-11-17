@@ -40,16 +40,17 @@ cannot be published until an admin sets a credit or turns `creditRequired` off (
 
 ## Putting the rule back (when Josh answers)
 
-Remove `MEDIA_LICENCE_WAIVER` from the dev env file and restart: every new publish needs a licence again. Photos already live
-keep their record (`licence_waiver = 'dev-demo'`, no licence name); staff find them with the staff media list
-(`licenceWaiver` field), set the licence (new draft version) and publish it, or withdraw them. README documents this.
+(Updated to the final design, §G.) Remove `DEV_DEMO_WAIVER` from the dev env file and restart: every new publish needs a
+licence again, and every new Plane of the Day schedule or publish an https source. Photos already live keep their record
+(`licence_waiver = 'dev-demo'`, no licence name). No API field carries the waiver (§G.2): staff find them with
+`SELECT media_id, version FROM media_versions WHERE licence_waiver IS NOT NULL` or in the audit (`media_publish.licenceWaived`),
+set the licence (new draft version) and publish it, or withdraw them. Credit-waived seed photos keep `credit_required = false`
+(audit `media_import.creditWaived`). README "Dev-demo waiver" documents this; §G.7 has the full list.
 
 ## Still open (not covered by the ruling)
 
-- **Plane of the Day factual source:** publishing or scheduling a Plane of the Day item needs an https `factualSource`
-  (`src/content/editorial/editorial-rules.ts:148`); the client's sheet has none. The seed still creates the drafts once their
-  photos are published (create does not need it). The user must supply the sources, or rule otherwise.
-- The 4 Military photos without a credit (above).
+Nothing left from the original list: the Plane of the Day factual source is covered by the Addendum, and the 4 Military photos
+without a credit by §G.9.
 
 ## Tests
 
