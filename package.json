@@ -40,6 +40,7 @@
     "read-excel-file": "9.3.12",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
+    "swagger-ui-dist": "5.34.1",
     "write-excel-file": "4.1.1",
     "zod": "4.6.7"
   },
@@ -56,7 +57,6 @@
     "drizzle-kit": "0.31.11",
     "jsrsasign": "11.1.5",
     "supertest": "7.3.1",
-    "swagger-ui-dist": "5.34.1",
     "typescript": "6.0.3",
     "unplugin-swc": "2.0.0",
     "vitest": "4.1.12",

@@ -38,7 +38,12 @@ async function bootstrap(): Promise<void> {
   }
   if (config.apiDocs) {
     const host = config.host.includes(":") ? `[${config.host}]` : config.host;
-    logger.warn(`API docs served at http://${host}:${config.port}/docs (local only).`, "Bootstrap");
+    logger.warn(
+      config.appEnv === "production"
+        ? "API docs on (dev database): served at /api/docs/ behind the proxy."
+        : `API docs served at http://${host}:${config.port}/docs/ (local).`,
+      "Bootstrap",
+    );
   }
   if (config.appEnv === "production" && config.trustProxy === false) {
     logger.warn(

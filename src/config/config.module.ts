@@ -329,9 +329,16 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (STORE_VERIFIER === "fake" && (APP_ENV === "production" || !FIREBASE_PROJECT_ID.startsWith("demo-"))) {
     throw new Error("Invalid environment configuration: STORE_VERIFIER=fake is not allowed in production or with a real FIREBASE_PROJECT_ID");
   }
-  // Default on only for a local run bound to loopback; explicit true is for local/test and never production. Name only.
-  if (APP_ENV === "production" && API_DOCS === "true") {
-    throw new Error("Invalid environment configuration: API_DOCS is not allowed when APP_ENV=production");
+  // Default on only for a local run bound to loopback. Explicit true in production is for the hosted dev instance only: a database
+  // named *_dev (the same guard as DEV_DEMO_WAIVER) and a loopback HOST (behind the proxy). Names the variable only, never the database.
+  if (
+    APP_ENV === "production" &&
+    API_DOCS === "true" &&
+    (devDatabaseRefusal(databaseNameOf(DATABASE_URL), true) !== null || !LOOPBACK_HOSTS.has(HOST.toLowerCase()))
+  ) {
+    throw new Error(
+      "Invalid environment configuration: API_DOCS=true with APP_ENV=production is allowed only with a database whose name ends _dev and a loopback HOST",
+    );
   }
   const apiDocs = API_DOCS !== undefined ? API_DOCS === "true" : APP_ENV === "local" && LOOPBACK_HOSTS.has(HOST.toLowerCase());
   const { apple, google } = parseStoresConfig(parsed.data, APP_ENV, FIREBASE_PROJECT_ID);

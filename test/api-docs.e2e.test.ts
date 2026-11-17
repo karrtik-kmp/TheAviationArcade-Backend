@@ -8,7 +8,7 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { apiDocsSpecPath } from "../src/config/config.module.js";
 
-// Swagger UI for docs/openapi.yaml: local only, exact paths, same origin (src/platform/api-docs.ts).
+// Swagger UI for docs/openapi.yaml: exact paths, same origin, relative references so it works under the dev /api/ prefix (src/platform/api-docs.ts).
 
 const specPath = apiDocsSpecPath();
 const specBytes = readFileSync(specPath);
@@ -35,7 +35,6 @@ afterAll(async () => {
 });
 
 const PATHS: ReadonlyArray<readonly [string, RegExp]> = [
-  ["/docs", /^text\/html; charset=utf-8$/],
   ["/docs/", /^text\/html; charset=utf-8$/],
   ["/docs/init.js", /^text\/javascript; charset=utf-8$/],
   ["/docs/swagger-ui.css", /^text\/css; charset=utf-8$/],
@@ -66,7 +65,23 @@ describe("API docs (Swagger UI)", () => {
     expect(res.text ?? "").toBe("");
   });
 
-  it("serves the spec file byte for byte, as YAML whose first server is the same origin", async () => {
+  it.each(["get", "head"] as const)("%s /docs redirects to the relative docs/ with no body", async (method) => {
+    const res = await request(on.getHttpServer())[method]("/docs").redirects(0);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe("docs/");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["x-request-id"]).toBeTruthy();
+    expect(res.headers["content-length"]).toBe("0");
+    expect(res.text ?? "").toBe("");
+  });
+
+  it("resolves the redirect to /docs/ locally and /api/docs/ behind the proxy prefix", () => {
+    expect(new URL("docs/", "https://h/api/docs").pathname).toBe("/api/docs/");
+    expect(new URL("docs/", "http://h/docs").pathname).toBe("/docs/");
+  });
+
+  it("serves the spec file byte for byte, as YAML whose first server is relative to the document", async () => {
     const res = await request(on.getHttpServer())
       .get("/docs/openapi.yaml")
       .buffer(true)
@@ -77,35 +92,47 @@ describe("API docs (Swagger UI)", () => {
       });
     expect(Buffer.compare(res.body as Buffer, specBytes)).toBe(0);
     const spec: any = parse((res.body as Buffer).toString("utf8"));
-    expect(spec.servers[0].url).toBe("/");
+    expect(spec.servers[0].url).toBe("..");
     expect(spec.openapi).toMatch(/^3\./);
   });
 
-  it("serves a page with no inline script and no inline event handler, loading only /docs files", async () => {
-    const html = (await request(on.getHttpServer()).get("/docs")).text;
-    expect(html).toContain("<title>Airplane Games API (local)</title>");
+  const expectRelative = (ref: string): void => {
+    expect(ref.startsWith("/")).toBe(false);
+    expect(ref).not.toMatch(/^[a-z][a-z0-9+.-]*:/i);
+    expect(new URL(ref, "https://h/api/docs/").pathname.startsWith("/api/docs/")).toBe(true);
+  };
+
+  it("serves a page with no inline script and no inline event handler, loading only relative docs files", async () => {
+    const html = (await request(on.getHttpServer()).get("/docs/")).text;
+    expect(html).toContain("<title>Airplane Games API</title>");
     expect(html).toContain('<div id="swagger-ui">');
     expect(html).not.toMatch(/<script(?![^>]*\ssrc=)/i);
     expect(html).not.toMatch(/\son\w+=/i);
-    for (const [, url] of html.matchAll(/(?:src|href)="([^"]+)"/g)) expect(url).toMatch(/^\/docs\//);
+    const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]!);
+    expect(refs.sort()).toEqual(["init.js", "swagger-ui-bundle.js", "swagger-ui.css"]);
+    for (const ref of refs) expectRelative(ref);
   });
 
-  it("configures Swagger UI to load the same-origin spec and ignore query-string config", async () => {
+  it("configures Swagger UI to load the relative spec and ignore query-string config", async () => {
     const js = (await request(on.getHttpServer()).get("/docs/init.js")).text;
-    expect(js).toContain('url: "/docs/openapi.yaml"');
+    const url = /url: "([^"]+)"/.exec(js)?.[1];
+    expect(url).toBe("openapi.yaml");
+    expectRelative(url!);
     expect(js).toContain("queryConfigEnabled: false");
     expect(js).toContain("persistAuthorization: false");
+    expect(js).toContain("validatorUrl: null");
   });
 
   it("leaves the global CSP unchanged", async () => {
     const health = await request(on.getHttpServer()).get("/v1/health");
-    const docs = await request(on.getHttpServer()).get("/docs");
+    const docs = await request(on.getHttpServer()).get("/docs/");
     expect(docs.headers["content-security-policy"]).toBeTruthy();
     expect(docs.headers["content-security-policy"]).toBe(health.headers["content-security-policy"]);
   });
 
   it.each([
     ["POST", "/docs"],
+    ["POST", "/docs/"],
     ["PUT", "/docs/openapi.yaml"],
     ["GET", "/docs/index.html"],
     ["GET", "/docs/swagger-initializer.js"],
@@ -114,6 +141,8 @@ describe("API docs (Swagger UI)", () => {
     ["GET", "/docs/SWAGGER-UI.CSS"],
     ["GET", "/DOCS"],
     ["GET", "/docs/swagger-ui.css.map"],
+    ["GET", "/docs//"],
+    ["GET", "/docs/./init.js"],
   ])("%s %s is the standard 404 envelope", async (method, path) => {
     const res = await request(on.getHttpServer())[method.toLowerCase() as "get" | "post" | "put"](path);
     expect(res.status).toBe(404);
@@ -122,7 +151,7 @@ describe("API docs (Swagger UI)", () => {
   });
 
   it("serves nothing under /docs when switched off", async () => {
-    for (const path of ["/docs", "/docs/openapi.yaml", "/docs/init.js"]) {
+    for (const path of ["/docs", "/docs/", "/docs/openapi.yaml", "/docs/init.js"]) {
       const res = await request(off.getHttpServer()).get(path);
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("not_found");

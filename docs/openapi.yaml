@@ -1,10 +1,12 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.27.2
+  version: 0.27.3
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.27.3 (servers only; no schema, route or code change for any client).** servers[0] is now `..` (relative to the document) so Swagger UI works at /docs/ locally and behind the /api/ prefix on dev; no schema, route or code change for any client.
 
     **Changelog 0.27.2 (servers only; no schema, route or code change for any client).** A relative server `/` is listed first so
     Swagger UI served by a local backend at `/docs` (`API_DOCS`, never in production) calls the same origin it was loaded from.
@@ -324,10 +326,10 @@ info:
       exempt from the client version gate. The staff import takes the raw `.xlsx` as the body (at most 5 MB),
       not JSON.
 servers:
-  - url: /
-    description: Same origin as the page serving this document (local /docs)
+  - url: ..
+    description: The backend root, relative to this document (served at /docs/ locally and /api/docs/ on dev)
   - url: http://127.0.0.1:3000
-    description: Local only. Hosting is not chosen yet.
+    description: Local backend (direct)
 security:
   - firebaseBearer: []
 tags:

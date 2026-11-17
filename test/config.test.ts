@@ -83,9 +83,39 @@ describe("loadConfig", () => {
       expect(loadConfig({ ...local, APP_ENV: "test", API_DOCS: "true" }).apiDocs).toBe(true);
     });
 
-    it("is refused when true with APP_ENV=production, naming the variable only", () => {
-      expect(message({ ...production, API_DOCS: "true" })).toBe("Invalid environment configuration: API_DOCS is not allowed when APP_ENV=production");
-      expect(loadConfig({ ...production, API_DOCS: "false" }).apiDocs).toBe(false);
+    describe("in production", () => {
+      const refused = "Invalid environment configuration: API_DOCS=true with APP_ENV=production is allowed only with a database whose name ends _dev and a loopback HOST";
+      const prod = (database: string, over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+        ...production,
+        DATABASE_URL: `postgres://user:s3cret-pass@db.internal:5432/${database}`,
+        HOST: "127.0.0.1",
+        ...over,
+      });
+
+      it("is allowed on a _dev database with a loopback HOST", () => {
+        expect(loadConfig(prod("airplane_games_dev", { API_DOCS: "true" })).apiDocs).toBe(true);
+      });
+
+      it("is off by default on a _dev database, and false is always fine", () => {
+        expect(loadConfig(prod("airplane_games_dev")).apiDocs).toBe(false);
+        expect(loadConfig(prod("airplane_games_prod", { API_DOCS: "false" })).apiDocs).toBe(false);
+        expect(loadConfig({ ...production, API_DOCS: "false" }).apiDocs).toBe(false);
+      });
+
+      it("is refused on any other database, naming the variable only", () => {
+        for (const database of ["airplane_games_prod", "db", "x_dev_prod"]) {
+          expect(message(prod(database, { API_DOCS: "true" }))).toBe(refused);
+        }
+        expect(message({ ...production, API_DOCS: "true" })).toBe(refused);
+        expect(message(prod("", { API_DOCS: "true" }))).toBe(refused);
+        expect(message({ ...prod("x"), DATABASE_URL: "postgres://user:s3cret-pass@db.internal:5432", API_DOCS: "true" })).toBe(refused);
+      });
+
+      it("is refused on a _dev database when HOST is not loopback", () => {
+        expect(message(prod("airplane_games_dev", { API_DOCS: "true", HOST: "0.0.0.0" }))).toBe(refused);
+        // HOST unset defaults to loopback.
+        expect(loadConfig({ ...prod("airplane_games_dev"), HOST: undefined, API_DOCS: "true" }).apiDocs).toBe(true);
+      });
     });
 
     it("refuses a value that is not true or false", () => {

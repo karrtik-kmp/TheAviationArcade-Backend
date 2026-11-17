@@ -743,6 +743,19 @@ when Google sign-in is offered; the project rule currently allows only email/pas
   only `new Function` is webpack's globalThis fallback. NOT done: a real-browser render and an authorized "Try it out" (the
   browser extension was not connected).
 
+- 2026-11-17 (API docs on dev, user ruling; API 0.27.3): Swagger UI is also served on the hosted dev backend at
+  `https://dev.api.playairplanegames.com/api/docs/`, OPEN (no password). Gate in `loadConfig`: `API_DOCS=true` with
+  `APP_ENV=production` is refused unless `devDatabaseRefusal(databaseNameOf(DATABASE_URL), true) === null` (the `DEV_DEMO_WAIVER`
+  helper: name ends `_dev`, never `_prod`/none) AND `HOST` is loopback; the error names the variable only; default unchanged
+  (unset = off in production); no test-suite exemption. `swagger-ui-dist` 5.34.1 moved to `dependencies` (survives
+  `npm prune --omit=dev`; lockfile entries lost `"dev": true`; `scarfSettings` kept). The page is at `/docs/` only: `/docs` is a
+  302 with relative `Location: docs/` (resolves to `/api/docs/` behind the proxy), all page references and `init.js`'s
+  `url: "openapi.yaml"` are relative, `servers[0].url` is `..`. Unthrottled by ruling (static buffers). `main.ts` logs `/docs/`,
+  or the dev-database note in production. Dev note: dev shares the Firebase project with production, so a pasted token is a real
+  account token acting on dev data. Verification: `npm run typecheck` clean, `npm test` 1197/1197 (47 files), `npm run test:e2e` 1281/1281 (49 files), `npm run build` OK (all from PowerShell). Not verified: a real browser render, a live dev deploy or the nginx prefix (only URL resolution is asserted in tests).
+  OPEN (post-deploy smoke, not done): add `API_DOCS=true` to the dev `.env`, redeploy, open `/api/docs/`, Try it out
+  `GET /v1/health`: the request URL must be `https://dev.api.playairplanegames.com/api/v1/health` and the answer 200.
+
 - 2026-11-16 (dev-demo waiver; plan [plans/dev-licence-waiver.md](plans/dev-licence-waiver.md), rulings in Decisions): API 0.27.1
   (descriptions only: a published version, ImageRef or Plane of the Day feature may carry `licenceName: null`; no field added,
   `contracts/` unchanged), migration `0026_dev_demo_waiver` (column `media_versions.licence_waiver`, its two CHECKs, the

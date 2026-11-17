@@ -80,7 +80,8 @@ function roleBodyReader(
  * `trustProxy` is Express's setting: false (default) uses the socket address as req.ip; a number trusts
  * that many proxy hops of X-Forwarded-For. req.ip feeds the request log and the public rate limit.
  *
- * `apiDocs` (local only, off by default) serves Swagger UI for docs/openapi.yaml at /docs; see src/platform/api-docs.ts.
+ * `apiDocs` (off by default here; on locally by default, and on the hosted dev instance only with API_DOCS=true on a _dev
+ * database) serves Swagger UI for docs/openapi.yaml at /docs/ (/docs redirects); see src/platform/api-docs.ts.
  */
 export function configureApp(app: NestExpressApplication, options: { trustProxy?: false | number; apiDocs?: { specPath: string } } = {}): void {
   app.set("trust proxy", options.trustProxy ?? false);
