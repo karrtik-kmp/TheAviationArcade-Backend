@@ -56,9 +56,13 @@
     "drizzle-kit": "0.31.11",
     "jsrsasign": "11.1.5",
     "supertest": "7.3.1",
+    "swagger-ui-dist": "5.34.1",
     "typescript": "6.0.3",
     "unplugin-swc": "2.0.0",
     "vitest": "4.1.12",
     "yaml": "2.9.1"
+  },
+  "scarfSettings": {
+    "enabled": false
   }
 }

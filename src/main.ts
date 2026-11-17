@@ -4,7 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module.js";
 import { configureApp } from "./app.setup.js";
-import { loadConfig } from "./config/config.module.js";
+import { apiDocsSpecPath, loadConfig } from "./config/config.module.js";
 import { installShutdown } from "./platform/shutdown.js";
 import { applyServerTimeouts } from "./platform/server-timeouts.js";
 
@@ -25,7 +25,7 @@ async function bootstrap(): Promise<void> {
   const logger = new ConsoleLogger({ json: true, colors: false });
   // bodyParser: false, because configureApp registers the only body parser (JSON, 16 KB).
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false, logger });
-  configureApp(app, { trustProxy: config.trustProxy });
+  configureApp(app, { trustProxy: config.trustProxy, ...(config.apiDocs ? { apiDocs: { specPath: apiDocsSpecPath() } } : {}) });
   applyServerTimeouts(app.getHttpServer());
   // SIGTERM/SIGINT drain in-flight requests (bounded by SHUTDOWN_DRAIN_MS), which also closes the pg pool
   // (DatabaseModule.onApplicationShutdown).
@@ -35,6 +35,10 @@ async function bootstrap(): Promise<void> {
       "ALLOW_EMULATOR_TOKENS is enabled: unsigned Firebase Auth Emulator tokens are accepted. Local development only.",
       "Bootstrap",
     );
+  }
+  if (config.apiDocs) {
+    const host = config.host.includes(":") ? `[${config.host}]` : config.host;
+    logger.warn(`API docs served at http://${host}:${config.port}/docs (local only).`, "Bootstrap");
   }
   if (config.appEnv === "production" && config.trustProxy === false) {
     logger.warn(

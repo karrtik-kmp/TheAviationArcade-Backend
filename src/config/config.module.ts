@@ -70,6 +70,8 @@ export type AppConfig = {
    * name ending _prod is refused always. Undefined = off (production behaviour).
    */
   devDemoWaiver?: "dev-demo" | undefined;
+  /** Swagger UI served at /docs (local only; src/platform/api-docs.ts). */
+  apiDocs: boolean;
 };
 
 export type AppleStoreConfig = {
@@ -212,6 +214,8 @@ const envSchema = z.object({
   MIN_CLIENT_BUILD: optionalInt(1, 999_999_999),
   /** Default depends on APP_ENV (memory locally, none in production), so it is applied after parsing. */
   BLOB_STORE: z.enum(["none", "memory", "bunny"]).optional(),
+  /** Swagger UI at /docs (src/platform/api-docs.ts). Default depends on APP_ENV and HOST, so it is applied after parsing. */
+  API_DOCS: z.enum(["true", "false"]).optional(),
   /** none (default: purchases answer 503) | fake (deterministic test double; refused in production and unless FIREBASE_PROJECT_ID starts with demo-) | stores (Apple and/or Google). */
   STORE_VERIFIER: z.enum(["none", "fake", "stores"]).default("none"),
   /** Production with stores: the stores that must be live (comma list of apple, google), matching the configured ones. */
@@ -288,6 +292,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_MIRROR_MIN_INTERVAL_SEC,
     DEMO_ACCOUNT_UID,
     DEV_DEMO_WAIVER,
+    API_DOCS,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -324,6 +329,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (STORE_VERIFIER === "fake" && (APP_ENV === "production" || !FIREBASE_PROJECT_ID.startsWith("demo-"))) {
     throw new Error("Invalid environment configuration: STORE_VERIFIER=fake is not allowed in production or with a real FIREBASE_PROJECT_ID");
   }
+  // Default on only for a local run bound to loopback; explicit true is for local/test and never production. Name only.
+  if (APP_ENV === "production" && API_DOCS === "true") {
+    throw new Error("Invalid environment configuration: API_DOCS is not allowed when APP_ENV=production");
+  }
+  const apiDocs = API_DOCS !== undefined ? API_DOCS === "true" : APP_ENV === "local" && LOOPBACK_HOSTS.has(HOST.toLowerCase());
   const { apple, google } = parseStoresConfig(parsed.data, APP_ENV, FIREBASE_PROJECT_ID);
   const blobStore: BlobStoreKind = parsed.data.BLOB_STORE ?? (APP_ENV === "production" ? "none" : "memory");
   if (APP_ENV === "production" && blobStore === "memory") {
@@ -442,6 +452,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     ugs,
     demoPrincipal,
     devDemoWaiver: DEV_DEMO_WAIVER,
+    apiDocs,
   };
 }
 
@@ -482,6 +493,13 @@ export function isInsideAnyRoot(real: string, roots: readonly string[]): boolean
     const outside = rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
     return !outside;
   });
+}
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/** docs/openapi.yaml, found from the repo root (not the working directory). */
+export function apiDocsSpecPath(): string {
+  return join(repoRoot(), "docs", "openapi.yaml");
 }
 
 /** The repo root from this module's location (src/config or dist/config, both two levels below it). */

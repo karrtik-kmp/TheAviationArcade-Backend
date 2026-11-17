@@ -10,6 +10,7 @@ import type { AppConfig } from "./config/config.module.js";
 import { requestContext } from "./common/request-context.js";
 import { MAX_UPLOAD_BYTES, XLSX_MIME } from "./content/xlsx.js";
 import { MAX_MEDIA_BYTES } from "./content/media/media.service.js";
+import { mountApiDocs } from "./platform/api-docs.js";
 import { DrainState } from "./platform/drain-state.js";
 import { countAuthenticatedRequest } from "./platform/rate-limit.js";
 import { ThrottlerStorage } from "@nestjs/throttler";
@@ -78,8 +79,10 @@ function roleBodyReader(
  *
  * `trustProxy` is Express's setting: false (default) uses the socket address as req.ip; a number trusts
  * that many proxy hops of X-Forwarded-For. req.ip feeds the request log and the public rate limit.
+ *
+ * `apiDocs` (local only, off by default) serves Swagger UI for docs/openapi.yaml at /docs; see src/platform/api-docs.ts.
  */
-export function configureApp(app: NestExpressApplication, options: { trustProxy?: false | number } = {}): void {
+export function configureApp(app: NestExpressApplication, options: { trustProxy?: false | number; apiDocs?: { specPath: string } } = {}): void {
   app.set("trust proxy", options.trustProxy ?? false);
   // First, so even a rejected body is logged and carries a request id.
   app.use(requestContext);
@@ -97,6 +100,7 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   });
   // Default headers, and no X-Powered-By. Before the body parser so a 413 carries them too.
   app.useSecurityHeaders();
+  if (options.apiDocs) mountApiDocs(app, options.apiDocs);
   app.use("/v1/admin/content/:module/imports", roleBodyReader(app, ["admin"], readXlsx));
   app.use("/v1/admin/content/documents/field-awards/imports", roleBodyReader(app, ["admin"], readXlsx));
   app.use("/v1/admin/content/:module/trip-coverage", roleBodyReader(app, ["admin"], readCoverageJson));

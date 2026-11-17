@@ -65,6 +65,7 @@ keys. Players created this way live in your local database only.
 | `RATE_LIMIT_POOL_MAX` | Default 3 (1–10). Size of the rate limiter's own pool; used only with `RATE_LIMIT_STORE=postgres`. It is in addition to `DB_POOL_MAX` |
 | `MIN_CLIENT_BUILD` | Optional, 1–999999999. When set, requests need `X-Client-Version: <build>` at or above it, else 426. Health routes, the guest media read, `DELETE /v1/me` and the website's server (`X-Client: web`) exempt. Unset = gate off (build scheme undecided) |
 | `SHUTDOWN_DRAIN_MS` | Default 10000. On SIGTERM/SIGINT: `/v1/health/ready` turns 503, then the server stops accepting, finishes in-flight requests (answering `Connection: close`), closes the pool and exits 0; exit 1 past the deadline; a second signal exits at once |
+| `API_DOCS` | `true` / `false`. Swagger UI for `docs/openapi.yaml` at `/docs` (see "API docs (local)"). Default `true` only when `APP_ENV=local` and `HOST` is loopback (`127.0.0.1`, `::1`, `localhost`), otherwise `false`; `true` is refused when `APP_ENV=production` |
 | `BLOB_STORE` | `none` / `memory` / `bunny`. Where staff-uploaded files go. Default `memory` locally and in tests (lost on restart), `none` in production (uploads answer 503 `storage_unavailable`); production refuses `memory` |
 | `BUNNY_STORAGE_ZONE` / `BUNNY_STORAGE_PASSWORD` | Required when `BLOB_STORE=bunny`. Zone `aviation-arcade-website` (shared with the website) and its read-write zone password, used exactly as given (not trimmed); a secret, never logged or echoed in config errors. Any `BUNNY_STORAGE_*` set while `BLOB_STORE` is not `bunny` fails at startup |
 | `BUNNY_STORAGE_REGION` / `BUNNY_STORAGE_PREFIX` | Default `de` (endpoint `https://de-s3.storage.bunnycdn.com`) and `backend/`. The prefix keeps this backend's objects apart from the website's: lowercase `[a-z0-9_-]` segments, ending in `/`, no leading `/` or `..` |
@@ -81,6 +82,17 @@ keys. Players created this way live in your local database only.
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
 The server runs locally only for now; hosting is not chosen.
+
+### API docs (local)
+
+With the defaults (`APP_ENV=local`, `HOST=127.0.0.1`) the server also serves Swagger UI for `docs/openapi.yaml` at
+<http://127.0.0.1:3000/docs>, same origin, so "Try it out" needs no CORS. Click **Authorize** and paste a Firebase ID token
+(without `Bearer `). Locally that is an Auth Emulator token: start the emulator in the website repo (see Commands above), sign
+in there and copy the ID token. The token is kept in the page only and is gone after a reload. `API_DOCS` is on by
+default only when `APP_ENV=local` and `HOST` is loopback; an explicit `API_DOCS=true` serves them on any `HOST` outside
+production (unthrottled, so keep it off on a shared network). They are never served in production (`API_DOCS=true` is
+refused when `APP_ENV=production`) and need `swagger-ui-dist` (a devDependency). The spec is read at startup: restart the
+server to see edits to `docs/openapi.yaml`.
 
 ### Container
 

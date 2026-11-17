@@ -26,7 +26,7 @@ unverified social login and subscription grants, committed and publicly served k
 | Request logging | winston to public files, full bodies | One JSON line per request (id, route, status, ms) to stdout; `X-Request-Id`; never bodies/tokens | Node re-platform |
 | Client version gate | string compare against DB | `X-Client-Version` integer vs `MIN_CLIENT_BUILD` config → 426 `client_update_required` | Unity integration slice |
 | Rate limiting | express-rate-limit (disabled) | `@nestjs/throttler`, keyed by principal (IP for public routes); counters in Postgres (`rate_limit_hits`, shared by every instance, own small pool, fail-open to per-instance counting; `RATE_LIMIT_STORE=memory` for one process); 429 `rate_limited` | Rate-limit slice |
-| API contract | Postman → generated Swagger served in prod | `docs/openapi.yaml` (or generated from zod via `z.toJSONSchema`) + parity test; not served publicly | Unity integration slice |
+| API contract | Postman → generated Swagger served in prod | `docs/openapi.yaml` (or generated from zod via `z.toJSONSchema`) + parity test; Swagger UI served at `/docs` locally only (`API_DOCS`, refused in production); not served publicly | Unity integration slice |
 | Reference data | seeder on every boot (incl. an admin password) | Drizzle migrations; never credentials | As needed |
 | Soft delete | `deletedAt`, keeps PII | Real deletion/anonymisation (store requirement) + Apple token revocation | Account-deletion slice |
 | IAP flow shape | submit → verify → server notifications | Re-fetch from App Store Server API / Play Developer API; verified notifications; idempotent tables; see Purchases | Purchases slice |

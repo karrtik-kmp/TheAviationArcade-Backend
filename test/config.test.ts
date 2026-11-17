@@ -53,6 +53,7 @@ describe("loadConfig", () => {
       blobStore: "memory",
       storeVerifier: "none",
       bunny: undefined,
+      apiDocs: true,
     });
   });
 
@@ -61,6 +62,34 @@ describe("loadConfig", () => {
       host: "0.0.0.0",
       port: 8080,
       dbPoolMax: 25,
+    });
+  });
+
+  describe("API_DOCS", () => {
+    it("defaults on only for APP_ENV=local bound to loopback", () => {
+      expect(loadConfig(local).apiDocs).toBe(true);
+      for (const host of ["127.0.0.1", "::1", "localhost"]) expect(loadConfig({ ...local, HOST: host }).apiDocs).toBe(true);
+    });
+
+    it("defaults off for a non-loopback host, for test and for production", () => {
+      expect(loadConfig({ ...local, HOST: "0.0.0.0" }).apiDocs).toBe(false);
+      expect(loadConfig({ ...local, APP_ENV: "test" }).apiDocs).toBe(false);
+      expect(loadConfig(production).apiDocs).toBe(false);
+    });
+
+    it("honours an explicit value in local and test", () => {
+      expect(loadConfig({ ...local, API_DOCS: "false" }).apiDocs).toBe(false);
+      expect(loadConfig({ ...local, HOST: "0.0.0.0", API_DOCS: "true" }).apiDocs).toBe(true);
+      expect(loadConfig({ ...local, APP_ENV: "test", API_DOCS: "true" }).apiDocs).toBe(true);
+    });
+
+    it("is refused when true with APP_ENV=production, naming the variable only", () => {
+      expect(message({ ...production, API_DOCS: "true" })).toBe("Invalid environment configuration: API_DOCS is not allowed when APP_ENV=production");
+      expect(loadConfig({ ...production, API_DOCS: "false" }).apiDocs).toBe(false);
+    });
+
+    it("refuses a value that is not true or false", () => {
+      expect(message({ ...local, API_DOCS: "ture" })).toBe("Invalid environment configuration: API_DOCS");
     });
   });
 
