@@ -37,10 +37,11 @@ start). It is read like the store keys: outside the code folder, never committed
 sudo install -o root -g aviation -m 0640 firebase-admin.json /var/www/api.playairplanegames.com/envVar/firebase-admin.json
 sudo nano /var/www/api.playairplanegames.com/envVar/.env
 #   FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE=/var/www/api.playairplanegames.com/envVar/firebase-admin.json
-sudo systemctl restart <the backend's service>   # as for any .env change
+apm2 restart aviation-backend-prod   # pm2 rereads .env on restart; the apm2 alias is in ../server/README.md "Releases"
 ```
 
-Repeat with `dev.api.playairplanegames.com` for dev. Delete the downloaded copy afterwards. The server logs no
+Repeat with `dev.api.playairplanegames.com` and `aviation-backend-dev` for dev. The same steps are in `../server/README.md`
+("Firebase admin key") and the commented setting in `../server/backend.env.example`. Delete the downloaded copy afterwards. The server logs no
 "Firebase admin access is not configured" warning once it is set; a key that does not import stops the start with an error that
 names the setting only.
 
