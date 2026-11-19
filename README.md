@@ -34,7 +34,11 @@ npm run db:generate           # new migration from src/db/schema.ts (never edit 
 npm run contracts:write       # builds, then regenerates contracts/*.json (see contracts/README.md); commit the result
 npm run bunny:check           # builds, then probes Bunny Storage (upload/read/delete one object). Needs real credentials: only with the owner's sign-off
 npm run stores:check          # builds, then read-only checks of the configured Apple / Google keys. Live calls: only with the owner's sign-off
+npm run auth:emulator         # Firebase Auth Emulator (pinned firebase-tools via npx) on 127.0.0.1:9199; the e2e suite starts it itself
 ```
+
+Granting `admin` marks the account's email verified in Firebase, so a local backend needs `FIREBASE_AUTH_EMULATOR_HOST`. Point it
+at the emulator you sign in with: the website's (`127.0.0.1:9099`) for accounts made there, or this repo's (`127.0.0.1:9199`).
 
 `.env` points at `demo-airplane-games` and accepts unsigned Firebase Auth Emulator tokens. Start the
 emulator from the website repo (`npm run auth:emulator` in `../website`, port 9099) and sign in there to
@@ -78,6 +82,8 @@ keys. Players created this way live in your local database only.
 | `STORE_VERIFIER` | `none` (default), `fake` or `stores`. Who checks store purchases. `none`: `POST /v1/purchases` answers 503 `store_unavailable` (the app keeps the purchase pending). `fake`: the deterministic test store (see "Purchases"); a startup error when `APP_ENV=production`, and outside `APP_ENV=test` unless `FIREBASE_PROJECT_ID` starts with `demo-`. `stores`: the real Apple and Google verifiers, for the stores whose settings are given (below); refused with a `demo-` project outside `APP_ENV=test` |
 | `APPLE_BUNDLE_ID`, `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID`, `APPLE_APP_APPLE_ID`, `APPLE_IAP_KEY_FILE` or `APPLE_IAP_KEY` | Apple App Store Server API (all or none; one key form). Only with `STORE_VERIFIER=stores`. Owner steps: [docs/setup/store-credentials.md](docs/setup/store-credentials.md) |
 | `GOOGLE_PLAY_PACKAGE_NAME`, `GOOGLE_PLAY_SERVICE_ACCOUNT_FILE` or `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Google Play Developer API (all or none; one key form). Only with `STORE_VERIFIER=stores`. A key file may be outside the repo or in its own git-ignored `secrets/` folder (not in production) |
+| `FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE` | Real projects only. Path to a service-account JSON key of `FIREBASE_PROJECT_ID` (its `project_id` must match) with the Firebase Authentication Admin role, read like the store keys (outside the repo, or its git-ignored `secrets/` folder when not in production). Granting `admin` uses it to mark the account's email verified (ADR-0002 follow-up 2026-11-19). Unset: the server starts with a warning and every admin grant answers 503. Owner and server steps: [docs/setup/firebase-admin.md](docs/setup/firebase-admin.md) |
+| `FIREBASE_AUTH_EMULATOR_HOST` | `demo-airplane-games` only, never in production: loopback `host:port` of the Auth Emulator that admin grants use instead (`npm run auth:emulator`, 127.0.0.1:9199). The e2e suite sets it and starts the emulator itself |
 | `STORE_ENABLED` | Production with `stores` only: `apple`, `google` or `apple,google`, matching the configured stores |
 | `SHUTDOWN_PRESTOP_MS` | Default 5000 in production, 0 elsewhere. How long `/ready` reports 503 before the listener closes, so load balancers stop routing first. Counts inside `SHUTDOWN_DRAIN_MS`; both must stay below the host's termination grace period (Kubernetes default 30 s) |
 
@@ -448,7 +454,7 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   transaction that first locks the player row (`SELECT … FOR UPDATE`), then its Flight Segment, then the Round. Lock order is
   always player → segment → Round. Every progress change goes through `PlayerBalance.update` (`src/balance/`), which locks the player first and bumps `players.version`.
 - **Account deletion** erases only this backend's data. The app deletes the Firebase account itself (the
-  backend holds no Firebase admin credentials); until it does, a still-valid token plus `PUT /v1/me`
+  backend's only Firebase admin access is the admin grant's email verification, ADR-0002 follow-up 2026-11-19); until it does, a still-valid token plus `PUT /v1/me`
   creates a fresh player at zero. The delete takes the player lock first, so an in-flight Round result
   either banks before it or gets 404 after.
 - **Rules mirror Unity.** `src/rules/` ports `ScoreCalculator`, `FlightRank` and `PilotProgression`. Ranks: Trainee 0, First Officer 10k, Captain 50k,

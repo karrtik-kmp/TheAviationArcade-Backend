@@ -1,10 +1,21 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.27.3
+  version: 0.28.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.28.0 (Admin only; ADR-0002 follow-up, user rulings 2026-11-19; no change for the game's own calls).** Granting
+    `admin` (`POST /v1/admin/accounts/{principal}/roles/admin/grant`, and the operator command `roles:grant`) now also marks the
+    account's Firebase email verified, by uid, before the grant is written. The 200 body gains the required `emailVerification`
+    (`verified` = set by this grant; `already_verified`; `no_email` = the account has no email, so it is granted but cannot pass the
+    verified-email rule). A newly verified person sees it after their token refreshes (sign out and in again, or up to an hour).
+    New refusals, each writing nothing: 404 `not_found` when Firebase has no account with that uid; 409 with the NEW codes
+    `account_email_mismatch` (a typed `email` that is not the account's own sign-in email, compared case-insensitively) and
+    `account_disabled` (a disabled Firebase account); 503 `service_unavailable` when Firebase refuses or cannot be reached, or the
+    backend has no Firebase admin access configured. The audit `detail` of an admin `role_grant` gains `emailVerifiedAtGrant` and
+    `emailVerification` (never an email).
 
     **Changelog 0.27.3 (servers only; no schema, route or code change for any client).** servers[0] is now `..` (relative to the document) so Swagger UI works at /docs/ locally and behind the /api/ prefix on dev; no schema, route or code change for any client.
 
@@ -2137,8 +2148,18 @@ paths:
         granted this way. Audit action `role_grant`. The body has no `revision` (there is nothing to fence on a missing row).
         Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
         written. A 409 `version_conflict` is either an admin row that exists and is not revoked (naming its current state and revision), or an account whose photographer row is blocked.
-        Every change bumps `revision` and writes one audit row (`detail`: role, from and to state and revision, note).
-        Answers 200, not 201. Exempt from the client version gate.
+        Every change bumps `revision` and writes one audit row (`detail`: role, from and to state and revision, note,
+        `emailVerifiedAtGrant`, `emailVerification`). Answers 200, not 201. Exempt from the client version gate.
+
+        **Firebase email (0.28.0).** The grant also marks the account's Firebase email verified (by uid, never by email), because
+        staff needs a verified email and the Admin has no verify-email flow. Every refusal above is checked first and never touches
+        Firebase; then Firebase is asked; then the grant is written. If Firebase has no account with that uid (404 `not_found`), the
+        account is disabled (409 `account_disabled`), a typed `email` is not the account's own sign-in email (409
+        `account_email_mismatch`; case-insensitive; with no typed email nothing is compared), or Firebase refuses or cannot be
+        reached (503 `service_unavailable`), nothing is written and the email is unchanged. An account without an email is granted
+        and reported `no_email`. In the rare race where the role row changes between the first check and the write, the grant is
+        refused (409 `version_conflict`) and the email stays verified. The person's current token says `email_verified: false`
+        until it refreshes: they sign out and in again (or wait up to an hour).
       parameters:
         - $ref: "#/components/parameters/AccountPrincipal"
       requestBody:
@@ -2154,16 +2175,16 @@ paths:
             Cache-Control: { $ref: "#/components/headers/NoStore" }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
+              schema: { $ref: "#/components/schemas/AdminGrantEnvelope" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/RoleRowNotFound" }
-        "409": { $ref: "#/components/responses/RoleVersionConflict" }
+        "404": { $ref: "#/components/responses/GrantAccountNotFound" }
+        "409": { $ref: "#/components/responses/GrantConflict" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "429": { $ref: "#/components/responses/RateLimited" }
-        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        "503": { $ref: "#/components/responses/GrantFirebaseUnavailable" }
 
   /v1/admin/accounts/{principal}/roles/admin/email:
     put:
@@ -4274,6 +4295,42 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    GrantAccountNotFound:
+      description: "`not_found`: Firebase has no account with that uid in this project. Nothing was written."
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [not_found]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    GrantConflict:
+      description: |
+        Nothing was written and the Firebase email is unchanged (except in the race below). `version_conflict`: the admin row exists
+        and is not revoked (the message names its state and revision), the account's photographer row is blocked, or (operator
+        command) an active admin exists; also the rare race where the row changed after the first check, in which case the email
+        stays verified. `account_email_mismatch`: the typed `email` is not the account's own sign-in email; the Admin shows the
+        message, which asks to check the address with the account's owner or to grant without an email. `account_disabled`: the
+        Firebase account is disabled.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [version_conflict, account_email_mismatch, account_disabled]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    GrantFirebaseUnavailable:
+      description: |
+        `service_unavailable`: Firebase refused, timed out or could not be reached (`Retry-After: 5`), the backend has no Firebase
+        admin access configured (`Retry-After: 60`; an operator must add it), or the database is unreachable. Nothing was written.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      x-error-codes: [service_unavailable]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     RoleVersionConflict:
       description: |
         `version_conflict`: the row is not in the state the move starts from, or not at the `revision` sent (someone decided first);
@@ -4507,6 +4564,8 @@ components:
                 - ugs_link_conflict
                 - storage_unavailable
                 - media_invalid
+                - account_email_mismatch
+                - account_disabled
                 - service_unavailable
                 - internal_error
                 - trip_not_found
@@ -4640,6 +4699,19 @@ components:
       required: [role]
       properties:
         role: { $ref: "#/components/schemas/AdminRoleRow" }
+    AdminGrantEnvelope:
+      type: object
+      additionalProperties: false
+      required: [role, emailVerification]
+      properties:
+        role: { $ref: "#/components/schemas/AdminRoleRow" }
+        emailVerification:
+          type: string
+          enum: [verified, already_verified, no_email]
+          description: |
+            What the grant did to the account's Firebase email: `verified` (set now; the person signs out and in again to pick it
+            up), `already_verified`, or `no_email` (the account has none, so it cannot be verified and cannot pass the verified-email
+            rule of the admin role until it has one).
     RoleRequestList:
       type: object
       additionalProperties: false

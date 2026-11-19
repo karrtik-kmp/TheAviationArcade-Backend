@@ -178,7 +178,7 @@ async function clean(): Promise<void> {
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 6 });
   database = new DatabaseService(sql);
-  config = loadConfig({ ...process.env, FIREBASE_PROJECT_ID: PROJECT, ALLOW_EMULATOR_TOKENS: "false", APP_ENV: "test", DEMO_ACCOUNT_UID: "seed-demo-account", BLOB_STORE: "memory" });
+  config = loadConfig({ ...process.env, FIREBASE_PROJECT_ID: PROJECT, ALLOW_EMULATOR_TOKENS: "false", FIREBASE_AUTH_EMULATOR_HOST: undefined, APP_ENV: "test", DEMO_ACCOUNT_UID: "seed-demo-account", BLOB_STORE: "memory" });
   expect(config.firebaseProjectId).toBe(PROJECT);
   expect(config.demoPrincipal).toBe(principalOf("seed-demo-account"));
 });
@@ -769,6 +769,7 @@ describe("scripts/demo-seed-content.mjs", () => {
   const baseEnv = {
     ...process.env,
     ALLOW_EMULATOR_TOKENS: "false",
+    FIREBASE_AUTH_EMULATOR_HOST: undefined, // the e2e emulator belongs to the demo project only
     BLOB_STORE: "none",
     DATABASE_URL: "postgres://nobody:not-a-real-password@127.0.0.1:5433/airplane_games_prod",
   };

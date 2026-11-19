@@ -146,3 +146,32 @@ Firebase UID, through `RoleStore.grantPhotographer`. Like `roles:grant`, it is a
 - It never overturns a decision: `rejected`, `revoked` and `blocked` rows are refused (409) and must be decided again in the Admin.
 - Never by email, only by UID (the principal of the configured Firebase project).
 - Never the shared demo account: refused before any read.
+
+## Follow-up rulings (user, 2026-11-19, an admin grant verifies the email)
+
+Source: the brief `../docs/briefs/backend-verify-email-on-grant.md`. Newly granted editors saw "Access unavailable": staff needs an
+active `admin` row AND `email_verified === true` (decision 4), the client's editors are unverified email/password accounts, and the
+Admin gets no verify-email flow (editor access is requested from Admin Support).
+
+- **An admin grant vouches for the account's email and marks it verified.** Both grant paths (the API grant and `roles:grant`) set
+  the Firebase account's `emailVerified` to true through Identity Toolkit, by the uid of a principal of the configured
+  `FIREBASE_PROJECT_ID` only, never by email. Photographers are unchanged: they still need their own verified email.
+- **Order and failure.** Every role-state refusal is checked first (it never touches Firebase), then Firebase, then the existing
+  locked transaction checks again and writes. If Firebase refuses or cannot be reached, nothing is written (404 no such account,
+  503 unavailable or not configured). Firebase is never called under the role lock, which first sign-ups also take. In the rare race
+  where the role row changes between the first check and the lock, the grant is refused and the email stays verified (logged).
+- **A typed email must be the account's own (narrows R-d for this one check).** When the granting admin types an email, it is
+  compared, case-insensitively, with the Firebase account's sign-in email; a different one (or an account with no email) is 409
+  `account_email_mismatch` and nothing changes. With no typed email, the grant verifies whatever address Firebase holds. Everywhere
+  else R-d stands: the typed email stays display-only and is never compared with token emails.
+- A disabled Firebase account is refused (409 `account_disabled`). An account without an email is granted and reported `no_email`;
+  it cannot use the role until it has a verified email.
+- Audit: the admin `role_grant` detail gains `emailVerifiedAtGrant` (boolean) and `emailVerification` (`verified`,
+  `already_verified`, `no_email`); no email is written to `admin_audit`, as before. The grant response gains `emailVerification`
+  (API 0.28.0).
+- Access: a service-account key of `airplane-games-9fe1e` with the Firebase Authentication Admin role, one secret file per backend
+  in its `envVar/` (`FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE`); the demo project uses the Auth Emulator (`FIREBASE_AUTH_EMULATOR_HOST`),
+  so tests need no secret. Plain `fetch` + `jose`, no Firebase SDK. Steps: [setup/firebase-admin.md](../setup/firebase-admin.md).
+- **Trade-off.** Firebase then treats the address as proven for the whole project (password resets, provider linking), so the
+  granting admin must know who owns the account. Revoking admin does not un-verify the email. The person's current token still
+  says `email_verified: false` until it refreshes (sign out and in again, or up to an hour).

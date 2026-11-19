@@ -28,6 +28,11 @@ delete process.env.DEV_DEMO_WAIVER;
 const DEFAULT_TEST_DATABASE_URL =
   "postgres://airplane:airplane_local_only@127.0.0.1:5433/airplane_games_test";
 
+// The admin grant marks emails verified through the Firebase Auth Emulator, never a real project (ADR-0002 follow-up 2026-11-19).
+// test/global-setup.ts starts it (firebase.json, port 9199) unless one already listens here. A developer's real key never applies.
+delete process.env.FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE;
+process.env.FIREBASE_AUTH_EMULATOR_HOST = process.env.TEST_FIREBASE_AUTH_EMULATOR_HOST ?? "127.0.0.1:9199";
+
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? DEFAULT_TEST_DATABASE_URL;
 // globalSetup runs in this process, so it must see the test URL, never the dev DATABASE_URL from .env.
 process.env.DATABASE_URL = TEST_DATABASE_URL;
@@ -47,6 +52,7 @@ export default defineConfig({
       // Tests never touch the real Firebase project: demo- project with emulator tokens.
       FIREBASE_PROJECT_ID: "demo-airplane-games",
       ALLOW_EMULATOR_TOKENS: "true",
+      FIREBASE_AUTH_EMULATOR_HOST: process.env.FIREBASE_AUTH_EMULATOR_HOST,
       APP_ENV: "test",
       BLOB_STORE: "memory",
       // test/api.test.ts sends far more than the default per-minute limits from one IP and one principal.

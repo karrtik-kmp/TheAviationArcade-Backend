@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import type { AccountRole, RoleState } from "../src/db/enums.js";
+import { createFirebaseUser, setFirebaseEmail } from "./auth-emulator.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { unfinishedUpload } from "./upload-helpers.js";
@@ -54,6 +55,8 @@ async function who(roles: [AccountRole, RoleState][] = [], token: { email?: stri
   const principal = demoPrincipal(uid);
   seeded.push(principal);
   const headers = { Authorization: `Bearer ${emulatorToken(uid, undefined, undefined, token)}` };
+  // The Firebase account behind the token (an admin grant marks its email verified): same email as the token, unverified.
+  await createFirebaseUser(uid, { email: token.email === undefined ? undefined : token.email });
   for (const [role, state] of roles) await seedRole(sql, principal, role, state);
   return { uid, principal, headers };
 }
@@ -406,9 +409,10 @@ describe("typed admin email: grant", () => {
   it("stores a trimmed, lowercased email; the views show grantEmail, email and emailSource typed", async () => {
     const boss = await admin();
     const t = await who();
+    await setFirebaseEmail(t.uid, "new.admin@example.test"); // a typed email must be the account's own (ruling 2026-11-19)
     const res = await post(boss, rolePath(t.principal, "admin/grant"), { email: "  New.Admin@Example.TEST ", note: "welcome" });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    check("AdminRoleEnvelope", res.body);
+    check("AdminGrantEnvelope", res.body);
     expect(res.body.role).toMatchObject({ role: "admin", state: "active", requestEmail: null, grantEmail: "new.admin@example.test", email: "new.admin@example.test", emailSource: "typed" });
     expect(await row(t.principal, "admin")).toMatchObject({ grant_email: "new.admin@example.test", request_email: null });
     const queue = await request(server).get("/v1/admin/role-requests?state=active&limit=100").set(boss.headers);
@@ -455,17 +459,20 @@ describe("typed admin email: grant", () => {
     // The longest accepted address (320 characters) is fine.
     const longest = `${"x".repeat(64)}@${"y".repeat(255)}`;
     expect(longest).toHaveLength(320);
+    await setFirebaseEmail(t.uid, longest);
     expect((await post(boss, rolePath(t.principal, "admin/grant"), { email: longest })).status).toBe(200);
   });
 
   it("a re-grant from revoked replaces the email when one is given and keeps it otherwise; after DELETE /v1/me it stays null", async () => {
     const boss = await admin();
     const t = await who();
+    await setFirebaseEmail(t.uid, "one@example.test");
     expect((await post(boss, rolePath(t.principal, "admin/grant"), { email: "one@example.test" })).status).toBe(200);
     expect((await post(boss, rolePath(t.principal, "admin/revoke"), { revision: 1 })).status).toBe(200);
     const kept = await post(boss, rolePath(t.principal, "admin/grant"), {});
     expect(kept.body.role).toMatchObject({ state: "active", revision: 3, grantEmail: "one@example.test" });
     expect((await post(boss, rolePath(t.principal, "admin/revoke"), { revision: 3 })).status).toBe(200);
+    await setFirebaseEmail(t.uid, "two@example.test");
     const replaced = await post(boss, rolePath(t.principal, "admin/grant"), { email: "Two@Example.test" });
     expect(replaced.body.role).toMatchObject({ revision: 5, grantEmail: "two@example.test" });
 
@@ -481,6 +488,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
   it("corrects the email, bumps the revision, audits emailChanged without the value; an unchanged value is a 200 no-op", async () => {
     const boss = await admin();
     const t = await who();
+    await setFirebaseEmail(t.uid, "typo@example.test");
     await post(boss, rolePath(t.principal, "admin/grant"), { email: "typo@example.test" });
     const res = await put(boss, rolePath(t.principal, "admin/email"), { revision: 1, email: " Fixed@Example.TEST" });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -501,6 +509,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
   it("is fenced by revision (409), clears with null, works on a revoked admin, is 404 without an admin row, 400 for a bad email", async () => {
     const boss = await admin();
     const t = await who();
+    await setFirebaseEmail(t.uid, "keep@example.test");
     await post(boss, rolePath(t.principal, "admin/grant"), { email: "keep@example.test" });
     const stale = await put(boss, rolePath(t.principal, "admin/email"), { revision: 5, email: "other@example.test" });
     expect(stale.status).toBe(409);
@@ -526,6 +535,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
   it("is admin only and re-checks the acting admin under the lock", async () => {
     const boss = await admin();
     const t = await who();
+    await setFirebaseEmail(t.uid, "keep@example.test");
     await post(boss, rolePath(t.principal, "admin/grant"), { email: "keep@example.test" });
     const photographer = await who([["photographer", "active"]]);
     expect((await put(photographer, rolePath(t.principal, "admin/email"), { revision: 1, email: "x@y.test" })).status).toBe(403);
@@ -545,6 +555,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
   it("no audit row ever carries an email: grant, edit, request, block and unblock rows of these accounts", async () => {
     const boss = await admin();
     const t = await who([], { email: "Token.Email@Example.test" });
+    await setFirebaseEmail(t.uid, "typed.one@example.test");
     await post(boss, rolePath(t.principal, "admin/grant"), { email: "typed.one@example.test", note: "n" });
     await put(boss, rolePath(t.principal, "admin/email"), { revision: 1, email: "typed.two@example.test" });
     await put(boss, rolePath(t.principal, "admin/email"), { revision: 2, email: null });
@@ -568,6 +579,7 @@ describe("DELETE /v1/me clears both emails", () => {
     const t = await who([], { email: "both@example.test" });
     await request(server).put("/v1/me").set(t.headers);
     await post(t, "/v1/me/roles/photographer");
+    await setFirebaseEmail(t.uid, "typed@example.test");
     await post(boss, rolePath(t.principal, "admin/grant"), { email: "typed@example.test" });
     expect(await row(t.principal, "photographer")).toMatchObject({ request_email: "both@example.test" });
     expect(await row(t.principal, "admin")).toMatchObject({ grant_email: "typed@example.test" });

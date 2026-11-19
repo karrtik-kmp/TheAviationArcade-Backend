@@ -7,7 +7,7 @@ import { importPKCS8 } from "jose";
 import { parse as parseConnectionString } from "pg-connection-string";
 import { z } from "zod";
 import { accountPrincipalFor } from "../accounts/account-principal.js";
-import { emulatorTokensAllowed } from "../auth/firebase.js";
+import { EMULATOR_PROJECT_ID, emulatorTokensAllowed } from "../auth/firebase.js";
 import { databaseNameOf, devDatabaseRefusal } from "./dev-database.js";
 
 export const APP_CONFIG = Symbol("APP_CONFIG");
@@ -59,6 +59,12 @@ export type AppConfig = {
   /** Present only when every UGS_* setting is given: the one-way progress mirror to Unity Gaming Services. */
   ugs: UgsConfig | undefined;
   /**
+   * Firebase Authentication admin access, used only to mark an account's email verified when `admin` is granted (ADR-0002
+   * follow-up 2026-11-19). A service-account key for a real project, or the Auth Emulator for a demo- project. Undefined = not
+   * configured: admin grants answer 503. The service-account form holds a private key: never log or echo it.
+   */
+  firebaseAdmin?: FirebaseAdminConfig | undefined;
+  /**
    * `firebase:<FIREBASE_PROJECT_ID>:<DEMO_ACCOUNT_UID>` of the shared demo account (a password handed to testers), or undefined
    * when none is configured. It can never hold `photographer` or `admin` (ADR-0002 follow-up, incident 2026-11-04). Not a secret,
    * but nothing needs it in logs.
@@ -93,6 +99,25 @@ export type GoogleStoreConfig = {
   /** PKCS#8 PEM of the service-account key (RS256). A secret. */
   privateKeyPem: string;
 };
+
+export type FirebaseAdminConfig =
+  | {
+      kind: "service_account";
+      /** Always FIREBASE_PROJECT_ID (the key's project_id must match it). */
+      projectId: string;
+      /** Service-account email (not a secret). */
+      clientEmail: string;
+      privateKeyId: string;
+      /** PKCS#8 PEM of the service-account key (RS256). A secret. */
+      privateKeyPem: string;
+    }
+  | {
+      kind: "emulator";
+      /** Always a demo- FIREBASE_PROJECT_ID. */
+      projectId: string;
+      /** Loopback `host:port` of the Firebase Auth Emulator. */
+      host: string;
+    };
 
 export type UgsConfig = {
   projectId: string;
@@ -246,6 +271,14 @@ const envSchema = z.object({
   UGS_OIDC_PROVIDER: optionalText,
   UGS_MIRROR_MAX_PER_MIN: optionalInt(1, 33),
   UGS_MIRROR_MIN_INTERVAL_SEC: optionalInt(0, 3600),
+  /**
+   * Firebase admin access for the admin grant (ADR-0002 follow-up 2026-11-19): path to a service-account JSON key of
+   * FIREBASE_PROJECT_ID with the Firebase Authentication Admin role. Read like the store keys (outside the repo, or its git-ignored
+   * secrets/ folder when not in production). Refused with a demo- project.
+   */
+  FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE: optionalText,
+  /** Firebase Auth Emulator `host:port` (loopback only) for the admin grant with a demo- project. Refused in production. */
+  FIREBASE_AUTH_EMULATOR_HOST: optionalText,
   /** Firebase uid of the website's shared demo account. Optional; when set, that account can never hold photographer/admin. */
   DEMO_ACCOUNT_UID: optionalText,
   /** Dev database only: waive the photo licence name and the Plane of the Day factual source. Empty = unset; the only value is dev-demo. */
@@ -293,6 +326,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     DEMO_ACCOUNT_UID,
     DEV_DEMO_WAIVER,
     API_DOCS,
+    FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE,
+    FIREBASE_AUTH_EMULATOR_HOST,
   } = parsed.data;
   const databaseSsl: DatabaseSsl = parsed.data.DATABASE_SSL ?? (APP_ENV === "production" ? "verify-full" : "disable");
   const caCert = DATABASE_CA_CERT ? DATABASE_CA_CERT.replace(/\\n/g, "\n") : undefined;
@@ -418,6 +453,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (ugs !== undefined && APP_ENV !== "test" && FIREBASE_PROJECT_ID.startsWith("demo-")) {
     throw new Error("Invalid environment configuration: UGS_* settings are not allowed with a demo- FIREBASE_PROJECT_ID");
   }
+  const firebaseAdmin = parseFirebaseAdminConfig(FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE, FIREBASE_AUTH_EMULATOR_HOST, APP_ENV, FIREBASE_PROJECT_ID);
   // Same uid rules as every principal (1-128 characters, no ':' or '/', no control characters). Name only, never the value.
   let demoPrincipal: string | undefined;
   if (DEMO_ACCOUNT_UID !== undefined) {
@@ -457,6 +493,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     bunny,
     cdn,
     ugs,
+    firebaseAdmin,
     demoPrincipal,
     devDemoWaiver: DEV_DEMO_WAIVER,
     apiDocs,
@@ -678,12 +715,72 @@ function parseStoresConfig(
   return { apple, google };
 }
 
+/** Loopback `host:port` only: the emulator accepts `Bearer owner` from anyone, so it must never be a remote host. */
+const EMULATOR_HOST = /^(?:127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$/;
+
+/**
+ * Firebase admin access (ADR-0002 follow-up 2026-11-19). At most one form, matched to the project: a service-account key only for a
+ * real project (its `project_id` must be FIREBASE_PROJECT_ID), the Auth Emulator only for a demo- project and never in production.
+ * Errors name the setting only, never key or file content.
+ */
+function parseFirebaseAdminConfig(
+  file: string | undefined,
+  emulatorHost: string | undefined,
+  appEnv: AppEnv,
+  projectId: string,
+): FirebaseAdminConfig | undefined {
+  const demo = projectId.startsWith("demo-");
+  if (emulatorHost !== undefined) {
+    const match = EMULATOR_HOST.exec(emulatorHost);
+    const port = match ? Number(match[1]) : 0;
+    if (appEnv === "production") throw storeConfigError("FIREBASE_AUTH_EMULATOR_HOST is not allowed when APP_ENV=production");
+    if (projectId !== EMULATOR_PROJECT_ID) throw storeConfigError(`FIREBASE_AUTH_EMULATOR_HOST is allowed only with FIREBASE_PROJECT_ID=${EMULATOR_PROJECT_ID}`);
+    if (port < 1 || port > 65_535) throw storeConfigError("FIREBASE_AUTH_EMULATOR_HOST must be a loopback host:port");
+  }
+  if (file !== undefined && demo) {
+    throw storeConfigError("FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE is not allowed with a demo- FIREBASE_PROJECT_ID");
+  }
+  if (emulatorHost !== undefined) return { kind: "emulator", projectId, host: emulatorHost };
+  if (file === undefined) return undefined;
+  const setting = "FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE";
+  const text = readKeyFile(setting, file, appEnv);
+  let json: Record<string, unknown> | undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) json = value as Record<string, unknown>;
+  } catch {
+    // V8 JSON.parse messages quote the input, so nothing of the caught error is carried.
+    json = undefined;
+  }
+  const { type, project_id: keyProject, client_email: clientEmail, private_key_id: privateKeyId, private_key: privateKey } = json ?? {};
+  if (
+    type !== "service_account" ||
+    typeof clientEmail !== "string" ||
+    !SERVICE_ACCOUNT_EMAIL.test(clientEmail) ||
+    typeof privateKeyId !== "string" ||
+    !PRIVATE_KEY_ID.test(privateKeyId) ||
+    typeof privateKey !== "string"
+  ) {
+    throw storeConfigError(setting);
+  }
+  if (keyProject !== projectId) throw storeConfigError(`${setting} is a key of another project than FIREBASE_PROJECT_ID`);
+  checkPem(setting, privateKey, "rsa");
+  return { kind: "service_account", projectId, clientEmail, privateKeyId, privateKeyPem: privateKey };
+}
+
 /**
  * Import the configured keys with jose (ES256 for the Apple .p8, RS256 for the Google key), the call the adapters make.
  * `loadConfig` is synchronous and has already checked shape and key type; this proves the import, at start (ConfigModule factory).
  * Errors carry the setting name only, never a cause or key content.
  */
-export async function importStoreKeys(config: Pick<AppConfig, "apple" | "google">): Promise<void> {
+export async function importStoreKeys(config: Pick<AppConfig, "apple" | "google"> & Partial<Pick<AppConfig, "firebaseAdmin">>): Promise<void> {
+  if (config.firebaseAdmin?.kind === "service_account") {
+    try {
+      await importPKCS8(config.firebaseAdmin.privateKeyPem, "RS256");
+    } catch {
+      throw storeConfigError("FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE");
+    }
+  }
   if (config.apple) {
     try {
       await importPKCS8(config.apple.privateKeyPem, "ES256");
@@ -779,6 +876,11 @@ function parseUgsConfig(
       useFactory: async (): Promise<AppConfig> => {
         const config = loadConfig(process.env);
         await importStoreKeys(config);
+        if (config.firebaseAdmin === undefined) {
+          new Logger("Config").warn(
+            "Firebase admin access is not configured (FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE, or FIREBASE_AUTH_EMULATOR_HOST with a demo- project): granting the admin role answers 503 until it is.",
+          );
+        }
         if (config.devDemoWaiver !== undefined) {
           new Logger("Config").warn(
             "DEV_DEMO_WAIVER=dev-demo is ON: photos may be published without a licence name and Plane of the Day items without a factual source. Dev database only; never copy these rows to production.",

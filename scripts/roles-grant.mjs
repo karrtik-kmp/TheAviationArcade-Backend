@@ -3,10 +3,12 @@
 //
 // Run `npm run roles:grant -- <uid> --yes` (it builds first). It writes ONLY when NO active admin exists (checked inside the same
 // locked transaction as the grant) and when the target database was shown and --yes was given. It builds the principal
-// `firebase:<FIREBASE_PROJECT_ID>:<uid>`; it never prints the database password.
+// `firebase:<FIREBASE_PROJECT_ID>:<uid>`; it never prints the database password. Like the API grant, it first marks the account's
+// Firebase email verified (ADR-0002 follow-up 2026-11-19), so it needs FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE (or the Auth Emulator).
 //
-// Exit codes: 0 granted; 1 unexpected failure (database unreachable, ...), nothing is known to be written; 2 refused because
-// of the arguments or settings (nothing was contacted); 3 refused by the database state (an active admin exists, ...).
+// Exit codes: 0 granted; 1 unexpected failure (database unreachable, ...) or Firebase refused / unreachable, nothing is known to be
+// written; 2 refused because of the arguments or settings (nothing was contacted); 3 refused by the database or account state (an
+// active admin exists, no such Firebase account, a disabled account, a typed email that is not the account's, ...).
 import { userInfo } from "node:os";
 
 try {
@@ -95,7 +97,14 @@ try {
 } catch {
   refuse("DATABASE_URL could not be parsed.");
 }
+// The grant marks the account's Firebase email verified (ADR-0002 follow-up 2026-11-19), so it needs Firebase admin access.
+if (config.firebaseAdmin === undefined) {
+  refuse(
+    "Granting admin also marks the account's email verified and needs Firebase admin access: set FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE (or FIREBASE_AUTH_EMULATOR_HOST with the demo project).",
+  );
+}
 console.log(`Target database: host ${host}, port ${port}, database ${database} (APP_ENV=${appEnv}).`);
+console.log(`Firebase project: ${projectId} (${config.firebaseAdmin.kind === "emulator" ? `Auth Emulator at ${config.firebaseAdmin.host}` : "service account"}).`);
 console.log(`Principal about to be granted admin: ${principal}`);
 console.log("Check this is the right person's uid before confirming with --yes.");
 if (!confirmed) refuse("Add --yes to confirm this is the right database and account.");
@@ -103,6 +112,14 @@ if (!confirmed) refuse("Add --yes to confirm this is the right database and acco
 const { default: pg } = await import("pg");
 const { DatabaseService, poolOptions } = await import("../dist/database/database.module.js");
 const { RoleStore } = await import("../dist/accounts/role-store.js");
+const { firebaseAccountsFor } = await import("../dist/accounts/firebase-accounts.js");
+const { importStoreKeys } = await import("../dist/config/config.module.js");
+try {
+  // Proves the Firebase admin key imports (and the store keys), as the server does at start. Names the setting only.
+  await importStoreKeys(config);
+} catch (error) {
+  refuse(error instanceof Error ? error.message : "A key could not be imported.");
+}
 
 const pool = new pg.Pool(poolOptions({ ...config, dbPoolMax: 2 }));
 pool.on("error", () => {});
@@ -115,16 +132,24 @@ try {
 }
 
 try {
-  const store = new RoleStore(new DatabaseService(pool), config);
+  const store = new RoleStore(new DatabaseService(pool), config, firebaseAccountsFor(config.firebaseAdmin));
   // actorName in the store cuts `operator:<id>` to 256 characters.
   const outcome = await store.grantAdmin({ kind: "operator", id: osUser }, principal, null, { onlyIfNoActiveAdmin: true, email });
   if (!outcome.ok) {
     console.error(`${outcome.error.message}`);
-    process.exitCode = 3;
+    // 503: Firebase refused or could not be reached; nothing was written, and trying again later may work.
+    process.exitCode = outcome.error.status === 503 ? 1 : 3;
   } else {
-    console.log(`Granted: admin is now ${outcome.row.state} at revision ${outcome.row.revision} for ${principal}. One audit row was written.`);
+    const verification = {
+      verified: "Its Firebase email is now verified; the person signs out and in again to pick that up.",
+      already_verified: "Its Firebase email was already verified.",
+      no_email: "The account has no email, so it could not be verified; it cannot use the admin role until it has a verified email.",
+    }[outcome.emailVerification];
+    console.log(`Granted: admin is now ${outcome.row.state} at revision ${outcome.row.revision} for ${principal}. One audit row was written. ${verification}`);
   }
-} catch (error) {
+} catch (thrown) {
+  // Drizzle wraps a query's pg error (DrizzleQueryError, with the SQL text and parameters in its message): report the cause.
+  const error = thrown?.constructor?.name === "DrizzleQueryError" && thrown.cause ? thrown.cause : thrown;
   // Safe fields only: never the stack, the URL or the config. A pg DatabaseError message comes from the server (for example
   // "password authentication failed for user ...") and holds no password.
   const name = error?.constructor?.name ?? "Error";

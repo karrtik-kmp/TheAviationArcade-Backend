@@ -1,9 +1,11 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { and, asc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { ApiError } from "../common/errors.js";
 import { APP_CONFIG } from "../config/config.module.js";
 import type { AppConfig } from "../config/config.module.js";
-import { demoAccountError, isDemoPrincipal } from "./account-principal.js";
+import { demoAccountError, isDemoPrincipal, uidOfAccountPrincipal } from "./account-principal.js";
+import { FIREBASE_ACCOUNTS, firebaseAccountsFor } from "./firebase-accounts.js";
+import type { EmailVerification, FirebaseAccounts } from "./firebase-accounts.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { Database, Tx } from "../database/database.module.js";
 import { databaseNow } from "../database/clock.js";
@@ -53,6 +55,9 @@ export type RequestOutcome = { ok: true; row: RoleRow; changed: boolean } | { ok
 
 export type GrantOutcome = { ok: true; row: RoleRow; changed: boolean } | { ok: false; error: ApiError };
 
+/** An admin grant also reports what happened to the account's Firebase email (ADR-0002 follow-up 2026-11-19). */
+export type GrantAdminOutcome = { ok: true; row: RoleRow; emailVerification: EmailVerification } | { ok: false; error: ApiError };
+
 const blockedError = (): ApiError => new ApiError(403, "forbidden", "This account is blocked from the photographer role.");
 
 const ADVISORY_LOCK = sql`SELECT pg_advisory_xact_lock(hashtextextended('account-roles', 0))`;
@@ -73,6 +78,35 @@ function conflict(role: AccountRole, current: RoleRow, wanted: string): ApiError
 }
 
 const notFound = (role: AccountRole): ApiError => new ApiError(404, "not_found", `There is no ${role} role row for that account.`);
+
+function firebaseUnavailable(kind: "unavailable" | "not_configured"): ApiError {
+  return new ApiError(
+    503,
+    "service_unavailable",
+    kind === "not_configured"
+      ? "Granting admin needs Firebase admin access, which this backend does not have configured. Nothing was changed."
+      : "Firebase could not mark the account's email verified, so admin was not granted. Try again later. Nothing was changed.",
+    { "Retry-After": kind === "not_configured" ? "60" : "5" },
+  );
+}
+
+/** The admin grant's refusal for each Firebase outcome other than ok. Nothing is written in any of them. */
+function firebaseRefusal(kind: "not_found" | "disabled" | "email_mismatch" | "unavailable" | "not_configured"): ApiError {
+  switch (kind) {
+    case "not_found":
+      return new ApiError(404, "not_found", "There is no Firebase account with that uid in this project. Nothing was changed.");
+    case "disabled":
+      return new ApiError(409, "account_disabled", "This Firebase account is disabled, so it cannot be made admin. Nothing was changed.");
+    case "email_mismatch":
+      return new ApiError(
+        409,
+        "account_email_mismatch",
+        "The email you typed is not this account's sign-in email, so admin was not granted. Check the address with the account's owner, or grant without an email. Nothing was changed.",
+      );
+    default:
+      return firebaseUnavailable(kind);
+  }
+}
 
 type AuditInput = {
   actor: string;
@@ -104,7 +138,7 @@ async function readRow(tx: Database | Tx, principal: string, role: AccountRole):
 }
 
 /** Active admins, not counting the shared demo account's row: it holds no real privilege, so it never keeps "an admin" alive. */
-async function activeAdminCount(tx: Tx, demoPrincipal?: string): Promise<number> {
+async function activeAdminCount(tx: Database | Tx, demoPrincipal?: string): Promise<number> {
   const [row] = await tx
     .select({ n: sql<number>`count(*)::int` })
     .from(accountRoles)
@@ -119,9 +153,39 @@ async function activeAdminCount(tx: Tx, demoPrincipal?: string): Promise<number>
 }
 
 /** The acting admin must still hold an ACTIVE admin row now, under the lock. The operator is exempt. */
-async function actorStillAdmin(tx: Tx, actor: RoleActor): Promise<boolean> {
+async function actorStillAdmin(tx: Database | Tx, actor: RoleActor): Promise<boolean> {
   if (actor.kind === "operator") return true;
   return (await readRow(tx, actor.principal, "admin"))?.state === "active";
+}
+
+/**
+ * Every reason the role state refuses an admin grant, in one place. It runs once without the lock before Firebase is contacted (so a
+ * grant that would be refused never touches the account) and again under the role lock before the write.
+ */
+async function adminGrantRefusal(
+  tx: Database | Tx,
+  actor: RoleActor,
+  principal: string,
+  demoPrincipal: string | undefined,
+  onlyIfNoActiveAdmin: boolean,
+): Promise<ApiError | undefined> {
+  if (!(await actorStillAdmin(tx, actor))) return new ApiError(403, "forbidden", "Requires the admin role.");
+  // The operator command (first admin / recovery) passes onlyIfNoActiveAdmin.
+  if (onlyIfNoActiveAdmin && (await activeAdminCount(tx, demoPrincipal)) > 0) {
+    return new ApiError(409, "version_conflict", "An active admin already exists; grant admin through the admin API. Nothing was changed.");
+  }
+  if ((await readRow(tx, principal, "photographer"))?.state === "blocked") {
+    return new ApiError(
+      409,
+      "version_conflict",
+      "This account is blocked from the photographer role, so it cannot be made admin; unblock it first. Nothing was changed.",
+    );
+  }
+  const current = await readRow(tx, principal, "admin");
+  if (current && current.state !== "revoked") {
+    return conflict("admin", current, "it cannot be granted (only a missing or revoked admin row can be)");
+  }
+  return undefined;
 }
 
 export type RoleQueueFilter = { state: RoleState; limit: number; after?: { requestedAt: string; principal: string; role: AccountRole } };
@@ -129,10 +193,20 @@ export type RoleQueuePage = { rows: (RoleRow & { requestedKey: string })[]; hasM
 
 @Injectable()
 export class RoleStore {
+  private readonly logger = new Logger("RoleStore");
+  private readonly accounts: FirebaseAccounts;
+
+  /**
+   * Only `grantAdmin` needs `config.firebaseProjectId` and `accounts`; without them an admin grant answers 503, so scripts and tests
+   * that never grant admin may leave them out.
+   */
   constructor(
     private readonly database: DatabaseService,
-    @Inject(APP_CONFIG) private readonly config: Pick<AppConfig, "demoPrincipal">,
-  ) {}
+    @Inject(APP_CONFIG) private readonly config: Pick<AppConfig, "demoPrincipal"> & Partial<Pick<AppConfig, "firebaseProjectId">>,
+    @Optional() @Inject(FIREBASE_ACCOUNTS) accounts?: FirebaseAccounts,
+  ) {
+    this.accounts = accounts ?? firebaseAccountsFor(undefined);
+  }
 
   /** The caller's own rows, in ACCOUNT_ROLES order. */
   async rolesOf(principal: string): Promise<RoleRow[]> {
@@ -285,41 +359,45 @@ export class RoleStore {
    * (updated, never a second insert, revision + 1). An active, pending or rejected row is 409 `version_conflict`, and so is an
    * account whose photographer row is `blocked` (block and admin stay apart, plan R-d). `options.email` is the TYPED, already
    * normalised email: inserted as given; a re-grant replaces it when given and keeps the stored one otherwise.
+   *
+   * The grant also marks the account's Firebase email verified (ADR-0002 follow-up 2026-11-19), by the uid of a principal of the
+   * configured project only, never by email. Order: every role-state refusal is checked first without the lock, then Firebase, then
+   * the locked transaction checks again and writes. Firebase is never called under the role lock (first sign-ups take it too). If
+   * Firebase refuses or cannot be reached, nothing is written (404 no such account, 503 unavailable or not configured). A typed email
+   * that is not the account's Firebase email is 409 `account_email_mismatch` (the admin must name the address they vouch for), a
+   * disabled account 409 `account_disabled`. An account without an email is granted and reported `no_email`. If the role state
+   * changes between the first check and the lock, the email stays verified and the grant is refused (logged): an admin vouched for it.
    */
   async grantAdmin(
     actor: RoleActor,
     principal: string,
     note: string | null,
     options?: { onlyIfNoActiveAdmin?: boolean; email?: string | null },
-  ): Promise<DecisionOutcome> {
+  ): Promise<GrantAdminOutcome> {
     // The shared demo account never becomes admin, whoever asks (API admin or operator command): refused before any write.
     if (isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
-    return this.database.withTransaction(async (tx): Promise<DecisionOutcome> => {
+    const projectId = this.config.firebaseProjectId;
+    if (projectId === undefined) return { ok: false, error: firebaseUnavailable("not_configured") };
+    const uid = uidOfAccountPrincipal(principal, projectId);
+    if (uid === undefined) {
+      return { ok: false, error: new ApiError(400, "invalid_request", `Expected a principal of the form firebase:${projectId}:<uid>.`) };
+    }
+    const onlyIfNoActiveAdmin = options?.onlyIfNoActiveAdmin === true;
+    const early = await adminGrantRefusal(this.database.db, actor, principal, this.config.demoPrincipal, onlyIfNoActiveAdmin);
+    if (early) return { ok: false, error: early };
+
+    const typedEmail = options?.email ?? null;
+    const firebase = await this.accounts.ensureEmailVerified(uid, typedEmail);
+    if (firebase.kind !== "ok") return { ok: false, error: firebaseRefusal(firebase.kind) };
+    const { emailVerification } = firebase;
+
+    const outcome = await this.database.withTransaction(async (tx): Promise<DecisionOutcome> => {
       await lockAccountRoles(tx);
-      if (!(await actorStillAdmin(tx, actor))) {
-        return { ok: false, error: new ApiError(403, "forbidden", "Requires the admin role.") };
-      }
-      // The operator command (first admin / recovery) passes this: checked under the same lock as the write.
-      if (options?.onlyIfNoActiveAdmin && (await activeAdminCount(tx, this.config.demoPrincipal)) > 0) {
-        return {
-          ok: false,
-          error: new ApiError(409, "version_conflict", "An active admin already exists; grant admin through the admin API. Nothing was changed."),
-        };
-      }
-      if ((await readRow(tx, principal, "photographer"))?.state === "blocked") {
-        return {
-          ok: false,
-          error: new ApiError(
-            409,
-            "version_conflict",
-            "This account is blocked from the photographer role, so it cannot be made admin; unblock it first. Nothing was changed.",
-          ),
-        };
-      }
+      const refusal = await adminGrantRefusal(tx, actor, principal, this.config.demoPrincipal, onlyIfNoActiveAdmin);
+      if (refusal) return { ok: false, error: refusal };
       const at = await databaseNow(tx);
       const before = await readRow(tx, principal, "admin");
       const by = actorName(actor);
-      const typedEmail = options?.email ?? null;
       const [row] = await tx
         .insert(accountRoles)
         .values({ principal, role: "admin", state: "active", requestedAt: at, decidedAt: at, decidedBy: by, note, grantEmail: typedEmail })
@@ -336,14 +414,31 @@ export class RoleStore {
           setWhere: eq(accountRoles.state, "revoked"),
         })
         .returning();
-      if (!row) {
-        const current = await readRow(tx, principal, "admin");
-        if (!current) throw new Error("Role row missing after a refused grant.");
-        return { ok: false, error: conflict("admin", current, "it cannot be granted (only a missing or revoked admin row can be)") };
-      }
-      await audit(tx, { actor: by, action: "role_grant", principal, role: "admin", from: before ? snapshot(before) : null, to: snapshot(row), note, at });
+      if (!row) throw new Error("Admin grant was not stored."); // the lock and the re-check make this unreachable
+      // No email in the audit row: only whether the account's email is verified after the grant, and how.
+      await tx.insert(adminAudit).values({
+        actor: by,
+        action: "role_grant",
+        target: principal,
+        detail: {
+          role: "admin",
+          from: before ? snapshot(before) : null,
+          to: snapshot(row),
+          note,
+          emailVerifiedAtGrant: emailVerification !== "no_email",
+          emailVerification,
+        },
+        createdAt: at,
+      });
       return { ok: true, row };
     });
+    if (!outcome.ok) {
+      if (emailVerification === "verified") {
+        this.logger.warn(`admin grant refused under the role lock after Firebase marked the email verified (status=${outcome.error.status}); the email stays verified`);
+      }
+      return outcome;
+    }
+    return { ok: true, row: outcome.row, emailVerification };
   }
 
   /**

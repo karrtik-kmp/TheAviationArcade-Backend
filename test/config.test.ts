@@ -762,3 +762,67 @@ describe("STORE_VERIFIER=stores", () => {
     expect(error.cause).toBeUndefined();
   });
 });
+
+describe("Firebase admin access (ADR-0002 follow-up 2026-11-19)", () => {
+  let dir: string;
+  let keyJson: Record<string, string>;
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "firebase-admin-"));
+    const { privateKey } = await generateKeyPair("RS256", { extractable: true });
+    keyJson = {
+      type: "service_account",
+      project_id: "airplane-games-9fe1e",
+      private_key_id: "0123abcd",
+      private_key: await exportPKCS8(privateKey),
+      client_email: "grant-bot@airplane-games-9fe1e.iam.gserviceaccount.com",
+    };
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const file = (name: string, content: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, content);
+    return path;
+  };
+
+  it("is undefined when nothing is set", () => {
+    expect(loadConfig(local).firebaseAdmin).toBeUndefined();
+    expect(loadConfig(production).firebaseAdmin).toBeUndefined();
+  });
+
+  it("reads a service-account key of FIREBASE_PROJECT_ID, and the key imports", async () => {
+    const config = loadConfig({ ...production, FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE: file("firebase-admin.json", JSON.stringify(keyJson)) });
+    expect(config.firebaseAdmin).toEqual({
+      kind: "service_account",
+      projectId: "airplane-games-9fe1e",
+      clientEmail: keyJson.client_email,
+      privateKeyId: "0123abcd",
+      privateKeyPem: keyJson.private_key,
+    });
+    await expect(importStoreKeys(config)).resolves.toBeUndefined();
+  });
+
+  it("refuses a key of another project, a broken key, a demo- project, and never echoes the key", () => {
+    const other = message({ ...production, FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE: file("other.json", JSON.stringify({ ...keyJson, project_id: "someone-else" })) });
+    expect(other).toContain("another project");
+    const broken = message({ ...production, FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE: file("broken.json", JSON.stringify({ ...keyJson, private_key: "nope" })) });
+    expect(broken).toBe("Invalid environment configuration: FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE");
+    const notJson = message({ ...production, FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE: file("x.json", "{ not json BEGIN PRIVATE") });
+    expect(notJson).not.toContain("BEGIN");
+    expect(message({ ...local, FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE: file("k.json", JSON.stringify(keyJson)) })).toContain("not allowed with a demo- FIREBASE_PROJECT_ID");
+  });
+
+  it("the emulator: loopback host:port, demo-airplane-games only, never in production", () => {
+    expect(loadConfig({ ...local, FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9199" }).firebaseAdmin).toEqual({
+      kind: "emulator",
+      projectId: "demo-airplane-games",
+      host: "127.0.0.1:9199",
+    });
+    expect(loadConfig({ ...local, FIREBASE_AUTH_EMULATOR_HOST: "" }).firebaseAdmin).toBeUndefined();
+    for (const host of ["10.0.0.5:9099", "example.com:9099", "127.0.0.1", "127.0.0.1:0", "http://127.0.0.1:9099"]) {
+      expect(message({ ...local, FIREBASE_AUTH_EMULATOR_HOST: host }), host).toContain("loopback host:port");
+    }
+    expect(message({ ...local, FIREBASE_PROJECT_ID: "demo-other", FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9199" })).toContain("only with FIREBASE_PROJECT_ID=demo-airplane-games");
+    expect(message({ ...production, FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9199" })).toContain("not allowed when APP_ENV=production");
+    expect(message({ ...local, APP_ENV: "local", FIREBASE_PROJECT_ID: "airplane-games-9fe1e", ALLOW_EMULATOR_TOKENS: undefined, FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9199" })).toContain("only with FIREBASE_PROJECT_ID=demo-airplane-games");
+  });
+});

@@ -50,6 +50,7 @@ src/config/               env parsed once with zod; fail fast
 src/db/                   drizzle schema + pg Pool provider; migrations in drizzle/
 src/common/               ApiError + ErrorCode, exception filter, ZodValidationPipe, request-id middleware
 src/auth/                 firebase.ts (framework-free verifier), FirebaseAuthGuard, @Principal(), roles.ts (RolesGuard, @Roles(), RolesService, @CallerRoles())
+src/accounts/             role store (ADR-0002), role routes, firebase-accounts.ts (Identity Toolkit by uid: the admin grant marks the email verified; service account or Auth Emulator, plain fetch)
 src/rules/                pure, Unity-mirrored logic: scoring, ranks (isPleasureCruise), first-class, banking (bankRound), trips, Clipper Cards, Field Awards (+ products.ts catalog later)
 src/platform/             client-version gate, rate limit, shutdown/drain, server timeouts
 src/players/, src/rounds/, src/trips/ feature modules: controller (HTTP) + service (transactions, domain outcomes); src/trips/trip-store.ts holds the segment helpers RoundsService shares, src/trips/trip-completion.ts completes a full segment (Cards, counters, awards)

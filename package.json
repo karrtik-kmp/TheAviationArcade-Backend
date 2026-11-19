@@ -20,6 +20,7 @@
     "stores:check": "nest build && node scripts/stores-check.mjs",
     "ugs:check": "nest build && node scripts/ugs-check.mjs",
     "roles:grant": "nest build && node scripts/roles-grant.mjs",
+    "auth:emulator": "node scripts/auth-emulator.mjs",
     "media:import": "nest build && node scripts/media-import.mjs",
     "demo:seed-content": "nest build && node scripts/demo-seed-content.mjs",
     "store:seed-demo": "nest build && node scripts/store-seed-demo.mjs"

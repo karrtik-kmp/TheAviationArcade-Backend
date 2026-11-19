@@ -256,7 +256,9 @@ export class AdminRolesController {
     const email = body.email === undefined ? null : normalizeTypedEmail(body.email);
     const outcome = await this.roles.grantAdmin(adminActor(actor), target, body.note ?? null, { email });
     if (!outcome.ok) throw outcome.error;
-    return { role: adminView(outcome.row) };
+    // What the grant did to the account's Firebase email: verified now, already verified, or not possible (the account has none).
+    // A newly verified account sees it once its token refreshes (sign out and in again, or up to an hour).
+    return { role: adminView(outcome.row), emailVerification: outcome.emailVerification };
   }
 
   /** Correct or clear the typed email of an admin row. Display only; unverified. */

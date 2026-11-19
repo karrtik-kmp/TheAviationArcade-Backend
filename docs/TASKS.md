@@ -403,6 +403,12 @@ verified email for ranked play).
 - 2026-11-16 (user, brief `../website/docs/briefs/backend-firebase-project-and-demo-seed.md`): `airplane-games-9fe1e` replaces
   the retired `airplane-games-auth-20261022`; the demo seed loads only the client's files (Military, the 2026-09-28 Identifier
   and Plane of the Day delivery) as drafts for the user to approve; photographers are granted by uid, never by email.
+- 2026-11-19 (user, brief `../docs/briefs/backend-verify-email-on-grant.md`; ADR-0002 follow-up): granting `admin` (API and
+  `roles:grant`) marks the Firebase account's email verified, by uid of the configured project, before the grant is written;
+  Firebase refusing or unreachable = nothing written. A typed email at grant must match the account's sign-in email
+  (case-insensitive; 409 `account_email_mismatch`), narrowing R-d for this one check. Access: a service-account key per backend
+  (`FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE`, Firebase Authentication Admin role); the demo project uses the Auth Emulator. API 0.28.0.
+  Same day: this work goes on `main` and is pushed (repo rule), not a side branch.
 
 ## Open questions for Josh
 
@@ -410,6 +416,8 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-11-19 (API 0.28.0, an admin grant verifies the email; ADR-0002 follow-up; plan gate senior-lead + backend-expert, researcher fact-check of Identity Toolkit and the emulator, one independent review and its three minor fixes): `npm run typecheck` clean; `npm test` 1209 passed (48 files; new `test/firebase-accounts.test.ts`, config cases); `npm run test:e2e` 1294 passed (50 files; new `test/admin-grant-email.e2e.test.ts`: unverified → verified, already verified, no email, typed-email mismatch, unknown uid 404, disabled 409, Firebase unreachable 503, a state refusal leaves Firebase untouched, the pre-check/lock race; `roles:grant` exit codes 2/3/1). Against the real Firebase Auth Emulator (firebase-tools 15.35.0 via npx, port 9199), started and stopped by the e2e global setup (proven with none running beforehand). `npm run contracts:write` unchanged. Not verified: the real Identity Toolkit API with a service-account key (no key exists yet; the service-account path is unit-tested against a fake fetch), the Admin UI, any hosted backend.
 
 - 2026-11-04 (incident and fix: demo account never holds staff roles, after one independent review and its fixes): an operator ran `roles:grant` on the website's shared demo account (`DEMO_ACCOUNT_UID`), making it admin in the local dev database. Containment: the tunnelled backend was stopped at once; the row was revoked by the operator in one transaction under the role lock with a `role_revoke` audit row (revision 2); the user then granted their own uid. Fix: optional `DEMO_ACCOUNT_UID` (full-principal match with the configured project, as the website does): the guard (incl. the pre-body upload check) drops photographer/admin for it; grant, approve and photographer request refuse it (403); it never counts toward "an active admin exists" (last-admin guard, `roles:grant` recovery); `roles:grant` refuses it before connecting, echoes the full principal and notes when the setting is unset; `media:import` refuses it (`demo_account`). `npm run typecheck` clean; `npm test` 752 passed; `npm run test:e2e` 909 passed (33 files; new `test/demo-account.e2e.test.ts`). Operator rule: set `DEMO_ACCOUNT_UID` in every environment where the demo account exists.
 

@@ -4,8 +4,10 @@ import { tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { firebaseAccountsFor } from "../src/accounts/firebase-accounts.js";
 import { RoleStore } from "../src/accounts/role-store.js";
 import { DatabaseService } from "../src/database/database.module.js";
+import { createFirebaseUser, getFirebaseUser, setFirebaseEmail } from "./auth-emulator.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 
 // Plan R-c: the operator command `roles:grant` (scripts/roles-grant.mjs, run from the built dist/) and the role store option it relies on.
@@ -15,10 +17,12 @@ let sql: pg.Pool;
 let store: RoleStore;
 const created: string[] = [];
 
-const fresh = (): { uid: string; principal: string } => {
+/** A new uid with its Firebase account in the Auth Emulator (the grant marks its email verified), email `<uid>@sites.test`. */
+const fresh = async (): Promise<{ uid: string; principal: string }> => {
   const uid = `rc-${randomUUID()}`;
   const principal = demoPrincipal(uid);
   created.push(principal);
+  await createFirebaseUser(uid);
   return { uid, principal };
 };
 
@@ -27,7 +31,12 @@ beforeAll(async () => {
   const build = spawnSync(process.execPath, ["node_modules/@nestjs/cli/bin/nest.js", "build"], { encoding: "utf8" });
   expect(build.status, build.stdout + build.stderr).toBe(0);
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-  store = new RoleStore(new DatabaseService(sql), { demoPrincipal: undefined });
+  const host = process.env.FIREBASE_AUTH_EMULATOR_HOST ?? "";
+  store = new RoleStore(
+    new DatabaseService(sql),
+    { demoPrincipal: undefined, firebaseProjectId: "demo-airplane-games" },
+    firebaseAccountsFor({ kind: "emulator", projectId: "demo-airplane-games", host }),
+  );
 });
 
 afterAll(async () => {
@@ -65,9 +74,9 @@ const auditRows = async (principal: string) =>
 
 describe("RoleStore.grantAdmin onlyIfNoActiveAdmin", () => {
   it("refuses while an active admin exists: 409, no row, no audit row", async () => {
-    const existing = fresh();
+    const existing = await fresh();
     await seedRole(sql, existing.principal, "admin", "active");
-    const target = fresh();
+    const target = await fresh();
     const outcome = await store.grantAdmin({ kind: "operator", id: "test" }, target.principal, null, { onlyIfNoActiveAdmin: true });
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.error.status).toBe(409);
@@ -76,7 +85,7 @@ describe("RoleStore.grantAdmin onlyIfNoActiveAdmin", () => {
   });
 
   it("grants when no admin is active, with one role_grant audit row by the operator", async () => {
-    const target = fresh();
+    const target = await fresh();
     await withNoActiveAdmin(async () => {
       const outcome = await store.grantAdmin({ kind: "operator", id: "test" }, target.principal, null, { onlyIfNoActiveAdmin: true });
       expect(outcome.ok).toBe(true);
@@ -87,21 +96,21 @@ describe("RoleStore.grantAdmin onlyIfNoActiveAdmin", () => {
     expect(audit[0]).toMatchObject({
       actor: "operator:test",
       action: "role_grant",
-      detail: { role: "admin", from: null, to: { state: "active", revision: 1 }, note: null },
+      detail: { role: "admin", from: null, to: { state: "active", revision: 1 }, note: null, emailVerifiedAtGrant: true, emailVerification: "verified" },
     });
   });
 
   it("without the option an operator grant still works beside an active admin (API path unchanged)", async () => {
-    const existing = fresh();
+    const existing = await fresh();
     await seedRole(sql, existing.principal, "admin", "active");
-    const target = fresh();
+    const target = await fresh();
     expect((await store.grantAdmin({ kind: "operator", id: "test" }, target.principal, null)).ok).toBe(true);
   });
 });
 
 describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   it("refuses without --yes, shows host and database but not the password, writes nothing", async () => {
-    const t = fresh();
+    const t = await fresh();
     const r = run([t.uid]);
     expect(r.status).toBe(2);
     expect(r.out).toContain("database");
@@ -111,7 +120,7 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   });
 
   it("refuses a bad uid, a full principal of another project, and any role but admin", async () => {
-    const t = fresh();
+    const t = await fresh();
     for (const bad of ["a:b", " padded", "x".repeat(129), "firebase:other-project:abc"]) {
       const r = run([bad, "--yes"]);
       expect(r.status, bad).toBe(2);
@@ -123,7 +132,7 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   });
 
   it("refuses the demo project when APP_ENV=production, before touching the database", async () => {
-    const t = fresh();
+    const t = await fresh();
     const r = run([t.uid, "--yes"], { APP_ENV: "production", FIREBASE_PROJECT_ID: "demo-airplane-games", ALLOW_EMULATOR_TOKENS: "false", DATABASE_SSL: "verify-full" });
     expect(r.status).toBe(2);
     expect(r.err).toContain("demo");
@@ -131,7 +140,7 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   });
 
   it("refuses weaker TLS than the server: production with DATABASE_SSL=disable, and ssl options in DATABASE_URL (exit 2, no connection)", async () => {
-    const t = fresh();
+    const t = await fresh();
     const prod = run([t.uid, "--yes"], { APP_ENV: "production", FIREBASE_PROJECT_ID: "real-project", DATABASE_SSL: "disable" });
     expect(prod.status).toBe(2);
     expect(prod.err).toContain("DATABASE_SSL");
@@ -145,8 +154,35 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
     expect(await adminRow(t.principal)).toBeUndefined();
   });
 
+  it("refuses without Firebase admin access (exit 2, before the database is contacted), writes nothing", async () => {
+    const t = await fresh();
+    const r = run([t.uid, "--yes"], { FIREBASE_AUTH_EMULATOR_HOST: "" });
+    expect(r.status, r.err).toBe(2);
+    expect(r.err).toContain("FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE");
+    expect(r.out).not.toContain("Target database");
+    expect(await adminRow(t.principal)).toBeUndefined();
+    expect((await getFirebaseUser(t.uid))?.emailVerified).toBe(false);
+  });
+
+  it("a uid with no Firebase account exits 3 and writes nothing; Firebase unreachable exits 1 and writes nothing", async () => {
+    const ghost = `rc-ghost-${randomUUID()}`;
+    created.push(demoPrincipal(ghost));
+    const t = await fresh();
+    await withNoActiveAdmin(async () => {
+      const missing = run([ghost, "--yes"]);
+      expect(missing.status, missing.err).toBe(3);
+      expect(missing.err).toContain("no Firebase account");
+      const down = run([t.uid, "--yes"], { FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9" });
+      expect(down.status, down.err).toBe(1);
+      expect(down.err).toContain("Firebase could not mark");
+    });
+    expect(await adminRow(demoPrincipal(ghost))).toBeUndefined();
+    expect(await adminRow(t.principal)).toBeUndefined();
+    expect(await auditRows(t.principal)).toEqual([]);
+  });
+
   it("a wrong password exits 1 naming the authentication failure and never the password", async () => {
-    const t = fresh();
+    const t = await fresh();
     const url = new URL(process.env.DATABASE_URL ?? "");
     const real = decodeURIComponent(url.password);
     url.password = "definitely-wrong-pw";
@@ -159,21 +195,24 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   });
 
   it("refuses while an active admin exists (exit 3), writes nothing", async () => {
-    const existing = fresh();
+    const existing = await fresh();
     await seedRole(sql, existing.principal, "admin", "active");
-    const t = fresh();
+    const t = await fresh();
     const r = run([t.uid, "--yes"]);
     expect(r.status).toBe(3);
     expect(await adminRow(t.principal)).toBeUndefined();
+    expect((await getFirebaseUser(t.uid))?.emailVerified).toBe(false); // a state refusal never touches Firebase
     expect(await auditRows(t.principal)).toEqual([]);
   });
 
   it("grants the first admin and audits it; running twice refuses the second time", async () => {
-    const t = fresh();
+    const t = await fresh();
     await withNoActiveAdmin(async () => {
       const first = run([t.uid, "--yes"]);
       expect(first.status, first.err).toBe(0);
       expect(first.out).toContain("Granted");
+      expect(first.out).toContain("Firebase email is now verified");
+      expect((await getFirebaseUser(t.uid))?.emailVerified).toBe(true);
       expect(first.out).not.toContain("airplane_local_only");
       const second = run([t.uid, "--yes"]);
       expect(second.status).toBe(3);
@@ -184,12 +223,12 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
     expect(audit[0]).toMatchObject({
       actor: `operator:${userInfo().username}`.slice(0, 256),
       action: "role_grant",
-      detail: { role: "admin", from: null, to: { state: "active", revision: 1 }, note: null },
+      detail: { role: "admin", from: null, to: { state: "active", revision: 1 }, note: null, emailVerifiedAtGrant: true, emailVerification: "verified" },
     });
   });
 
   it("re-activates a revoked admin row (update at revision + 1, not a second row)", async () => {
-    const t = fresh();
+    const t = await fresh();
     await seedRole(sql, t.principal, "admin", "revoked");
     await withNoActiveAdmin(async () => {
       const r = run([t.principal, "--yes"]); // the full principal of the configured project is accepted
@@ -202,15 +241,17 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
     expect(audit[0].detail).toMatchObject({ from: { state: "revoked", revision: 1 }, to: { state: "active", revision: 2 } });
   });
   it("--email (and --email=) stores the normalised typed email on the admin row; the audit row carries no email", async () => {
-    const t = fresh();
-    const u = fresh();
+    const t = await fresh();
+    const u = await fresh();
     await withNoActiveAdmin(async () => {
+      await setFirebaseEmail(t.uid, "ops@example.test"); // a typed email must be the account's own (ruling 2026-11-19)
       const first = run([t.uid, "--email", "  Ops@Example.TEST ", "--yes"]);
       expect(first.status, first.err).toBe(0);
       expect(first.out + first.err).not.toContain("ops@example.test");
     });
     expect((await sql.query("SELECT grant_email FROM account_roles WHERE principal = $1 AND role = 'admin'", [t.principal])).rows[0].grant_email).toBe("ops@example.test");
     await withNoActiveAdmin(async () => {
+      await setFirebaseEmail(u.uid, "other@example.test");
       expect(run([u.uid, "--email=Other@Example.test", "--yes"]).status).toBe(0);
     });
     expect((await sql.query("SELECT grant_email FROM account_roles WHERE principal = $1 AND role = 'admin'", [u.principal])).rows[0].grant_email).toBe("other@example.test");
@@ -222,7 +263,7 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   });
 
   it("a bad --email exits 2 before the database is contacted and writes nothing", async () => {
-    const t = fresh();
+    const t = await fresh();
     for (const bad of ["not-an-email", "a@@b.test", "has space@example.test", "", "x".repeat(400)]) {
       const r = run([t.uid, "--email", bad, "--yes"]);
       expect(r.status, JSON.stringify(bad)).toBe(2);
@@ -233,7 +274,7 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
   });
 
   it("refuses an account whose photographer row is blocked (exit 3, nothing written); the store refuses it too", async () => {
-    const t = fresh();
+    const t = await fresh();
     await seedRole(sql, t.principal, "photographer", "blocked");
     await withNoActiveAdmin(async () => {
       const r = run([t.uid, "--yes"]);
@@ -244,6 +285,7 @@ describe("npm run roles:grant (scripts/roles-grant.mjs)", () => {
       if (!outcome.ok) expect(outcome.error.status).toBe(409);
     });
     expect(await adminRow(t.principal)).toBeUndefined();
+    expect((await getFirebaseUser(t.uid))?.emailVerified).toBe(false); // a state refusal never touches Firebase
     expect(await auditRows(t.principal)).toEqual([]);
   });
 });

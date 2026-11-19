@@ -10,6 +10,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
+import { firebaseAccountsFor } from "../src/accounts/firebase-accounts.js";
 import { RoleStore } from "../src/accounts/role-store.js";
 import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
 import type { AppConfig } from "../src/config/config.module.js";
@@ -17,6 +18,7 @@ import { runMediaImport } from "../src/content/media/media-import.js";
 import type { ImportManifest } from "../src/content/media/media-import.js";
 import { DatabaseService } from "../src/database/database.module.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
+import { createFirebaseUser } from "./auth-emulator.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -212,8 +214,11 @@ describe("the demo admin row never counts as an active admin", () => {
     const uid = `demoacct-new-${randomUUID()}`;
     const target = demoPrincipal(uid);
     principals.push(target);
+    await createFirebaseUser(uid);
     await onlyAdmins([demo], async () => {
-      const outcome = await new RoleStore(database, config).grantAdmin({ kind: "operator", id: "test" }, target, null, { onlyIfNoActiveAdmin: true });
+      const outcome = await new RoleStore(database, config, firebaseAccountsFor(config.firebaseAdmin)).grantAdmin({ kind: "operator", id: "test" }, target, null, {
+        onlyIfNoActiveAdmin: true,
+      });
       expect(outcome.ok).toBe(true);
     });
     expect((await roleRows(target)).find((r) => r.role === "admin")).toMatchObject({ state: "active" });

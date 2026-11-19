@@ -38,6 +38,8 @@ export const ERROR_CODES = [
   "ugs_link_conflict",
   "storage_unavailable",
   "media_invalid",
+  "account_email_mismatch",
+  "account_disabled",
   "service_unavailable",
   "internal_error",
 ] as const;

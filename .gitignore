@@ -26,3 +26,6 @@ firebase-token.txt
 AuthKey_*
 /secrets/
 *-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
+
+# Firebase CLI logs (the Auth Emulator, scripts/auth-emulator.mjs)
+firebase-debug*.log

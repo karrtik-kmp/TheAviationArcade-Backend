@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import type { AccountRole, RoleState } from "../src/db/enums.js";
+import { createFirebaseUser } from "./auth-emulator.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -54,6 +55,8 @@ function who(roles: [AccountRole, RoleState][] = [], token: { email?: string | n
   seeded.push(principal);
   const headers = { Authorization: `Bearer ${emulatorToken(uid, undefined, undefined, token)}` };
   return (async () => {
+    // The Firebase account behind the token (an admin grant marks its email verified): same email as the token, unverified.
+    await createFirebaseUser(uid, { email: token.email === undefined ? undefined : token.email });
     for (const [role, state] of roles) await seedRole(sql, principal, role, state);
     return { uid, principal, headers };
   })();
@@ -364,10 +367,18 @@ describe("admin grant", () => {
     const target = await who();
     const granted = await post(boss, rolePath(target.principal, "admin/grant"), { note: "welcome" });
     expect(granted.status).toBe(200);
-    check("AdminRoleEnvelope", granted.body);
+    check("AdminGrantEnvelope", granted.body);
     expect(granted.body.role).toMatchObject({ role: "admin", state: "active", revision: 1, decidedBy: boss.principal, note: "welcome" });
     expect((await request(server).get("/v1/admin/me").set(target.headers)).status).toBe(200);
-    expect((await auditRows(target.principal, "role_grant"))[0].detail).toEqual({ role: "admin", from: null, to: { state: "active", revision: 1 }, note: "welcome" });
+    expect(granted.body.emailVerification).toBe("verified");
+    expect((await auditRows(target.principal, "role_grant"))[0].detail).toEqual({
+      role: "admin",
+      from: null,
+      to: { state: "active", revision: 1 },
+      note: "welcome",
+      emailVerifiedAtGrant: true,
+      emailVerification: "verified",
+    });
 
     const twice = await post(boss, rolePath(target.principal, "admin/grant"), {});
     expect(twice.status).toBe(409);
@@ -377,6 +388,7 @@ describe("admin grant", () => {
     const again = await post(boss, rolePath(target.principal, "admin/grant"), {});
     expect(again.status).toBe(200);
     expect(again.body.role).toMatchObject({ state: "active", revision: 3 });
+    expect(again.body.emailVerification).toBe("already_verified");
     expect((await sql.query("SELECT count(*)::int AS n FROM account_roles WHERE principal = $1 AND role = 'admin'", [target.principal])).rows[0].n).toBe(1);
     expect((await auditRows(target.principal, "role_grant"))[1].detail.from).toEqual({ state: "revoked", revision: 2 });
   });

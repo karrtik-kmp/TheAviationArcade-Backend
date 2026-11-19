@@ -458,6 +458,7 @@ describe("scripts/store-seed-demo.mjs", () => {
         APP_ENV: "production",
         FIREBASE_PROJECT_ID: "airplane-games-9fe1e",
         ALLOW_EMULATOR_TOKENS: "false",
+        FIREBASE_AUTH_EMULATOR_HOST: undefined, // the e2e emulator belongs to the demo project only
         BLOB_STORE: "none",
         BUNNY_CDN_HOST: "my-zone.b-cdn.net",
         BUNNY_CDN_TOKEN_KEY: "0123456789abcdef-secret-key",
