@@ -422,6 +422,17 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-11-23 (hosted dev, publishing the seeded photos in the dev Admin, user sign-off; signed in as the user's admin): published
+  26 of the 30 Military photos (med-1…med-11, med-13…med-25, med-28, med-29), each with the sheet's "Unsplash License" and
+  photographer credit as shown in the Admin's confirm step. Not published: (a) the 4 Military photos the sheet gives no
+  photographer (med-12 CAC1, med-26 T28 #2, med-27 TBF, med-30 Typhoon 102426): `creditRequired` is true, so the seed ran
+  without `DEV_DEMO_WAIVER` (the waiver would have loaded them with `creditRequired` false), and no credit is invented;
+  (b) the 36 Identifier and Plane of the Day photos (med-31…med-66), which have no licence name: the Admin disables Publish
+  without one and has no waiver support (no `waiver` / `dev-demo` in `website/lib` or `app` at 974f563). Publishing them
+  needs `DEV_DEMO_WAIVER=dev-demo` on the dev backend and the Admin to allow a waived publish, or a licence name from the
+  client. Plane of the Day drafts not created (none of their photos is published), so the seed was not re-run. A burst of
+  Admin requests got one "service is busy" answer (rate limit); continuing after a pause was fine.
+
 - 2026-11-23 (hosted dev, demo seed E4 `demo:seed-content`, user sign-off; run by the user as the app user on the server with
   the dev `envVar/.env` and `NODE_EXTRA_CA_CERTS`): client folders copied to `/var/lib/aviation-arcade/seed/{docs,delivery}`
   (root:aviation, read-only for the app). Target printed: `airplane_games_dev`, `APP_ENV=production`, `airplane-games-9fe1e`,
