@@ -233,6 +233,7 @@ verified email for ranked play).
   ([ADR-0002](adr/ADR-0002-role-based-access.md)); `STAFF_EMAILS` is retired.** The "never a client-supplied role" part stands.
 - 2026-10-28 (user): Bunny Storage shares the website zone `aviation-arcade-website` (Frankfurt, `de`) under key
   prefix `backend/`. Built against an in-memory fake; the real zone is probed only with explicit sign-off.
+  **Superseded 2026-11-23 (user):** zones are split by environment, see the 2026-11-23 entry below.
 - 2026-10-28 (user): client-sheet rows import as `approved` (source `client_sheet`, file sha256 recorded). No
   player-facing content route, no release in this slice.
 - 2026-10-28 (user), 5.0 import semantics. A **client sheet** is an upload without an `Id` column; an **admin
@@ -409,6 +410,10 @@ verified email for ranked play).
   (case-insensitive; 409 `account_email_mismatch`), narrowing R-d for this one check. Access: a service-account key per backend
   (`FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE`, Firebase Authentication Admin role); the demo project uses the Auth Emulator. API 0.28.0.
   Same day: this work goes on `main` and is pushed (repo rule), not a side branch.
+- 2026-11-23 (user): **Bunny zones are split by environment.** Local development and the hosted dev backend share the
+  storage zone `airplanegames-dev` (pull zone `airplanegames-dev.b-cdn.net`); production uses a different storage zone
+  (name not yet recorded). Prefix `backend/` in each. Replaces the 2026-10-28 shared website zone for the backend, and
+  ends the "dev shares Bunny with prod" gap noted in `../server/README.md`.
 
 ## Open questions for Josh
 
@@ -420,9 +425,9 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 - 2026-11-23 (hosted dev, Bunny storage, user sign-off; run by the user as root on the server): from
   `/var/www/dev.api.playairplanegames.com/html`, `sudo runuser -u aviation -- node --env-file=../envVar/.env
   scripts/bunny-check.mjs` printed `Bunny storage check passed: upload, exact-byte download and deletion.` So the dev
-  backend's own `envVar/.env` reaches the shared zone `aviation-arcade-website` with a working read-write password
-  (probe object under `backend/setup-checks/`, deleted). Not verified: the CDN side from dev (a signed photo link through
-  `BUNNY_CDN_HOST`), an upload through the hosted API, the prod backend's settings.
+  backend's own `envVar/.env` reaches the dev zone `airplanegames-dev` (the zone local development also uses) with a
+  working read-write password (probe object under `backend/setup-checks/`, deleted). Not verified: the CDN side from dev
+  (a signed photo link through `BUNNY_CDN_HOST`), an upload through the hosted API, the prod backend and its own zone.
 
 - 2026-11-19 (API 0.28.0, an admin grant verifies the email; ADR-0002 follow-up; plan gate senior-lead + backend-expert, researcher fact-check of Identity Toolkit and the emulator, one independent review and its three minor fixes): `npm run typecheck` clean; `npm test` 1209 passed (48 files; new `test/firebase-accounts.test.ts`, config cases); `npm run test:e2e` 1294 passed (50 files; new `test/admin-grant-email.e2e.test.ts`: unverified → verified, already verified, no email, typed-email mismatch, unknown uid 404, disabled 409, Firebase unreachable 503, a state refusal leaves Firebase untouched, the pre-check/lock race; `roles:grant` exit codes 2/3/1). Against the real Firebase Auth Emulator (firebase-tools 15.35.0 via npx, port 9199), started and stopped by the e2e global setup (proven with none running beforehand). `npm run contracts:write` unchanged. Not verified: the real Identity Toolkit API with a service-account key (no key exists yet; the service-account path is unit-tested against a fake fetch), the Admin UI, any hosted backend.
 

@@ -107,12 +107,13 @@ Any file or blob the backend stores (content-release packages and images, export
 Storage** through its S3-compatible API, the same provider as the website (`../website/docs/BUNNY_STORAGE_SETUP.md`).
 Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only keys/metadata.
 
-- Website zone: `aviation-arcade-website`, Frankfurt `de`, endpoint `https://de-s3.storage.bunnycdn.com`,
-  S3 compatibility on (it can only be enabled when a zone is created). **Decided 2026-10-28 (user): the backend
-  shares that zone** under the key prefix `backend/` (`BUNNY_STORAGE_PREFIX`), so it never touches the website's
-  objects. The first files stored are staff xlsx imports at `backend/imports/<module>/<sha256>.xlsx`. Built and
-  tested against an in-memory fake and a stubbed signer; the real zone is probed only with the user's sign-off
-  (`npm run bunny:check`).
+- **Zones per environment (user, 2026-11-23; replaces the 2026-10-28 shared website zone).** Local development and
+  the hosted dev backend share the storage zone `airplanegames-dev` (Frankfurt `de`, endpoint
+  `https://de-s3.storage.bunnycdn.com`) and its pull zone `airplanegames-dev.b-cdn.net`. Production uses a separate
+  storage zone of its own, with its own password, pull zone and token key (name not yet recorded here). Every zone
+  needs S3 compatibility, which can only be enabled when the zone is created. The backend writes under the key prefix
+  `backend/` (`BUNNY_STORAGE_PREFIX`) in each zone. The first files stored are staff xlsx imports at
+  `backend/imports/<module>/<sha256>.xlsx`. A zone is probed only with the user's sign-off (`npm run bunny:check`).
 - Private by default: the Storage Zone itself is never public and files there can only be read with the zone
   password. Game images are delivered through one token-authenticated pull zone with short-lived signed links (below).
 - The read-write Storage Zone Password (S3 secret) comes from the host environment, never the repo or
@@ -124,7 +125,7 @@ Not R2, S3 or local disk, and never as blobs in Postgres; Postgres keeps only ke
 Built and in API 0.16.0, tested against the in-memory blob store and a stubbed signer. Nothing here has run against the
 real Bunny zone: the pull zone, token key and Edge Rules are created only with the user's sign-off (plan T10).
 
-- **Storage.** Image bytes are content-addressed in the shared zone at `backend/content/photos/<sha256>.<jpg|png>` (the
+- **Storage.** Image bytes are content-addressed in the environment's zone at `backend/content/photos/<sha256>.<jpg|png>` (the
   extension follows the sniffed type; JPEG and PNG only, 5 MB). The same bytes always land on the same key.
 - **Upload path.** Backend only: staff post the raw image to `/v1/admin/media` (and `.../versions`), authorised by role
   (`photographer` for own items, `admin` for all). A pure sniffer checks magic bytes and reads the dimensions; the
@@ -134,7 +135,7 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   hash, size, type, dimensions and the **licence fields of that version** (credit, licence name and URL, credit-required
   flag). A version is draft until published. A version that was ever live is never changed: new bytes or a new licence
   make a new version, and an old live version stays as it was for any release that froze it. No row stores a URL.
-- **Delivery.** One Bunny pull zone on the shared zone with zone-wide advanced token authentication. The backend signs
+- **Delivery.** One Bunny pull zone per storage zone with zone-wide advanced token authentication. The backend signs
   one HS256 link per file (`src/platform/cdn-signer.ts`): valid 24 h, **one signature per file, no IP binding**. The
   token key (`BUNNY_CDN_TOKEN_KEY`) lives only in the backend environment and is never logged, stored or returned; the
   host is `BUNNY_CDN_HOST` with no default. Both are set or neither, both are required in production, and while they are

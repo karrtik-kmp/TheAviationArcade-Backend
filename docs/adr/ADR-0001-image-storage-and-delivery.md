@@ -2,6 +2,10 @@
 
 **Status:** Accepted (user, 2026-11-03). Live Bunny changes (pull zone, token key, Edge Rule) still need the user's
 explicit sign-off and a passing `npm run bunny:check` before any real use.
+**Amendment 2026-11-23 (user):** the zones are now split by environment. Local and hosted dev share the storage zone
+`airplanegames-dev` (pull zone `airplanegames-dev.b-cdn.net`); production has a separate storage zone. The design below
+(token-protected pull zone, Edge Rule fence on `/backend/content/photos/`, caching) applies to each zone. The text below
+still names the 2026-11-03 shared website zone `aviation-arcade-website`.
 **Date:** 2026-11-03
 **Deciders:** the user (product owner of this backend); the backend session implements.
 
