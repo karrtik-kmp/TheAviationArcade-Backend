@@ -422,6 +422,12 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-11-23 (hosted dev, user ruling the same day): the 4 Military photos with no photographer in the client's sheet
+  (med-12, med-26, med-27, med-30) had "A credit is required" unticked in the dev Admin (licence "Unsplash License" kept;
+  audit note "No photographer in the client's sheet; credit not required (user, 2026-11-23, dev)") and were published with
+  "no credit required" frozen. All 30 Military photos (med-1…med-30) are now published on dev; the 36 Identifier and Plane of
+  the Day photos are still drafts (see the entry below).
+
 - 2026-11-23 (hosted dev, publishing the seeded photos in the dev Admin, user sign-off; signed in as the user's admin): published
   26 of the 30 Military photos (med-1…med-11, med-13…med-25, med-28, med-29), each with the sheet's "Unsplash License" and
   photographer credit as shown in the Admin's confirm step. Not published: (a) the 4 Military photos the sheet gives no
