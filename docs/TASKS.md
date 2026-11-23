@@ -422,6 +422,17 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-11-23 (hosted dev, demo seed E4 `demo:seed-content`, user sign-off; run by the user as the app user on the server with
+  the dev `envVar/.env` and `NODE_EXTRA_CA_CERTS`): client folders copied to `/var/lib/aviation-arcade/seed/{docs,delivery}`
+  (root:aviation, read-only for the app). Target printed: `airplane_games_dev`, `APP_ENV=production`, `airplane-games-9fe1e`,
+  blob store `bunny` (zone `airplanegames-dev`). Owner = the user's admin account; no photographers granted. Dry run: 129 would,
+  5 waiting, 31 notes, 0 refused, 0 failed. First `--yes` refused (exit 2) because `DEMO_ACCOUNT_UID` was unset; the user created
+  a new demo login in `airplane-games-9fe1e` (no role; distinct from the owner) and set it in the dev backend env. Second
+  `--yes`: 127 done, 1 failed (`ai/ai-a24.jpg`: "File storage is unavailable", a transient Bunny error; its link skipped), exit 4.
+  Re-run: 2 done (that photo, med-66, and its link), 127 unchanged, 0 failed, exit 0. Result on dev: Military 31 and Identifier 31
+  questions, 66 `unverified` photos (med-1…med-66), 61 links, 5 Plane of the Day entries waiting for their photos to be published.
+  Nothing published. Not verified: the photos in the Admin, a signed CDN link from dev, the demo login on the dev website.
+
 - 2026-11-23 (hosted dev, Bunny storage, user sign-off; run by the user as root on the server): from
   `/var/www/dev.api.playairplanegames.com/html`, `sudo runuser -u aviation -- node --env-file=../envVar/.env
   scripts/bunny-check.mjs` printed `Bunny storage check passed: upload, exact-byte download and deletion.` So the dev
