@@ -422,6 +422,13 @@ when Google sign-in is offered; the project rule currently allows only email/pas
 
 ## Verification log
 
+- 2026-11-23 (hosted dev, user): `DEV_DEMO_WAIVER=dev-demo` set in the dev backend `envVar/.env` only (exact line, count 1)
+  and `pm2 restart aviation-backend-dev --update-env`. The out log shows the Config warning "DEV_DEMO_WAIVER=dev-demo is ON
+  …" at 13:21 UTC (pid 212107); pm2 `online`, 0 unstable restarts; `/api/v1/health/ready` → `{"status":"ready"}`. The
+  `ERR_MODULE_NOT_FOUND dist/main.js` line in the pm2 error log is stale (file last written 2026-11-17, a deploy window).
+  The dev Admin still disables Publish without a licence name (no waiver support), so the 36 Identifier and Plane of the
+  Day photos are not yet published.
+
 - 2026-11-23 (hosted dev, user ruling the same day): the 4 Military photos with no photographer in the client's sheet
   (med-12, med-26, med-27, med-30) had "A credit is required" unticked in the dev Admin (licence "Unsplash License" kept;
   audit note "No photographer in the client's sheet; credit not required (user, 2026-11-23, dev)") and were published with
