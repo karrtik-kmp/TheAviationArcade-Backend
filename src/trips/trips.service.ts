@@ -127,7 +127,7 @@ export class TripsService {
         await abandonTrip(tx, principal, open, now);
       }
       // A stray open Round of a pre-segment dev row would break the one-open-Round index.
-      await abandonOpenRounds(tx, principal);
+      await abandonOpenRounds(tx, principal, now);
 
       const rank = activeRankFor(player.statusPoints, player.activeRank);
       const [row] = await tx

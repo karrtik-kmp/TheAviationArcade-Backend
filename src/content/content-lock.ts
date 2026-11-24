@@ -20,10 +20,10 @@ export async function lockContentModule(tx: Tx, module: string): Promise<void> {
 
 /**
  * THE stamp of a content write: one database instant (microseconds), read ONCE after the module lock is held and used for
- * every `created_at`/`updated_at` the transaction writes (receipt, items, audit). Both writers hold the lock, so these
- * stamps are ordered like the commits whatever the process clocks or the pool wait were. The value is a SQL fragment
- * (a timestamptz literal read from the database, never rounded through a JS Date) because the replay check compares
- * stamps in SQL with `>`: an import's items carry exactly the receipt's `created_at` (equal, not later, so they do not
+ * every `last_applied_at`/`created_at`/`updated_at` the transaction writes (receipt, items, audit). Both writers hold the
+ * lock, so these stamps are ordered like the commits whatever the process clocks or the pool wait were. The value is a SQL
+ * fragment (a timestamptz literal read from the database, never rounded through a JS Date) because the replay check
+ * compares stamps in SQL with `>`: an import's items carry exactly the receipt's `last_applied_at` (equal, not later, so they do not
  * count as edits), and a later edit's stamp is strictly greater (a commit takes far longer than one microsecond).
  */
 export async function readContentStamp(tx: Tx): Promise<SQL> {

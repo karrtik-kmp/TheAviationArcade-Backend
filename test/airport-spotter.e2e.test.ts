@@ -9,6 +9,7 @@ import { configureApp } from "../src/app.setup.js";
 import { MAX_UPLOAD_BYTES, XLSX_MIME, readFirstSheet } from "../src/content/xlsx.js";
 import { BLOB_STORE } from "../src/storage/blob-store.js";
 import type { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { xlsx } from "./fixtures.js";
@@ -54,7 +55,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql.query("DELETE FROM content_items");
   await sql.query("DELETE FROM content_imports");
-  await sql.query("DELETE FROM admin_audit");
+  await frozenDelete(sql, "admin_audit");
   blobs.clear();
 });
 

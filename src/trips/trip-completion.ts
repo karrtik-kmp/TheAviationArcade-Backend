@@ -246,11 +246,11 @@ export async function completeFullTrip(tx: Tx, principal: string, trip: TripRow,
     if (collected) {
       await tx
         .insert(playerClipperCards)
-        .values({ playerId: principal, cardKey: key, module: record.module, firstCollectedAt: now, firstTripId: trip.id, ...state });
+        .values({ playerId: principal, cardKey: key, module: record.module, firstCollectedAt: now, lastIdentifiedAt: now, firstTripId: trip.id, ...state });
     } else {
       await tx
         .update(playerClipperCards)
-        .set(state)
+        .set({ ...state, lastIdentifiedAt: now })
         .where(and(eq(playerClipperCards.playerId, principal), eq(playerClipperCards.cardKey, key)));
     }
   }

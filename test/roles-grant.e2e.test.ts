@@ -8,6 +8,7 @@ import { firebaseAccountsFor } from "../src/accounts/firebase-accounts.js";
 import { RoleStore } from "../src/accounts/role-store.js";
 import { DatabaseService } from "../src/database/database.module.js";
 import { createFirebaseUser, getFirebaseUser, setFirebaseEmail } from "./auth-emulator.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 
 // Plan R-c: the operator command `roles:grant` (scripts/roles-grant.mjs, run from the built dist/) and the role store option it relies on.
@@ -40,7 +41,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await sql.query("DELETE FROM admin_audit WHERE target = ANY($1::text[])", [created]);
+  await frozenDelete(sql, "admin_audit", "target = ANY($1::text[])", [created]);
   await clearRoles(sql, ...created);
   await sql.end();
 });

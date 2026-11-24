@@ -8,6 +8,7 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
 import type { EditorialData } from "../src/content/editorial/editorial-rules.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -154,9 +155,9 @@ export class Fixtures {
     const owned = "(SELECT id FROM media_items WHERE owner = ANY($1))";
     await this.sql.query(`DELETE FROM editorial_items WHERE created_by = ANY($1) OR media_id IN ${owned}`, [this.principals]);
     await this.sql.query(`DELETE FROM media_upload_keys WHERE media_id IN ${owned}`, [this.principals]);
-    await this.sql.query(`DELETE FROM media_versions WHERE media_id IN ${owned}`, [this.principals]);
+    await frozenDelete(this.sql, "media_versions", `media_id IN ${owned}`, [this.principals]);
     await this.sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [this.principals]);
-    await this.sql.query("DELETE FROM admin_audit WHERE actor = ANY($1)", [this.principals]);
+    await frozenDelete(this.sql, "admin_audit", "actor = ANY($1)", [this.principals]);
     await this.sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [this.principals]);
   }
 }

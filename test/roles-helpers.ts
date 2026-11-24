@@ -13,9 +13,10 @@ export const demoPrincipal = (uid: string): string => `${DEMO_PREFIX}${uid}`;
 export async function seedRole(sql: pg.Pool | pg.Client, principal: string, role: AccountRole, state: RoleState = "active"): Promise<void> {
   const decided = state !== "pending";
   await sql.query(
-    `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by)
-     VALUES ($1, $2, $3, now(), CASE WHEN $4::boolean THEN now() END, CASE WHEN $4::boolean THEN 'test:seed' END)
-     ON CONFLICT (principal, role) DO UPDATE SET state = EXCLUDED.state, decided_at = EXCLUDED.decided_at, decided_by = EXCLUDED.decided_by`,
+    `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, updated_at)
+     VALUES ($1, $2, $3, now(), CASE WHEN $4::boolean THEN now() END, CASE WHEN $4::boolean THEN 'test:seed' END, now())
+     ON CONFLICT (principal, role) DO UPDATE SET state = EXCLUDED.state, decided_at = EXCLUDED.decided_at, decided_by = EXCLUDED.decided_by,
+       updated_at = EXCLUDED.updated_at`,
     [principal, role, state, decided],
   );
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { frozenDelete, withFrozenTriggersOff } from "./frozen-cleanup.js";
 
 // Migration 0017 (plan docs/plans/media-pipeline.md, T2): the media tables' CHECKs and keys against the real test database,
 // written as raw SQL so a drifted constraint fails here whatever the services do. Every test uses its own owner principal and
@@ -21,7 +22,7 @@ afterAll(async () => {
   if (itemIds.length) {
     await pool.query("DELETE FROM media_imports WHERE media_id = ANY($1)", [itemIds]);
     await pool.query("DELETE FROM media_upload_keys WHERE media_id = ANY($1)", [itemIds]);
-    await pool.query("DELETE FROM media_versions WHERE media_id = ANY($1)", [itemIds]);
+    await frozenDelete(pool, "media_versions", "media_id = ANY($1)", [itemIds]);
     await pool.query("DELETE FROM media_items WHERE id = ANY($1)", [itemIds]);
   }
   await pool.query("DELETE FROM account_roles WHERE principal = ANY($1)", [[OWNER, OTHER]]);
@@ -63,9 +64,9 @@ function version(mediaId: number, o: VersionOverrides = {}): Promise<pg.QueryRes
   const has = <K extends keyof VersionOverrides>(k: K, d: VersionOverrides[K]): VersionOverrides[K] => (k in o ? o[k] : d);
   return pool.query(
     `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_name, credit_required,
-        licence_name, licence_url, source_url, attribution_text, published_at, created_by, created_at,
+        licence_name, licence_url, source_url, attribution_text, published_at, created_by, created_at, updated_at, updated_by,
         rights_statement, rights_stated_by, rights_stated_at, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CASE WHEN $14::text = 'now' THEN clock_timestamp() END, $15, clock_timestamp(),
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CASE WHEN $14::text = 'now' THEN clock_timestamp() END, $15, clock_timestamp(), clock_timestamp(), $15,
         $16, $17, CASE WHEN $18::text = 'now' THEN clock_timestamp() END, $19)`,
     [
       mediaId,
@@ -224,8 +225,15 @@ describe("media_versions", () => {
     expect(await violated(version(id, { version: 8, publishedAt: "now", rights: "v1_authorised" }))).toBeNull();
     expect(await violated(version(id, { version: 9, rights: "d1_private_review" }))).toBeNull(); // an unpublished draft may carry it
     // Edits after the fact are held to the same rule.
+    // Migration 0027: the published row is frozen, so the app-facing UPDATE is refused by the trigger first (restrict_violation, 23001)...
+    await expect(pool.query("UPDATE media_versions SET licence_name = NULL WHERE media_id = $1 AND version = 4", [id])).rejects.toMatchObject({ code: "23001" });
+    // ...and with the freeze trigger off (test-only, one transaction) the CHECK still holds on UPDATE.
     expect(
-      await violated(pool.query("UPDATE media_versions SET licence_name = NULL WHERE media_id = $1 AND version = 4", [id])),
+      await violated(
+        withFrozenTriggersOff(pool, ["media_versions"], (client) =>
+          client.query("UPDATE media_versions SET licence_name = NULL WHERE media_id = $1 AND version = 4", [id]),
+        ),
+      ),
     ).toBe("media_versions_publishable_check");
   });
 });
@@ -357,8 +365,8 @@ describe("indexes", () => {
 describe("account_roles.request_email", () => {
   const insert = (email: string | null) =>
     pool.query(
-      `INSERT INTO account_roles (principal, role, state, requested_at, request_email)
-       VALUES ($1, 'photographer', 'pending', clock_timestamp(), $2)
+      `INSERT INTO account_roles (principal, role, state, requested_at, updated_at, request_email)
+       VALUES ($1, 'photographer', 'pending', clock_timestamp(), clock_timestamp(), $2)
        ON CONFLICT (principal, role) DO UPDATE SET request_email = EXCLUDED.request_email`,
       [OWNER, email],
     );
@@ -376,8 +384,8 @@ describe("account_roles.request_email", () => {
 describe("account_roles R-d checks (migration 0018)", () => {
   const insert = (role: string, state: string, grantEmail: string | null = null, decided = true) =>
     pool.query(
-      `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, grant_email)
-       VALUES ($1, $2, $3, clock_timestamp(), CASE WHEN $4::boolean THEN clock_timestamp() END, CASE WHEN $4::boolean THEN 'test:seed' END, $5)
+      `INSERT INTO account_roles (principal, role, state, requested_at, updated_at, decided_at, decided_by, grant_email)
+       VALUES ($1, $2, $3, clock_timestamp(), clock_timestamp(), CASE WHEN $4::boolean THEN clock_timestamp() END, CASE WHEN $4::boolean THEN 'test:seed' END, $5)
        ON CONFLICT (principal, role) DO UPDATE SET state = EXCLUDED.state, decided_at = EXCLUDED.decided_at, decided_by = EXCLUDED.decided_by, grant_email = EXCLUDED.grant_email`,
       [OTHER, role, state, decided, grantEmail],
     );
@@ -410,7 +418,7 @@ describe("account_roles R-d checks (migration 0018)", () => {
     try {
       for (const a of ["role_block", "role_unblock", "role_email_edit"]) expect(await violated(run(a)), a).toBeNull();
     } finally {
-      await pool.query("DELETE FROM admin_audit WHERE target = 'media-schema-test'");
+      await frozenDelete(pool, "admin_audit", "target = 'media-schema-test'");
     }
   });
 
@@ -434,7 +442,7 @@ describe("admin_audit actions", () => {
       }
       expect(await violated(run("media_delete"))).toBe("admin_audit_action_check");
     } finally {
-      await pool.query("DELETE FROM admin_audit WHERE target = 'media-schema-test'");
+      await frozenDelete(pool, "admin_audit", "target = 'media-schema-test'");
     }
   });
 });

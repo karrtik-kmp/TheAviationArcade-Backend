@@ -12,6 +12,7 @@ import type { FirebaseAccounts } from "../src/accounts/firebase-accounts.js";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { createFirebaseUser, getFirebaseUser, setFirebaseEmail } from "./auth-emulator.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -66,7 +67,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await sql.query("DELETE FROM admin_audit WHERE target = ANY($1::text[]) OR actor = ANY($1::text[])", [seeded]);
+  await frozenDelete(sql, "admin_audit", "target = ANY($1::text[]) OR actor = ANY($1::text[])", [seeded]);
   await clearRoles(sql, ...seeded);
   for (const app of apps) await app.close();
   await sql.end();

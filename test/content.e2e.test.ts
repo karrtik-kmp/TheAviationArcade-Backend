@@ -14,6 +14,7 @@ import { BLOB_STORE, StorageRequestError } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { CLIENT_HEADER, clientRow, clientSheet, xlsx } from "./fixtures.js";
 import type { TestCell } from "./fixtures.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { unfinishedUpload as sharedUnfinishedUpload } from "./upload-helpers.js";
 import { emulatorToken } from "./tokens.js";
@@ -63,7 +64,7 @@ beforeEach(async () => {
   // The e2e database is shared across runs: start each test from no content.
   await sql.query("DELETE FROM content_items");
   await sql.query("DELETE FROM content_imports");
-  await sql.query("DELETE FROM admin_audit");
+  await frozenDelete(sql, "admin_audit");
   blobs.clear();
 });
 

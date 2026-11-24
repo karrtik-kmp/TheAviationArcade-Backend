@@ -427,7 +427,7 @@ export class MediaService {
       } else {
         const [row] = await tx
           .update(mediaVersions)
-          .set(merged)
+          .set({ ...merged, updatedAt: now, updatedBy: principal })
           .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
           .returning();
         if (!row) throw new Error("Media version was not updated.");
@@ -484,13 +484,20 @@ export class MediaService {
         return { ok: false, error: new ApiError(422, "content_invalid", "The photographer's rights statement is missing; it must be stated before the draft can be published.") };
       }
       const now = await databaseNow(tx);
-      const [published] = await tx
-        .update(mediaVersions)
-        // The FIRST go-live time is kept when a withdrawn draft is published again.
-        .set({ publishedAt: sql`COALESCE(${mediaVersions.publishedAt}, ${now.toISOString()}::timestamptz)`, ...(waived !== null ? { licenceWaiver: waived } : {}) })
-        .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, draft.version)))
-        .returning();
-      if (!published) throw new Error("Media version was not published.");
+      let published: MediaVersionRow;
+      if (draft.publishedAt !== null) {
+        // A withdrawn version going live again: it is already frozen (migration 0027 trigger refuses any UPDATE of a published
+        // version), and its FIRST go-live time and any waiver are kept. Only the media item moves.
+        published = draft;
+      } else {
+        const [row] = await tx
+          .update(mediaVersions)
+          .set({ publishedAt: now, updatedAt: now, updatedBy: principal, ...(waived !== null ? { licenceWaiver: waived } : {}) })
+          .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, draft.version)))
+          .returning();
+        if (!row) throw new Error("Media version was not published.");
+        published = row;
+      }
       const updated = await this.bump(tx, item, principal, now, { state: "published", publishedVersion: draft.version });
       await tx.insert(adminAudit).values({
         actor: principal,
@@ -565,7 +572,7 @@ export class MediaService {
       const now = await databaseNow(tx);
       const [row] = await tx
         .update(mediaVersions)
-        .set({ rightsStatement: statement, rightsStatedBy: principal, rightsStatedAt: now })
+        .set({ rightsStatement: statement, rightsStatedBy: principal, rightsStatedAt: now, updatedAt: now, updatedBy: principal })
         .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
         .returning();
       if (!row) throw new Error("Media version was not updated.");
@@ -637,8 +644,12 @@ export class MediaService {
     return row;
   }
 
-  private async insertVersion(tx: Tx, values: typeof mediaVersions.$inferInsert): Promise<MediaVersionRow> {
-    const [row] = await tx.insert(mediaVersions).values(values).returning();
+  /** Insert a version; `updated_at`/`updated_by` start equal to `created_at`/`created_by` (migration 0027). */
+  private async insertVersion(tx: Tx, values: Omit<typeof mediaVersions.$inferInsert, "updatedAt" | "updatedBy">): Promise<MediaVersionRow> {
+    const [row] = await tx
+      .insert(mediaVersions)
+      .values({ ...values, updatedAt: values.createdAt, updatedBy: values.createdBy })
+      .returning();
     if (!row) throw new Error("Media version was not stored.");
     return row;
   }

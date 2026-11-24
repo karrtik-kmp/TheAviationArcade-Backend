@@ -153,7 +153,7 @@ async function seedLinked(n: number): Promise<string[]> {
   for (let i = 0; i < n; i += 1) {
     const player = await newPlayer();
     await sql.query("INSERT INTO ugs_links (player_id, ugs_player_id, linked_at) VALUES ($1, $2, now())", [player.principal, player.ugsId]);
-    await sql.query("INSERT INTO ugs_mirror_outbox (player_id, version, due_at) VALUES ($1, 1, now())", [player.principal]);
+    await sql.query("INSERT INTO ugs_mirror_outbox (player_id, version, due_at, first_enqueued_at) VALUES ($1, 1, now(), now())", [player.principal]);
     ids.push(player.principal);
   }
   return ids;

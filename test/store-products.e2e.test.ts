@@ -15,6 +15,7 @@ import type { DemoProduct } from "../src/store/demo-products.js";
 import { seedDemoCatalog } from "../src/store/seed-demo.js";
 import { StoreCatalogService } from "../src/store/store-catalog.service.js";
 import { DatabaseService } from "../src/database/database.module.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { seedAdmins, demoPrincipal } from "./roles-helpers.js";
 import { DEMO_HINT_5, DEMO_PASS_MONTHLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
 import { emulatorToken } from "./tokens.js";
@@ -50,7 +51,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql.query("DELETE FROM store_products WHERE product_id LIKE 'pbtest.%'");
-  await sql.query("DELETE FROM admin_audit WHERE action LIKE 'store_product_%'");
+  await frozenDelete(sql, "admin_audit", "action LIKE 'store_product_%'");
   await seedDemoProducts(sql);
 });
 
@@ -391,7 +392,7 @@ describe("seed demo catalog", () => {
     const db = app.get(DatabaseService).db;
     const list = freshProducts();
     const ids = list.map((p) => p.productId);
-    const first = await seedDemoCatalog(db, "test", list);
+    const first = await seedDemoCatalog(db, "test", "tester", list);
     expect(first.sort()).toEqual([...ids].sort());
     expect(await countOf(ids)).toBe(2);
     expect(await stored(ids[0] as string)).toMatchObject({ hints: 3, demo: true, status: "active", version: 1 });
@@ -399,7 +400,7 @@ describe("seed demo catalog", () => {
     // Staff edit one; a re-run neither inserts nor reverts it.
     const edited = await put(ids[0] as string, { kind: "hint_pack", title: "Three hints", hints: 4, demo: true, version: 1 });
     expect(edited.status).toBe(200);
-    expect(await seedDemoCatalog(db, "test", list)).toEqual([]);
+    expect(await seedDemoCatalog(db, "test", "tester", list)).toEqual([]);
     expect(await stored(ids[0] as string)).toMatchObject({ hints: 4, title: "Three hints", version: 2 });
     expect(await countOf(ids)).toBe(2);
   });
@@ -408,9 +409,9 @@ describe("seed demo catalog", () => {
     const db = app.get(DatabaseService).db;
     const list = freshProducts();
     const [a, b] = list as [DemoProduct, DemoProduct];
-    await seedDemoCatalog(db, "test", [a]);
+    await seedDemoCatalog(db, "test", "tester", [a]);
     await sql.query("UPDATE store_products SET title = 'Kept' WHERE product_id = $1", [a.productId]);
-    expect(await seedDemoCatalog(db, "test", list)).toEqual([b.productId]);
+    expect(await seedDemoCatalog(db, "test", "tester", list)).toEqual([b.productId]);
     expect((await stored(a.productId)).title).toBe("Kept");
     expect(await countOf([a.productId, b.productId])).toBe(2);
   });
@@ -422,10 +423,13 @@ describe("seed demo catalog", () => {
     let inserted: string[] = [];
     await expect(
       db.transaction(async (tx) => {
+        // store_transactions is append-only (0027): switch its trigger off inside this transaction; the rollback below restores it.
+        await tx.execute(drizzleSql`SET LOCAL lock_timeout = '5s'`);
+        await tx.execute(drizzleSql`ALTER TABLE store_transactions DISABLE TRIGGER store_transactions_append_only`);
         await tx.execute(drizzleSql`DELETE FROM store_transactions WHERE product_id IN (${idList})`);
         await tx.execute(drizzleSql`DELETE FROM store_subscriptions WHERE product_id IN (${idList})`);
         await tx.execute(drizzleSql`DELETE FROM store_products WHERE product_id IN (${idList})`);
-        inserted = await seedDemoCatalog(tx, "test");
+        inserted = await seedDemoCatalog(tx, "test", "tester");
         throw new Error("rollback");
       }),
     ).rejects.toThrow("rollback");
@@ -436,8 +440,79 @@ describe("seed demo catalog", () => {
   it("is refused in production and writes nothing", async () => {
     const db = app.get(DatabaseService).db;
     const list = freshProducts();
-    await expect(seedDemoCatalog(db, "production", list)).rejects.toThrow(/production/);
+    await expect(seedDemoCatalog(db, "production", "tester", list)).rejects.toThrow(/production/);
     expect(await countOf(list.map((p) => p.productId))).toBe(0);
+  });
+});
+
+describe("created_by and updated_by (0027, C7)", () => {
+  const second = { Authorization: `Bearer ${emulatorToken("second")}` };
+  const SECOND_PRINCIPAL = demoPrincipal("second");
+
+  it("create, edit, retire and restore stamp the acting principal; created_by never changes", async () => {
+    await seedAdmins(sql, "second");
+    expect((await put(NEW_ID, pack())).status).toBe(201);
+    expect(await stored(NEW_ID)).toMatchObject({ created_by: STAFF_PRINCIPAL, updated_by: STAFF_PRINCIPAL });
+    expect((await put(NEW_ID, pack({ title: "Seven hints!", version: 1 }), second)).status).toBe(200);
+    expect(await stored(NEW_ID)).toMatchObject({ created_by: STAFF_PRINCIPAL, updated_by: SECOND_PRINCIPAL, version: 2 });
+    expect((await retire(NEW_ID, { version: 2 }, staff)).status).toBe(200);
+    expect(await stored(NEW_ID)).toMatchObject({ created_by: STAFF_PRINCIPAL, updated_by: STAFF_PRINCIPAL, status: "retired" });
+    expect((await restore(NEW_ID, { version: 3 }, second)).status).toBe(200);
+    expect(await stored(NEW_ID)).toMatchObject({ created_by: STAFF_PRINCIPAL, updated_by: SECOND_PRINCIPAL, status: "active" });
+  });
+
+  it("a no-change edit stamps nothing", async () => {
+    await seedAdmins(sql, "second");
+    await put(NEW_ID, pack());
+    const before = await stored(NEW_ID);
+    expect((await put(NEW_ID, pack({ version: 1 }), second)).status).toBe(200);
+    const after = await stored(NEW_ID);
+    expect(after.updated_by).toBe(STAFF_PRINCIPAL);
+    expect(after.updated_at).toEqual(before.updated_at);
+  });
+});
+
+describe("seedDemoCatalog audit and stamps (0027, C7)", () => {
+  const seedAudits = async (ids: string[]) =>
+    (await sql.query("SELECT actor, action, detail FROM admin_audit WHERE action = 'store_product_create' AND target = ANY($1::text[]) ORDER BY id", [ids])).rows;
+
+  it("stamps operator:<name>, writes one store_product_create audit per inserted product and none on a re-run", async () => {
+    const db = app.get(DatabaseService).db;
+    const list = freshProducts();
+    const ids = list.map((p) => p.productId);
+    expect((await seedDemoCatalog(db, "test", "ada", list)).sort()).toEqual([...ids].sort());
+    for (const id of ids) expect(await stored(id)).toMatchObject({ created_by: "operator:ada", updated_by: "operator:ada" });
+    const log = await seedAudits(ids);
+    expect(log).toHaveLength(2);
+    for (const row of log) expect(row.actor).toBe("operator:ada");
+    expect(log.map((r) => r.detail.kind).sort()).toEqual(["first_class_pass", "hint_pack"]);
+
+    expect(await seedDemoCatalog(db, "test", "grace", list)).toEqual([]);
+    expect(await seedAudits(ids)).toHaveLength(2); // none added
+    for (const id of ids) expect(await stored(id)).toMatchObject({ created_by: "operator:ada", updated_by: "operator:ada" });
+  });
+
+  it("writes an audit only for the rows it actually inserts", async () => {
+    const db = app.get(DatabaseService).db;
+    const [a, b] = freshProducts() as [DemoProduct, DemoProduct];
+    await seedDemoCatalog(db, "test", "ada", [a]);
+    expect(await seedDemoCatalog(db, "test", "grace", [a, b])).toEqual([b.productId]);
+    const log = await seedAudits([a.productId, b.productId]);
+    expect(log.map((r) => r.actor)).toEqual(["operator:ada", "operator:grace"]);
+  });
+
+  it("its audit rows roll back with the caller's transaction", async () => {
+    const db = app.get(DatabaseService).db;
+    const list = freshProducts();
+    const ids = list.map((p) => p.productId);
+    await expect(
+      db.transaction(async (tx) => {
+        expect(await seedDemoCatalog(tx, "test", "ada", list)).toHaveLength(2);
+        throw new Error("rollback");
+      }),
+    ).rejects.toThrow("rollback");
+    expect(await countOf(ids)).toBe(0);
+    expect(await seedAudits(ids)).toHaveLength(0);
   });
 });
 

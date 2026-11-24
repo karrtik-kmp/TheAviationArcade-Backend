@@ -238,7 +238,9 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
     `pg_try_advisory_xact_lock` per module (busy → 409 `import_in_progress`, never a pooled connection parked on the
     lock) that repeats the replay check, re-plans against the locked rows, checks the confirm hash against that
     re-plan, and writes receipt, items, retirements and an append-only `admin_audit` row (with the updated and
-    retired ids). Re-applying older bytes refreshes their existing receipt (UNIQUE module + sha256). Storage down or
+    retired ids). Re-applying older bytes refreshes their existing receipt (UNIQUE module + sha256): `created_at`/`imported_by` stay
+    the FIRST import of those bytes and `last_applied_at`/`last_applied_by` (migration 0027) are the latest apply, with the counts
+    of that run (`ImportSummary.createdAt` reports `last_applied_at`). Storage down or
     refusing → 503 `storage_unavailable` (Retry-After only when transient).
   - Military is the only importer for now; other modules need their own mapping.
 - **Export.** `.xlsx` with `Id, Version, Level, Correct Answer, Wrong Answer 1-3, file, Photographer, Status`, retired
@@ -383,9 +385,10 @@ the DATABASE clock (`clock_timestamp()`, ms), taken once per Progress view or mi
 expiry (`withLiveStreak`), so stamp and judgement are one instant and every instance shares one clock; costs one query per response.
 Every Round and Trip write (`issueRound`, `completeRound`, `spendHint`, `openTrip`, `completeTrip`, `abandonTrip`) reads the database
 clock once after the player lock (`databaseNow(tx)`, one extra query each) and uses it for every expiry, floor and `issued_at`
-comparison in that call, so `issued_at`, deadlines and the response agree with themselves; the process time is passed only to
-`PlayerBalance.update` (row timestamps). Not covered: the `now` the controllers pass to `PlayerBalance` for `updatedAt`, ledger and
-outbox timestamps. `issueRound` moves a segment's `expires_at` without bumping `version`. With one clock, an issue can only extend
+comparison in that call, so `issued_at`, deadlines and the response agree with themselves. `PlayerBalance.update` itself takes the
+same clock once, after it locks the player row (`databaseNow(tx)`, `src/balance/player-balance.ts:154`), and hands it to the
+callback as `locked.now`; row, ledger and outbox timestamps use it, not the process time. See "Clocks" below for every
+table. `issueRound` moves a segment's `expires_at` without bumping `version`. With one clock, an issue can only extend
 a segment no database-clocked read has yet seen expired, EXCEPT in a window that runs from the issue's `databaseNow(tx)` to its
 COMMIT: if the old expiry falls inside it, a read that starts in that window sees the old expiry (0) and a later read sees the
 extension (non-zero) at one version. Also, a read's snapshot precedes its `clock_timestamp()`, so a stale read can be stamped later
@@ -447,6 +450,47 @@ rendered body (or the `{{ jwt }}` header), idempotent on `X-Unity-Event-ID`; pub
 
 Docs: docs.unity.com `cloud-save` (data access classes, admin API), `authentication/openid-connect`, `services-web-apis`,
 `triggers/webhooks`.
+
+
+## Clocks
+
+Several clocks are in use, on purpose (the table lists them). A shared Drizzle timestamps helper was rejected (plan `docs/plans/schema-hardening.md`).
+
+| Clock | Where | Used by |
+|---|---|---|
+| Database clock: `clock_timestamp()` read once after the lock (`databaseNow(tx)` / `databaseClock()`, `src/database/clock.ts`; ms) | every `PlayerBalance.update` (`player-balance.ts:154`, also :252, :286, :307), media and editorial writes, store catalog writes (`store-catalog.service.ts:127`, :184) | player-facing row timestamps, ledgers, outbox, trips and rounds, `media_versions`, `store_products`, `purchase-grant.ts` rows (`store_transactions`, `store_subscriptions`, `store_claims`; `now` passed in) |
+| Database clock, microseconds: content-lock stamp (`databaseClockMicros()`, `src/content/content-lock.ts:31`) | content imports and item edits, read once after the module lock | `content_imports` (`created_at`, `last_applied_at`) and `content_items` stamps; compared with `>` in SQL |
+| `now()` column default / SQL `now()` (transaction start) | `content_documents.created_at` (`document-store.ts:172` does not set it), `content_drafts.updated_at` (`draft-store.ts:38`, an explicit `now()` in the update), `store_*` `created_at`/`updated_at` defaults (`schema.ts:1093-1213`) | the `store_*` writers, including `store:seed-demo` since 0027, pass the database-clock `now` themselves, so those defaults fire only for `store_accounts` (`entitlements.service.ts:30`) and raw SQL |
+| Process clock `new Date()` | draft history entries and the draft-edit audit stamp in `src/content/documents/content-admin.service.ts` (:161, :178, :243, :301) | history `at` values inside `content_drafts.edits` |
+
+Migration 0027 adds these columns, all on the database clock: `content_imports.last_applied_at`, `media_versions.updated_at`,
+`account_roles.updated_at`, `player_clipper_cards.last_identified_at`, `ugs_mirror_outbox.first_enqueued_at`,
+`rounds.abandoned_at` (`LEAST(now, expires_at)`, so a Round abandoned after its Trip expired is stamped at the expiry) and
+`ugs_link_events.created_at`. Their `*_by` columns are the verified principal.
+
+## Append-only tables
+
+The database refuses change on these (trigger pattern of migration 0024: a BEFORE row trigger plus a BEFORE TRUNCATE trigger,
+`restrict_violation`):
+
+| Table | UPDATE | DELETE | TRUNCATE |
+|---|---|---|---|
+| `content_documents` (0011; TRUNCATE since 0027) | refused | refused | refused |
+| `content_releases`, `content_release_items`, `content_release_activations` (0024) | refused | refused | refused |
+| `admin_audit` (0027) | refused | refused | refused |
+| `miles_ledger`, `hint_ledger`, `store_transactions`, `ugs_link_events` (0027) | refused | only as the cascade of deleting the `players` row (`pg_trigger_depth() > 1` and the player is gone) | refused |
+| `media_versions` where `published_at IS NOT NULL` (0027) | refused | refused | refused |
+
+- A direct `DELETE` of a ledger row is refused even for the owning player; only account erase (`PlayerBalance.erase`) passes.
+- P4 refunds must be compensating rows (a negative or reversing entry), never a delete or update.
+- The app's database role owns the tables, so the triggers guard against bugs, not a compromised role.
+- Manual cleanup on a hosted database needs `ALTER TABLE ... DISABLE TRIGGER`, which needs the user's sign-off. Tests use
+  `test/frozen-cleanup.ts`. A source-scan test forbids `DISABLE TRIGGER` and `session_replication_role` under `src/`.
+- The new NOT VALID CHECKs (`rounds_abandoned_at_check`, `trips_completed_result_check`, `rounds_completed_at_check`) must never be
+  `VALIDATE`d while legacy rows remain.
+- **One system write that does not bump `version` or `updated_at`:** `content_items.card_key` is frozen the first time a Military
+  Round needs it (`militaryKeyOf`, `src/rounds/rounds.service.ts:457-461`, design 3.5), only where it is still NULL. It is derived
+  data, not a staff edit, so it must not look like one or conflict with a staff edit's base version.
 
 ## Sign in with Apple (if the project rule changes)
 

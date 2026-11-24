@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { XLSX_MIME } from "../src/content/xlsx.js";
 import { BLANK_EVIDENCE, NOT_PUBLISHED_MESSAGE, RETIRED_MESSAGE, STALE_APPROVED_MESSAGE } from "../src/content/preparation/military-preparation.js";
 import type { PrepEvidence } from "../src/content/preparation/military-preparation.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { Fixtures, boot } from "./editorial-helpers.js";
 import type { Booted, PublishedMedia } from "./editorial-helpers.js";
 import { clientSheet } from "./fixtures.js";
@@ -76,7 +77,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql.query("DELETE FROM content_items");
   await sql.query("DELETE FROM content_imports");
-  await sql.query("DELETE FROM admin_audit WHERE action IN ('content_prepare', 'content_import', 'content_media_link', 'content_retire', 'content_restore')");
+  await frozenDelete(sql, "admin_audit", "action IN ('content_prepare', 'content_import', 'content_media_link', 'content_retire', 'content_restore')");
   sheet = await clientSheet(6);
   const res = await upload(sheet);
   expect(res.status, JSON.stringify(res.body)).toBe(201);

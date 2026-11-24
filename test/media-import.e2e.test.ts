@@ -28,6 +28,7 @@ import { StorageUnavailableError } from "../src/storage/blob-store.js";
 import type { BlobStore } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { demoPrincipal, seedRole } from "./roles-helpers.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { emulatorToken } from "./tokens.js";
 
 // Wave I (docs/plans/media-rights-and-public.md, docs/plans/media-import.md): the D1 import core run in-process with an injected
@@ -134,12 +135,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const owned = "(SELECT id FROM media_items WHERE owner = ANY($1))";
-  await sql.query("DELETE FROM admin_audit WHERE action = 'media_import' AND detail->>'owner' = ANY($1)", [principals]);
-  await sql.query(`DELETE FROM admin_audit WHERE target IN (SELECT 'med-' || id FROM media_items WHERE owner = ANY($1))`, [principals]);
+  await frozenDelete(sql, "admin_audit", "action = 'media_import' AND detail->>'owner' = ANY($1)", [principals]);
+  await frozenDelete(sql, "admin_audit", `target IN (SELECT 'med-' || id FROM media_items WHERE owner = ANY($1))`, [principals]);
   await sql.query("DELETE FROM media_imports WHERE owner = ANY($1) OR source_id = ANY($2)", [principals, sourceIds]);
-  await sql.query(`DELETE FROM media_versions WHERE media_id IN ${owned}`, [principals]);
+  await frozenDelete(sql, "media_versions", `media_id IN ${owned}`, [principals]);
   await sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM admin_audit WHERE actor = ANY($1) OR target = ANY($1)", [principals]);
+  await frozenDelete(sql, "admin_audit", "actor = ANY($1) OR target = ANY($1)", [principals]);
   await sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [principals]);
   await sql.end();
   await app.close();

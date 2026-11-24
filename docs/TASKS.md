@@ -203,6 +203,17 @@ deploy runbook.
 Leaderboards and the Callsign/game-identity contract (needs the shared-identity ruling; consider
 verified email for ranked play).
 
+### Schema hardening wave (2026-11-24)
+
+| # | Job | State | Notes |
+|---|---|---|---|
+| 6.4 | Timestamps, append-only triggers, UGS link history, first-import receipt history (migration 0027) | **Done (local)** 2026-11-24; not applied to hosted dev or prod | Plan [plans/schema-hardening.md](plans/schema-hardening.md): plan-review gate (senior-lead, backend, game-domain, devops: all approve with changes, folded in), user approval, S1-S7, independent code review (ship after fixes; 7 fixes applied: `clearEmails` under the role lock in a transaction, C4 backfill matched on `detail.role`, C3 backfill time and actor from one event with the first publish, C2 `created_import_id` exact for version-1 rows, seed-demo on the database clock, cleanup-helper error handling, docs). Verification on a freshly created test database (all 28 migrations from zero): `tsc --noEmit` clean; `npx vitest run` 49 files, 1211/1211; `npx vitest run --config vitest.e2e.config.ts` 54 files, 1330/1330 (new: `migration-0027`, `schema-hardening-content`/`-media`/`-accounts` e2e, `no-trigger-disable` unit). drizzle-kit generate against the snapshot: no changes. Deploy: see the 0027 note below (needs sign-off). |
+
+Deploy note for migration 0027: like 0003, deploy it with `backend-deploy.sh --stop-first`, after a `pg_dump -Fc` backup of the
+target database, and only with the user's sign-off. Without it, old code keeps serving between migrate and restart and fails
+inserts on the new NOT NULL columns. After a successful migrate an old build cannot run; dev rolls back with `pg_restore`. Manual
+cleanup on a hosted database now needs `DISABLE TRIGGER` (also sign-off).
+
 ### Follow-ups (2026-11-04)
 
 - **`not_owner` error code** (website request): 403 for a non-owner admin on owner-only media routes, apart from

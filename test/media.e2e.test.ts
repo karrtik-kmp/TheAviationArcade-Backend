@@ -9,6 +9,7 @@ import { configureApp } from "../src/app.setup.js";
 import { BLOB_STORE, StorageRequestError, StorageUnavailableError } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { demoPrincipal, seedRole } from "./roles-helpers.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { emulatorToken } from "./tokens.js";
 import { unfinishedUpload } from "./upload-helpers.js";
 
@@ -86,9 +87,9 @@ afterEach(() => {
 afterAll(async () => {
   const owned = "(SELECT id FROM media_items WHERE owner = ANY($1))";
   await sql.query(`DELETE FROM media_upload_keys WHERE media_id IN ${owned}`, [principals]);
-  await sql.query(`DELETE FROM media_versions WHERE media_id IN ${owned}`, [principals]);
+  await frozenDelete(sql, "media_versions", `media_id IN ${owned}`, [principals]);
   await sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM admin_audit WHERE actor = ANY($1)", [principals]);
+  await frozenDelete(sql, "admin_audit", "actor = ANY($1)", [principals]);
   await sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [principals]);
   await sql.end();
   await app.close();
@@ -445,9 +446,9 @@ async function race(photographer: { principal: string; auth: Record<string, stri
     );
     const id = Number(item.rows[0]!.id);
     await client.query(
-      `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_required, created_by, created_at,
+      `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_required, created_by, created_at, updated_at, updated_by,
           rights_statement, rights_stated_by, rights_stated_at)
-       VALUES ($1, 1, $2, 'image/png', $3, 64, 48, true, $4, clock_timestamp(), 'v1_own', $4, clock_timestamp())`,
+       VALUES ($1, 1, $2, 'image/png', $3, 64, 48, true, $4, clock_timestamp(), clock_timestamp(), $4, 'v1_own', $4, clock_timestamp())`,
       [id, sha(seedBytes), seedBytes.length, photographer.principal],
     );
     await client.query(

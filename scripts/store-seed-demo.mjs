@@ -5,6 +5,8 @@
 //
 // Exit codes: 0 done (rows inserted or already present); 1 unexpected failure (database unreachable, ...); 2 refused because of
 // the settings (nothing was contacted).
+import { userInfo } from "node:os";
+
 try {
   process.loadEnvFile(".env");
 } catch {
@@ -47,7 +49,13 @@ const pool = new pg.Pool(poolOptions({ ...config, dbPoolMax: 2 }));
 pool.on("error", () => {});
 
 try {
-  const inserted = await seedDemoCatalog(new DatabaseService(pool).db, config.appEnv);
+  let osUser = "unknown";
+  try {
+    osUser = userInfo().username || "unknown";
+  } catch {
+    // Keep "unknown".
+  }
+  const inserted = await seedDemoCatalog(new DatabaseService(pool).db, config.appEnv, osUser);
   console.log(
     inserted.length === 0
       ? "The demo catalog is already seeded; nothing changed."

@@ -11,6 +11,7 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import type { AccountRole, RoleState } from "../src/db/enums.js";
 import { createFirebaseUser } from "./auth-emulator.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -40,7 +41,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await sql.query("DELETE FROM admin_audit WHERE target = ANY($1::text[]) OR actor = ANY($1::text[])", [seeded]);
+  await frozenDelete(sql, "admin_audit", "target = ANY($1::text[]) OR actor = ANY($1::text[])", [seeded]);
   await clearRoles(sql, ...seeded);
   await sql.query("DELETE FROM players WHERE id = ANY($1::text[])", [seeded]);
   await app.close();
@@ -548,9 +549,12 @@ describe("player role at sign-in: PUT /v1/me", () => {
     expect((await row(w.principal, "photographer")).request_email).toBe("gone@example.test");
     const auditCount = (await auditRows(w.principal)).length;
     expect(auditCount).toBe(2);
+    const before = await row(w.principal, "photographer");
     expect((await request(server).delete("/v1/me").set(w.headers)).status).toBe(204);
     expect((await sql.query("SELECT 1 FROM players WHERE id = $1", [w.principal])).rowCount).toBe(0);
-    expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", revision: 1, request_email: null });
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", revision: 2, request_email: null });
+    // Changed by design (0027, C4): clearing an email bumps the revision and updated_at, so an editor holding the old row is fenced.
+    expect((await row(w.principal, "photographer")).updated_at.getTime()).toBeGreaterThan(before.updated_at.getTime());
     expect(await row(w.principal, "player")).toMatchObject({ state: "active" });
     expect(await auditRows(w.principal)).toHaveLength(auditCount);
     // Deleting again, or an account with no player, is still 204.

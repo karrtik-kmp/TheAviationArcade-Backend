@@ -9,6 +9,7 @@ import { configureApp } from "../src/app.setup.js";
 import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
 import { verifyCdnToken } from "../src/platform/cdn-signer.js";
 import { demoPrincipal, seedRole } from "./roles-helpers.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { emulatorToken } from "./tokens.js";
 
 // Wave P (docs/plans/media-rights-and-public.md): GET /v1/public/media?ids= for anonymous guests. Staff routes build the fixtures.
@@ -142,9 +143,9 @@ beforeAll(async () => {
 afterAll(async () => {
   const owned = "(SELECT id FROM media_items WHERE owner = ANY($1))";
   await sql.query(`DELETE FROM media_upload_keys WHERE media_id IN ${owned}`, [principals]);
-  await sql.query(`DELETE FROM media_versions WHERE media_id IN ${owned}`, [principals]);
+  await frozenDelete(sql, "media_versions", `media_id IN ${owned}`, [principals]);
   await sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM admin_audit WHERE actor = ANY($1)", [principals]);
+  await frozenDelete(sql, "admin_audit", "actor = ANY($1)", [principals]);
   await sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [principals]);
   await sql.end();
   await withCdn.app.close();

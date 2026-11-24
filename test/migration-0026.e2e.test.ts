@@ -80,7 +80,9 @@ describe("migration 0026", () => {
 
       expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(items);
       const after = (await pool.query("SELECT * FROM media_versions ORDER BY media_id")).rows;
-      expect(after.map(({ licence_waiver, ...rest }) => rest)).toEqual(versions);
+      // 0027 adds updated_at/updated_by (backfilled); every other column is unchanged.
+      expect(after.map(({ licence_waiver, updated_at, updated_by, ...rest }) => rest)).toEqual(versions);
+      expect(after.every((r) => r.updated_at instanceof Date && r.updated_by === "mig-owner")).toBe(true);
       expect(after.every((r) => r.licence_waiver === null)).toBe(true);
       expect((await pool.query("SELECT count(*)::int AS n FROM admin_audit")).rows[0].n).toBe(audit);
 
@@ -95,8 +97,8 @@ describe("migration 0026", () => {
       const insert = (version: number, o: { licence: string | null; waiver: string | null; published: boolean; rights?: string | null }) =>
         pool.query(
           `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_name, credit_required, licence_name, licence_waiver,
-              published_at, created_by, created_at, rights_statement, rights_stated_by, rights_stated_at)
-           VALUES ($1, $2, $3, 'image/png', 100, 64, 48, 'Credit', true, $4, $5, ${o.published ? "now()" : "NULL"}, 'mig-owner', now(), $6::text, CASE WHEN $6::text IS NULL THEN NULL ELSE 'mig-owner' END, CASE WHEN $6::text IS NULL THEN NULL ELSE now() END)`,
+              published_at, created_by, created_at, updated_at, updated_by, rights_statement, rights_stated_by, rights_stated_at)
+           VALUES ($1, $2, $3, 'image/png', 100, 64, 48, 'Credit', true, $4, $5, ${o.published ? "now()" : "NULL"}, 'mig-owner', now(), now(), 'mig-owner', $6::text, CASE WHEN $6::text IS NULL THEN NULL ELSE 'mig-owner' END, CASE WHEN $6::text IS NULL THEN NULL ELSE now() END)`,
           [ids[1], version, SHA, o.licence, o.waiver, o.rights === undefined ? "v1_own" : o.rights],
         );
       // Neither a licence name nor a waiver on a published version: refused (the constraint is enforced from now on).

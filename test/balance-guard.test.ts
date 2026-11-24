@@ -33,6 +33,7 @@ const PLAYERS = rawTable("players", "players");
 const MILES = rawTable("miles_ledger", "milesLedger");
 const HINTS = rawTable("hint_ledger", "hintLedger");
 const LINKS = rawTable("ugs_links", "ugsLinks");
+const LINK_EVENTS = rawTable("ugs_link_events", "ugsLinkEvents");
 const PACE = rawTable("ugs_mirror_pace", "ugsMirrorPace");
 const TRIPS = rawTable("trips", "trips");
 const COUNTERS = rawTable("player_counters", "playerCounters");
@@ -65,11 +66,11 @@ export const RULES: { name: string; pattern: RegExp }[] = [
   },
   {
     name: "writes players, ugs_links or a ledger directly",
-    pattern: R(String.raw`\.(?:insert|update|delete)\(\s*${id("players|milesLedger|hintLedger|ugsLinks")}\s*\)`),
+    pattern: R(String.raw`\.(?:insert|update|delete)\(\s*${id("players|milesLedger|hintLedger|ugsLinks|ugsLinkEvents")}\s*\)`),
   },
   {
     name: "writes players, ugs_links or a ledger directly (raw SQL)",
-    pattern: R(String.raw`\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+(?:${PLAYERS}|${LINKS}|${MILES}|${HINTS})`, "i"),
+    pattern: R(String.raw`\b(?:insert\s+into|update(?:\s+only)?|delete\s+from)\s+(?:${PLAYERS}|${LINKS}|${LINK_EVENTS}|${MILES}|${HINTS})`, "i"),
   },
   {
     // The pace record decides when the next copy write is due. Only PlayerBalance (src/balance) and the mirror worker's
@@ -387,7 +388,7 @@ describe("balance guard checker catches seeded violations", () => {
   });
 
   it("direct .insert/.update/.delete on players, ledgers and ugs_links", () => {
-    for (const t of ["players", "milesLedger", "hintLedger", "ugsLinks", "schema.players", "schema.ugsLinks"]) {
+    for (const t of ["players", "milesLedger", "hintLedger", "ugsLinks", "ugsLinkEvents", "schema.players", "schema.ugsLinks", "schema.ugsLinkEvents"]) {
       for (const op of ["insert", "update", "delete"]) {
         expect(violations(`await tx.${op}(${t}).where(x);`), `${op} ${t}`).toContain(WRITE);
       }
@@ -411,6 +412,9 @@ describe("balance guard checker catches seeded violations", () => {
       "insert into ugs_links (a) values (1)",
       "update ${ugsLinks} set x = 1",
       "delete from ugs_links",
+      "insert into ugs_link_events (a) values (1)",
+      "update ${ugsLinkEvents} set kind = 1",
+      "delete from ugs_link_events",
       "insert into miles_ledger (a) values (1)",
       "update miles_ledger set delta = 1",
       "delete from ${hintLedger}",

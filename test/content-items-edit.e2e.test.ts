@@ -11,6 +11,7 @@ import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { militaryCardKey } from "../src/rules/clipper-cards.js";
 import { BLOB_STORE } from "../src/storage/blob-store.js";
 import type { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clientSheet } from "./fixtures.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 import { seedAdmins } from "./roles-helpers.js";
@@ -50,7 +51,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql.query("DELETE FROM content_items");
   await sql.query("DELETE FROM content_imports");
-  await sql.query("DELETE FROM admin_audit");
+  await frozenDelete(sql, "admin_audit");
   app.get<MemoryBlobStore>(BLOB_STORE).clear();
   sheet = await clientSheet(6);
   const res = await request(server).post(`${BASE}/imports`).set(staff).set("Content-Type", XLSX_MIME).send(sheet);
@@ -376,8 +377,8 @@ describe("re-uploading the client sheet after a staff change", () => {
       vi.useRealTimers();
     }
     const edited = await row("mil-a2");
-    const receipt = (await sql.query("SELECT created_at FROM content_imports WHERE module = $1", [MODULE])).rows[0];
-    expect(edited.updated_at.getTime()).toBeGreaterThanOrEqual(receipt.created_at.getTime()); // not a day earlier
+    const receipt = (await sql.query("SELECT last_applied_at FROM content_imports WHERE module = $1", [MODULE])).rows[0];
+    expect(edited.updated_at.getTime()).toBeGreaterThanOrEqual(receipt.last_applied_at.getTime()); // not a day earlier
     const dry = await upload(bytes, "?dryRun=true");
     expect(dry.body.replay).toBe(false);
   });

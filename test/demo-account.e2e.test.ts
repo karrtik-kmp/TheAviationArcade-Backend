@@ -19,6 +19,7 @@ import type { ImportManifest } from "../src/content/media/media-import.js";
 import { DatabaseService } from "../src/database/database.module.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { createFirebaseUser } from "./auth-emulator.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -68,7 +69,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await sql.query("DELETE FROM media_imports WHERE owner = ANY($1::text[])", [principals]);
-  await sql.query("DELETE FROM admin_audit WHERE target = ANY($1::text[])", [principals]);
+  await frozenDelete(sql, "admin_audit", "target = ANY($1::text[])", [principals]);
   await clearRoles(sql, ...principals);
   await app.close();
   await sql.end();
@@ -90,7 +91,7 @@ const auditCount = async (principal: string) => (await sql.query("SELECT count(*
 
 async function resetDemo(): Promise<void> {
   await clearRoles(sql, demo);
-  await sql.query("DELETE FROM admin_audit WHERE target = $1", [demo]);
+  await frozenDelete(sql, "admin_audit", "target = $1", [demo]);
 }
 
 describe("the roles guard ignores privileged rows of the demo account", () => {

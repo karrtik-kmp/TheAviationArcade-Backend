@@ -152,7 +152,7 @@ export class RoundsService {
       const roundId = randomUUID();
       const flightNumber = trip.roundsBanked + 1;
       const expiresAt = new Date(now.getTime() + ROUND_TTL_SECONDS * 1000);
-      await abandonOpenRounds(tx, principal);
+      await abandonOpenRounds(tx, principal, now);
       await tx.insert(rounds).values({
         id: roundId,
         playerId: principal,

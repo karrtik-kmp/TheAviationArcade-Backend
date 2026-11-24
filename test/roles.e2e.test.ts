@@ -156,8 +156,8 @@ describe("account_roles constraints", () => {
   it("refuses an unknown role or state, a second row for the same (principal, role), and a note over 500 characters", async () => {
     const insert = (role: string, state: string, note: string | null = null) =>
       sql.query(
-        `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, note)
-         VALUES ($1, $2, $3, now(), CASE WHEN $3 = 'pending' THEN NULL ELSE now() END, CASE WHEN $3 = 'pending' THEN NULL ELSE 'test:seed' END, $4)`,
+        `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, note, updated_at)
+         VALUES ($1, $2, $3, now(), CASE WHEN $3 = 'pending' THEN NULL ELSE now() END, CASE WHEN $3 = 'pending' THEN NULL ELSE 'test:seed' END, $4, now())`,
         [principal, role, state, note],
       );
     await expect(insert("staff", "active")).rejects.toMatchObject({ code: "23514" });
@@ -175,8 +175,8 @@ describe("account_roles constraints", () => {
     seeded.push(p);
     const insert = (role: string, state: string, decidedAt: string | null, decidedBy: string | null, revision = 1) =>
       sql.query(
-        `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, revision)
-         VALUES ($1, $2, $3, now(), $4::timestamptz, $5, $6)`,
+        `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, revision, updated_at)
+         VALUES ($1, $2, $3, now(), $4::timestamptz, $5, $6, now())`,
         [p, role, state, decidedAt, decidedBy, revision],
       );
     const now = new Date().toISOString();

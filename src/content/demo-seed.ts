@@ -675,6 +675,8 @@ async function seedPhoto(
           rightsStatedAt: now,
           createdBy: by,
           createdAt: now,
+          updatedBy: by,
+          updatedAt: now,
         });
         const won = await tx
           .insert(mediaImports)

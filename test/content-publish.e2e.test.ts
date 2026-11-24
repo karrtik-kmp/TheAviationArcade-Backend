@@ -14,6 +14,7 @@ import { MIN_ROUND_MS } from "../src/rounds/rounds.service.js";
 import { FIELD_AWARD_CATALOG } from "../src/rules/field-award-catalog.js";
 import { militaryCardKey } from "../src/rules/clipper-cards.js";
 import { catalogInForce } from "../src/trips/catalog-in-force.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
@@ -66,7 +67,7 @@ async function withTriggerOff(fn: (client: pg.PoolClient) => Promise<void>) {
 /** Put the shared test database back: no drafts, no published version above 1 (clipper-cards tests restore their own rows), no publish audit. */
 async function reset() {
   await sql.query("DELETE FROM content_drafts");
-  await sql.query("DELETE FROM admin_audit WHERE action = 'content_publish'");
+  await frozenDelete(sql, "admin_audit", "action = 'content_publish'");
   await withTriggerOff((c) => c.query("DELETE FROM content_documents WHERE version > 1 AND name <> 'clipper-cards'").then(() => undefined));
   resetDocumentMemo();
 }
@@ -613,8 +614,8 @@ describe("clipper-cards and aircraft-tags: Card names, tags, and re-sealing from
 
   async function addItem(id: string) {
     await sql.query(
-      `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by)
-       VALUES ($3, $1, 'trainee', 'approved', 'client_sheet', $2::jsonb, 1, now(), now(), 'test')
+      `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by, created_by)
+       VALUES ($3, $1, 'trainee', 'approved', 'client_sheet', $2::jsonb, 1, now(), now(), 'test', 'test')
        ON CONFLICT (module, id) DO UPDATE SET status = 'approved'`,
       [id, JSON.stringify({ answer: ANSWERS[id], wrong: ["a", "b", "c"], sourceFile: `${id}.jpg`, photographer: "T" }), MILITARY],
     );
@@ -877,8 +878,8 @@ describe("a publish racing the seed", () => {
     const approved = (await rows<{ id: string }>("SELECT id FROM content_items WHERE module = $1 AND status = 'approved'", [MILITARY])).map((r) => r.id);
     await sql.query("UPDATE content_items SET status = 'retired' WHERE module = $1", [MILITARY]);
     await sql.query(
-      `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by)
-       VALUES ($1, 'mil-a9101', 'trainee', 'approved', 'client_sheet', '{"answer":"Race One","wrong":["a","b","c"],"sourceFile":"r.jpg","photographer":"T"}', 1, now(), now(), 'test')
+      `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by, created_by)
+       VALUES ($1, 'mil-a9101', 'trainee', 'approved', 'client_sheet', '{"answer":"Race One","wrong":["a","b","c"],"sourceFile":"r.jpg","photographer":"T"}', 1, now(), now(), 'test', 'test')
        ON CONFLICT (module, id) DO UPDATE SET status = 'approved'`,
       [MILITARY],
     );

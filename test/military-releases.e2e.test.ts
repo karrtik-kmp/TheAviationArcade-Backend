@@ -5,6 +5,7 @@ import { releaseBasis } from "../src/content/releases/release-rules.js";
 import { BLANK_EVIDENCE } from "../src/content/preparation/military-preparation.js";
 import type { PrepEvidence } from "../src/content/preparation/military-preparation.js";
 import { XLSX_MIME } from "../src/content/xlsx.js";
+import { frozenDelete, withFrozenTriggersOff } from "./frozen-cleanup.js";
 import { Fixtures, boot } from "./editorial-helpers.js";
 import type { Booted, PublishedMedia } from "./editorial-helpers.js";
 import { clientSheet } from "./fixtures.js";
@@ -134,7 +135,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await wipeReleases();
-  await sql.query("DELETE FROM admin_audit WHERE target = $1 AND action LIKE 'release_%'", [MODULE]);
+  await frozenDelete(sql, "admin_audit", "target = $1 AND action LIKE 'release_%'", [MODULE]);
   await reimport();
   await approveAll();
 });
@@ -659,11 +660,13 @@ describe("the activation guard, each leg separately (nothing is written when it 
     await uploaded();
     const media = pool[8]!;
     const original = (await one("SELECT sha256 FROM media_versions WHERE media_id = $1 AND version = 1", [media.id.slice(4)])).sha256 as string;
-    await sql.query("UPDATE media_versions SET sha256 = $2 WHERE media_id = $1 AND version = 1", [media.id.slice(4), "f".repeat(64)]);
+    const setHash = (hash: string) =>
+      withFrozenTriggersOff(sql, ["media_versions"], (client) => client.query("UPDATE media_versions SET sha256 = $2 WHERE media_id = $1 AND version = 1", [media.id.slice(4), hash]));
+    await setHash("f".repeat(64));
     try {
       await refused([`mil-a9: photo ${media.id} no longer matches the file the release froze.`]);
     } finally {
-      await sql.query("UPDATE media_versions SET sha256 = $2 WHERE media_id = $1 AND version = 1", [media.id.slice(4), original]);
+      await setHash(original);
     }
   });
 

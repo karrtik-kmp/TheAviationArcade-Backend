@@ -46,6 +46,7 @@ import type {
   StoreSubscriptionStatus,
   TripOutcome,
   TripStatus,
+  UgsLinkEventKind,
 } from "./enums.js";
 
 /**
@@ -156,6 +157,12 @@ export const trips = pgTable(
       "trips_completed_check",
       sql`${t.status} <> 'completed' OR (${t.roundsBanked} = 10 AND ${t.outcome} IS NOT NULL)`,
     ),
+    // Migration 0027 adds this NOT VALID (by hand; drizzle cannot emit it): a completed segment has every result column set
+    // (`completeFullTrip` writes them all). Older rows are exempt; never VALIDATE it while legacy rows remain.
+    check(
+      "trips_completed_result_check",
+      sql`${t.status} <> 'completed' OR (${t.correct} IS NOT NULL AND ${t.hintUsed} IS NOT NULL AND ${t.bestStreak} IS NOT NULL AND ${t.miles} IS NOT NULL AND ${t.statusPoints} IS NOT NULL AND ${t.goAround} IS NOT NULL AND ${t.nightTrip} IS NOT NULL AND ${t.completionLocalDate} IS NOT NULL AND ${t.catalogVersion} IS NOT NULL)`,
+    ),
   ],
 );
 
@@ -178,6 +185,9 @@ export const rounds = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     completionId: text("completion_id"),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    // Migration 0027: when the Round was abandoned, `LEAST(abandon time, expires_at)` (the same close time `abandonTrip` uses).
+    // NULL for every other status; NULL also on Rounds abandoned before 0027 (the NOT VALID CHECK exempts them).
+    abandonedAt: timestamp("abandoned_at", { withTimezone: true }),
     finished: boolean("finished"),
     errorCount: integer("error_count"),
     // What the client reported (OR-ed with hintUsed at submit); NULL until the result arrives.
@@ -249,11 +259,16 @@ export const rounds = pgTable(
       sql`${t.status} <> 'completed'
         OR (${t.completionId} IS NOT NULL AND ${t.spAwarded} IS NOT NULL AND ${t.milesAwarded} IS NOT NULL)`,
     ),
+    // Migration 0027 adds both NOT VALID (by hand; drizzle cannot emit it): rounds abandoned or completed before 0027 are exempt
+    // and are never updated again. Never VALIDATE them while legacy rows remain.
+    check("rounds_abandoned_at_check", sql`(${t.status} = 'abandoned') = (${t.abandonedAt} IS NOT NULL)`),
+    check("rounds_completed_at_check", sql`${t.status} <> 'completed' OR (${t.completedAt} IS NOT NULL AND ${t.localDate} IS NOT NULL)`),
   ],
 );
 
 /**
- * Append-only Miles ledger. players.miles = SUM(delta) per player. UNIQUE (player_id, kind, ref) is the
+ * Append-only Miles ledger (migration 0027 triggers refuse UPDATE, TRUNCATE and any DELETE except the `players` cascade of an account
+ * deletion; they guard against bugs only, the owning database role could disable them). players.miles = SUM(delta) per player. UNIQUE (player_id, kind, ref) is the
  * idempotency key: a Round pays once (ref = roundId), a hint pack bills once per Idempotency-Key.
  */
 export const milesLedger = pgTable(
@@ -276,7 +291,7 @@ export const milesLedger = pgTable(
   ],
 );
 
-/** Append-only hint ledger, same shape as the Miles one. players.hints = SUM(delta) per player. */
+/** Append-only hint ledger, same shape and same 0027 triggers as the Miles one. players.hints = SUM(delta) per player. */
 export const hintLedger = pgTable(
   "hint_ledger",
   {
@@ -319,7 +334,12 @@ export const contentImports = pgTable(
     // Items a client-sheet import retired because the file no longer lists them.
     retired: integer("retired").notNull().default(0),
     importedBy: text("imported_by").notNull(),
+    // The FIRST import of this file (written once, never rewritten from migration 0027 on).
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    // The latest apply of this receipt (a replay of identical bytes refreshes it with the counts), and who applied it. 0027 backfilled
+    // both from created_at / imported_by, which were already rewritten on every replay.
+    lastAppliedAt: timestamp("last_applied_at", { withTimezone: true }).notNull(),
+    lastAppliedBy: text("last_applied_by").notNull(),
   },
   (t) => [
     uniqueIndex("content_imports_module_sha256").on(t.module, t.sha256),
@@ -408,6 +428,10 @@ export const mediaVersions = pgTable(
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    // Migration 0027: the last change to the row and who made it (insert, draft edit, rights statement). A published version is
+    // frozen by a trigger from 0027 on (no UPDATE, no DELETE, no TRUNCATE), so for it these say when it went live and who published it.
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    updatedBy: text("updated_by").notNull(),
   },
   (t) => [
     primaryKey({ name: "media_versions_pk", columns: [t.mediaId, t.version] }),
@@ -439,7 +463,7 @@ export const mediaVersions = pgTable(
     check("media_versions_licence_waiver_check", sql`${t.licenceWaiver} IN ('dev-demo')`),
     check("media_versions_licence_waiver_rule_check", sql`${t.licenceWaiver} IS NULL OR (${t.licenceName} IS NULL AND ${t.publishedAt} IS NOT NULL)`),
     // A NULL statement would pass an IN test (NULL is not false), hence the explicit IS NOT NULL.
-    // Migrations 0019 and 0026 add this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
+    // Migrations 0019, 0026 and 0027 add this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
     // statement and stay as they are, while every new or changed row must satisfy it.
     check(
       "media_versions_publishable_check",
@@ -533,6 +557,10 @@ export const contentItems = pgTable(
     prepEvidence: jsonb("prep_evidence"),
     prepVersion: integer("prep_version"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    // Migration 0027: who created the row and which import did (NULL for an admin-created row and for rows from before 0027).
+    // 0027 backfilled created_by = updated_by where version = 1, else the sentinel `system:pre-0027`.
+    createdBy: text("created_by").notNull(),
+    createdImportId: text("created_import_id").references(() => contentImports.id),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     updatedBy: text("updated_by").notNull(),
   },
@@ -739,6 +767,8 @@ export const accountRoles = pgTable(
     state: text("state").$type<RoleState>().notNull(),
     // No default: writers stamp it from the database clock (src/database/clock.ts), not the transaction-start now().
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+    // Migration 0027: the last write to the row (every transition and `clearEmails`), database clock.
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     // The deciding admin's principal, `operator:<os user>` for the one-time grant command, or `system:signup`. NULL while pending.
     decidedBy: text("decided_by"),
@@ -852,6 +882,8 @@ export const playerClipperCards = pgTable(
     module: text("module").notNull(),
     firstCollectedAt: timestamp("first_collected_at", { withTimezone: true }).notNull(),
     firstTripId: uuid("first_trip_id").notNull(),
+    // Migration 0027: when a completed segment last identified this Card (the completion `now`, on insert and on update).
+    lastIdentifiedAt: timestamp("last_identified_at", { withTimezone: true }).notNull(),
     timesIdentified: integer("times_identified").notNull(),
     everPerfect: boolean("ever_perfect").notNull(),
     everHintFree: boolean("ever_hint_free").notNull(),
@@ -983,11 +1015,39 @@ export const ugsMirrorOutbox = pgTable(
      * makes the row due now instead of one interval later, and clears it. Release and fail clear it as well.
      */
     urgent: boolean("urgent").notNull().default(false),
+    // Migration 0027: when the row was created (kept out of the enqueue ON CONFLICT ... SET). The queue is transient, so pre-0027 rows
+    // carry the migration instant.
+    firstEnqueuedAt: timestamp("first_enqueued_at", { withTimezone: true }).notNull(),
   },
   (t) => [
     index("ugs_mirror_outbox_due").on(t.dueAt),
     check("ugs_mirror_outbox_attempts_check", sql`${t.attempts} >= 0`),
     check("ugs_mirror_outbox_last_error_check", sql`${t.lastError} IS NULL OR length(${t.lastError}) <= 80`),
+  ],
+);
+
+/**
+ * Append-only history of UGS links (migration 0027): `ugs_links` holds only the current id, so a re-link or a move to another
+ * player used to leave no trace. Written in the same transaction as the `ugs_links` change (player-balance.ts): `moved_away` on the
+ * player who held the UGS id before, then `linked` (first link) or `replaced` (this player had another id, kept in
+ * `previous_ugs_player_id`) on the caller. Rows are deleted only by the `players` cascade of an account deletion; the same triggers
+ * as the ledgers refuse UPDATE, TRUNCATE and any other DELETE. A UGS player id is not a credential.
+ */
+export const ugsLinkEvents = pgTable(
+  "ugs_link_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    playerId: text("player_id")
+      .notNull()
+      .references(() => players.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<UgsLinkEventKind>().notNull(),
+    ugsPlayerId: text("ugs_player_id").notNull(),
+    previousUgsPlayerId: text("previous_ugs_player_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("ugs_link_events_player").on(t.playerId, t.id),
+    check("ugs_link_events_kind_check", sql`${t.kind} IN ('linked', 'replaced', 'moved_away')`),
   ],
 );
 
@@ -1092,6 +1152,9 @@ export const storeProducts = pgTable(
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Migration 0027: staff principals (or `operator:<os user>` for the demo seed); `system:pre-0027` where the audit has no row.
+    createdBy: text("created_by").notNull(),
+    updatedBy: text("updated_by").notNull(),
   },
   (t) => [
     check("store_products_product_id_check", sql`${t.productId} ~ '^[a-z0-9][a-z0-9._]{0,99}$'`),
@@ -1125,7 +1188,8 @@ export const storeAccounts = pgTable("store_accounts", {
  * One verified store transaction, granted once. UNIQUE (store, transaction_ref) is the idempotency key across every player: the
  * second claimant of a reference is refused. `granted_hints` / `granted_miles` / `granted_until` snapshot what was granted, so a later catalog edit
  * never changes a past grant. Apple: transaction_ref = transactionId, original_ref = originalTransactionId. Written only by
- * src/purchases/purchase-grant.ts inside PlayerBalance.update.
+ * src/purchases/purchase-grant.ts inside PlayerBalance.update. Append-only from migration 0027, with the same triggers as the
+ * ledgers (UPDATE and TRUNCATE refused; DELETE only from the `players` cascade).
  */
 export const storeTransactions = pgTable(
   "store_transactions",
@@ -1153,6 +1217,7 @@ export const storeTransactions = pgTable(
   (t) => [
     uniqueIndex("store_transactions_store_ref").on(t.store, t.transactionRef),
     index("store_transactions_player").on(t.playerId),
+    index("store_transactions_product").on(t.productId),
     check("store_transactions_store_check", sql`${t.store} IN ('apple', 'google')`),
     check("store_transactions_kind_check", sql`${t.kind} IN ('hint_pack', 'first_class_pass', 'miles_pack')`),
     check("store_transactions_environment_check", sql`${t.environment} IN ('production', 'sandbox', 'fake')`),
@@ -1190,6 +1255,7 @@ export const storeSubscriptions = pgTable(
   (t) => [
     primaryKey({ name: "store_subscriptions_pk", columns: [t.store, t.originalRef] }),
     index("store_subscriptions_player").on(t.playerId),
+    index("store_subscriptions_product").on(t.productId),
     check("store_subscriptions_store_check", sql`${t.store} IN ('apple', 'google')`),
     check(
       "store_subscriptions_status_check",

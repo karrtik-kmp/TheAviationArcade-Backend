@@ -573,8 +573,8 @@ const rows = async (pool: pg.Pool) =>
 async function insertMilitary(pool: pg.Pool, items: [id: string, answer: string][]) {
   for (const [id, answer] of items) {
     await pool.query(
-      `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by)
-       VALUES ('aircraft-identifier-military', $1, 'trainee', 'approved', 'client_sheet', $2::jsonb, 1, now(), now(), 'test')`,
+      `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by, created_by)
+       VALUES ('aircraft-identifier-military', $1, 'trainee', 'approved', 'client_sheet', $2::jsonb, 1, now(), now(), 'test', 'test')`,
       [id, JSON.stringify({ answer, wrong: ["a", "b", "c"], sourceFile: `${id}.jpg`, photographer: "T" })],
     );
   }
@@ -688,9 +688,9 @@ describe("the v1 seed", () => {
         await insertMilitary(pool, [["mil-a1", "Eurofighter Typhoon"], ["mil-a2", "X".repeat(600)], ["mil-a3", "Hawker Hurricane"]]);
         // 1002 items on one Card key: the 1001st and 1002nd exceed the per-Card limit.
         await pool.query(
-          "INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by) " +
+          "INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by, created_by) " +
             "SELECT 'aircraft-identifier-military', 'mil-b' || g, 'trainee', 'approved', 'client_sheet', " +
-            "'{\"answer\":\"Same Answer\",\"wrong\":[\"a\",\"b\",\"c\"],\"sourceFile\":\"f.jpg\"}'::jsonb, 1, now(), now(), 'test' FROM generate_series(1, 1002) g",
+            "'{\"answer\":\"Same Answer\",\"wrong\":[\"a\",\"b\",\"c\"],\"sourceFile\":\"f.jpg\"}'::jsonb, 1, now(), now(), 'test', 'test' FROM generate_series(1, 1002) g",
         );
         const result = await seedContentDocuments(dbs);
         expect(result.failed).toEqual([]);

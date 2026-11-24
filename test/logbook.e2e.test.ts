@@ -639,8 +639,8 @@ describe("Clipper Cards", () => {
     // A Card whose key is in no clipper-cards document (a retired Military item's answer, or a family added later).
     const orphan = "mil:retired thing that no document names";
     await sql.query(
-      `INSERT INTO player_clipper_cards (player_id, card_key, module, first_collected_at, first_trip_id, times_identified, ever_perfect, ever_hint_free, fastest_correct_ms)
-       VALUES ($1, $2, 'aircraft-identifier-military', now() + interval '1 hour', $3, 2, true, false, 900)`,
+      `INSERT INTO player_clipper_cards (player_id, card_key, module, first_collected_at, last_identified_at, first_trip_id, times_identified, ever_perfect, ever_hint_free, fastest_correct_ms)
+       VALUES ($1, $2, 'aircraft-identifier-military', now() + interval '1 hour', now() + interval '1 hour', $3, 2, true, false, 900)`,
       [p.principal, orphan, randomUUID()],
     );
     const lb = (await read(p)).body;

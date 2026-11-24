@@ -16,6 +16,7 @@ import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
 import { XLSX_MIME } from "../src/content/xlsx.js";
 import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clientSheet } from "./fixtures.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { DEMO_HINT_5, DEMO_MILES_5000, DEMO_PASS_MONTHLY, seedDemoProducts } from "./store-helpers.js";
@@ -395,7 +396,7 @@ describe("openapi contract: real responses validate against the spec", () => {
     const module = "aircraft-identifier-military";
     await sql.query("DELETE FROM content_items");
     await sql.query("DELETE FROM content_imports");
-    await sql.query("DELETE FROM admin_audit");
+    await frozenDelete(sql, "admin_audit");
     const upload = (bytes: Buffer, query = "") =>
       request(server).post(`/v1/admin/content/${module}/imports${query}`).set(staff).set("Content-Type", XLSX_MIME).send(bytes);
 
@@ -906,7 +907,7 @@ describe("openapi contract: the staff edit and publish routes (0.11.0)", () => {
 
   afterAll(async () => {
     await sql.query("DELETE FROM content_drafts");
-    await sql.query("DELETE FROM admin_audit WHERE action = 'content_publish'");
+    await frozenDelete(sql, "admin_audit", "action = 'content_publish'");
     const client = await sql.connect();
     try {
       await client.query("BEGIN");

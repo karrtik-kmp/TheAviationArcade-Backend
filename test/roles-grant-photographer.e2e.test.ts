@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RoleStore } from "../src/accounts/role-store.js";
 import type { RoleActor } from "../src/accounts/role-store.js";
 import { DatabaseService } from "../src/database/database.module.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 
 // ADR-0002 follow-up (2026-11-16): RoleStore.grantPhotographer, the operator-only grant used by the dev demo seed.
@@ -25,7 +26,7 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
-  await sql.query("DELETE FROM admin_audit WHERE target = ANY($1::text[])", [created]);
+  await frozenDelete(sql, "admin_audit", "target = ANY($1::text[])", [created]);
   await clearRoles(sql, ...created);
   await sql.end();
 });
@@ -62,7 +63,7 @@ describe("RoleStore.grantPhotographer", () => {
 
   it("pending: becomes active at revision + 1, keeps request_email, one audit row with from and to", async () => {
     const p = fresh();
-    await sql.query("INSERT INTO account_roles (principal, role, state, requested_at, request_email) VALUES ($1, 'photographer', 'pending', now(), 'req@example.test')", [p]);
+    await sql.query("INSERT INTO account_roles (principal, role, state, requested_at, request_email, updated_at) VALUES ($1, 'photographer', 'pending', now(), 'req@example.test', now())", [p]);
     const before = await row(p);
     const outcome = await store.grantPhotographer(operator, p, null);
     expect(outcome.ok).toBe(true);

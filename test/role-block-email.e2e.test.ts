@@ -11,6 +11,7 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import type { AccountRole, RoleState } from "../src/db/enums.js";
 import { createFirebaseUser, setFirebaseEmail } from "./auth-emulator.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { unfinishedUpload } from "./upload-helpers.js";
@@ -41,7 +42,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await sql.query("DELETE FROM admin_audit WHERE target = ANY($1::text[]) OR actor = ANY($1::text[])", [seeded]);
+  await frozenDelete(sql, "admin_audit", "target = ANY($1::text[]) OR actor = ANY($1::text[])", [seeded]);
   await clearRoles(sql, ...seeded);
   await sql.query("DELETE FROM players WHERE id = ANY($1::text[])", [seeded]);
   await app.close();
@@ -574,7 +575,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
 });
 
 describe("DELETE /v1/me clears both emails", () => {
-  it("clears request_email and grant_email on every role row, keeping the rows, revisions and audit rows", async () => {
+  it("clears request_email and grant_email on every role row, keeping the rows and audit rows and bumping each revision (0027)", async () => {
     const boss = await admin();
     const t = await who([], { email: "both@example.test" });
     await request(server).put("/v1/me").set(t.headers);
@@ -586,9 +587,11 @@ describe("DELETE /v1/me clears both emails", () => {
     const audits = (await auditRows(t.principal)).length;
 
     expect((await request(server).delete("/v1/me").set(t.headers)).status).toBe(204);
-    expect(await row(t.principal, "photographer")).toMatchObject({ state: "pending", revision: 1, request_email: null, grant_email: null });
-    expect(await row(t.principal, "admin")).toMatchObject({ state: "active", revision: 1, request_email: null, grant_email: null });
+    expect(await row(t.principal, "photographer")).toMatchObject({ state: "pending", revision: 2, request_email: null, grant_email: null });
+    expect(await row(t.principal, "admin")).toMatchObject({ state: "active", revision: 2, request_email: null, grant_email: null });
     expect(await auditRows(t.principal)).toHaveLength(audits);
-    expect((await request(server).delete("/v1/me").set(t.headers)).status).toBe(204); // idempotent
+    expect((await request(server).delete("/v1/me").set(t.headers)).status).toBe(204); // idempotent: nothing left to clear, so no second bump
+    expect(await row(t.principal, "photographer")).toMatchObject({ revision: 2 });
+    expect(await row(t.principal, "admin")).toMatchObject({ revision: 2 });
   });
 });

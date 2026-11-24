@@ -80,11 +80,11 @@ export async function lockOpenTrip(tx: Tx, principal: string): Promise<TripRow |
   return trip ?? null;
 }
 
-/** Abandon every open Round of the player: one in flight at a time (the Round index), and none outlives its segment. */
-export async function abandonOpenRounds(tx: Tx, principal: string): Promise<void> {
+/** Abandon every open Round of the player: one in flight at a time (the Round index), and none outlives its segment. `abandoned_at` is the database-clock `now`, capped at the Round's own expiry. */
+export async function abandonOpenRounds(tx: Tx, principal: string, now: Date): Promise<void> {
   await tx
     .update(rounds)
-    .set({ status: "abandoned" })
+    .set({ status: "abandoned", abandonedAt: sql`LEAST(${now.toISOString()}::timestamptz, ${rounds.expiresAt})` })
     .where(and(eq(rounds.playerId, principal), eq(rounds.status, "open")));
 }
 
@@ -99,7 +99,7 @@ export async function abandonTrip(tx: Tx, principal: string, trip: TripRow, now:
     .update(trips)
     .set({ status: "abandoned", closedAt: expired ? trip.expiresAt : now })
     .where(eq(trips.id, trip.id));
-  if (!expired) await abandonOpenRounds(tx, principal);
+  if (!expired) await abandonOpenRounds(tx, principal, now);
 }
 
 /** D-3: the stored streak is the open segment's, so closing a segment resets it. Only a nonzero streak is a change. */

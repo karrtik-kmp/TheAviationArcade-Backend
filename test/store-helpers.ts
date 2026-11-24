@@ -28,10 +28,10 @@ export type ProductSeed = {
 /** Insert or reset one product to exactly these values (version back to 1). Defaults: not demo, active, the id as title. */
 export async function seedProduct(sql: pg.Pool | pg.Client, product: ProductSeed): Promise<void> {
   await sql.query(
-    `INSERT INTO store_products (product_id, kind, hints, miles, pass_period, title, demo, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO store_products (product_id, kind, hints, miles, pass_period, title, demo, status, created_by, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'test:seed', 'test:seed')
      ON CONFLICT (product_id) DO UPDATE SET kind = EXCLUDED.kind, hints = EXCLUDED.hints, miles = EXCLUDED.miles, pass_period = EXCLUDED.pass_period,
-       title = EXCLUDED.title, demo = EXCLUDED.demo, status = EXCLUDED.status, version = 1, updated_at = now()`,
+       title = EXCLUDED.title, demo = EXCLUDED.demo, status = EXCLUDED.status, version = 1, updated_at = now(), updated_by = 'test:seed'`,
     [
       product.productId,
       product.kind,

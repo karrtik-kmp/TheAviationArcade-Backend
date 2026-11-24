@@ -8,6 +8,7 @@ import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
 import { ADMIN_AUDIT_ACTIONS, MEDIA_RIGHTS_STATEMENTS } from "../src/db/enums.js";
 import type { AdminAuditAction } from "../src/db/enums.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
@@ -61,7 +62,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (seededIds.length > 0) await sql.query("DELETE FROM admin_audit WHERE id = ANY($1::bigint[])", [seededIds]);
+  if (seededIds.length > 0) await frozenDelete(sql, "admin_audit", "id = ANY($1::bigint[])", [seededIds]);
   await clearRoles(sql, ...principals);
   await app.close();
   await sql.end();

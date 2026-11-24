@@ -5,7 +5,7 @@ import type { AppConfig } from "../config/config.module.js";
 import { DatabaseService, ExpectedRollback } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import { databaseNow } from "../database/clock.js";
-import { hintLedger, milesLedger, players, ugsLinks } from "../db/schema.js";
+import { hintLedger, milesLedger, players, ugsLinkEvents, ugsLinks } from "../db/schema.js";
 import type { PlayerRow } from "../db/schema.js";
 import type { Rank } from "../rules/ranks.js";
 import type { HintKind, MilesKind } from "./ledger-kinds.js";
@@ -316,6 +316,7 @@ export class PlayerBalance {
         // player is the caller's now, and the caller's next write replaces the item.
         await tx.delete(ugsLinks).where(eq(ugsLinks.playerId, taken.playerId));
         await dropMirror(tx, taken.playerId);
+        await tx.insert(ugsLinkEvents).values({ playerId: taken.playerId, kind: "moved_away", ugsPlayerId, createdAt: now });
       }
 
       const [existing] = await tx.select().from(ugsLinks).where(eq(ugsLinks.playerId, principal));
@@ -328,8 +329,12 @@ export class PlayerBalance {
         // Replaced: the old UGS player copy is stale and no longer ours to keep.
         await queueMirrorDeletion(tx, existing.ugsPlayerId, now);
         await tx.update(ugsLinks).set({ ugsPlayerId, linkedAt: now }).where(eq(ugsLinks.playerId, principal));
+        await tx
+          .insert(ugsLinkEvents)
+          .values({ playerId: principal, kind: "replaced", ugsPlayerId, previousUgsPlayerId: existing.ugsPlayerId, createdAt: now });
       } else {
         await tx.insert(ugsLinks).values({ playerId: principal, ugsPlayerId, linkedAt: now });
+        await tx.insert(ugsLinkEvents).values({ playerId: principal, kind: "linked", ugsPlayerId, createdAt: now });
       }
       await cancelMirrorDeletion(tx, ugsPlayerId);
 

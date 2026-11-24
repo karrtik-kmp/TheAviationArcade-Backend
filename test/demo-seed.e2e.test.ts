@@ -19,6 +19,7 @@ import { EditorialService } from "../src/content/editorial/editorial.service.js"
 import { MediaService } from "../src/content/media/media.service.js";
 import { DatabaseService } from "../src/database/database.module.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { xlsx, clientSheet } from "./fixtures.js";
 import type { TestCell } from "./fixtures.js";
 import { seedRole } from "./roles-helpers.js";
@@ -169,9 +170,9 @@ async function clean(): Promise<void> {
   await sql.query("DELETE FROM content_items");
   await sql.query("DELETE FROM content_imports");
   await sql.query("DELETE FROM media_imports WHERE source_system = 'demo-seed' OR owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM media_versions WHERE media_id IN (SELECT id FROM media_items WHERE owner = ANY($1))", [principals]);
+  await frozenDelete(sql, "media_versions", "media_id IN (SELECT id FROM media_items WHERE owner = ANY($1))", [principals]);
   await sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM admin_audit");
+  await frozenDelete(sql, "admin_audit");
   await sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [principals]);
 }
 

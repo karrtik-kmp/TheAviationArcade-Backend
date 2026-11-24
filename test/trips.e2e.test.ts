@@ -17,6 +17,7 @@ import type { CompletedTrip } from "../src/rules/trips.js";
 import { parseFieldAwards } from "../src/content/documents/documents.js";
 import { catalogInForce } from "../src/trips/catalog-in-force.js";
 import { toCounters } from "../src/trips/counters-store.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 import { ensureMilitaryItem, factsFor, localClock, newKey, openBody, utcToday } from "./trip-helpers.js";
@@ -896,7 +897,7 @@ describe("day streak and the 7-day hint grant", () => {
     await insert("trip_grant");
     await insert("day_streak_grant");
     await expect(insert("bonus")).rejects.toMatchObject({ code: "23514" });
-    await sql.query("DELETE FROM hint_ledger WHERE player_id = $1 AND kind IN ('trip_grant', 'day_streak_grant')", [p.principal]);
+    await frozenDelete(sql, "hint_ledger", "player_id = $1 AND kind IN ('trip_grant', 'day_streak_grant')", [p.principal]);
   });
 });
 
@@ -971,8 +972,8 @@ describe("integrity", () => {
     await expect(
       sql.query(
         `INSERT INTO rounds (id, player_id, module, rank, pleasure_cruise, status, issued_at, expires_at, trip_id, flight_number,
-                             completion_id, sp_awarded, miles_awarded)
-         SELECT $1, player_id, module, rank, pleasure_cruise, 'completed', issued_at, expires_at, trip_id, flight_number, 'c', 0, 0
+                             completion_id, sp_awarded, miles_awarded, completed_at, local_date)
+         SELECT $1, player_id, module, rank, pleasure_cruise, 'completed', issued_at, expires_at, trip_id, flight_number, 'c', 0, 0, completed_at, local_date
            FROM rounds WHERE id = $2`,
         [dup, roundId],
       ),
@@ -1790,8 +1791,8 @@ describe("T3: integrity", () => {
     await expect(award("first-flight")).rejects.toMatchObject({ code: "23505" });
     const card = (key: string, module: string, times = 1) =>
       sql.query(
-        `INSERT INTO player_clipper_cards (player_id, card_key, module, first_collected_at, first_trip_id, times_identified, ever_perfect, ever_hint_free)
-         VALUES ($1, $2, $3, now(), $4, $5, false, false)`,
+        `INSERT INTO player_clipper_cards (player_id, card_key, module, first_collected_at, last_identified_at, first_trip_id, times_identified, ever_perfect, ever_hint_free)
+         VALUES ($1, $2, $3, now(), now(), $4, $5, false, false)`,
         [p.principal, key, module, tripId, times],
       );
     await expect(card("787", "atc-match")).rejects.toMatchObject({ code: "23514", constraint: "player_clipper_cards_module_check" });

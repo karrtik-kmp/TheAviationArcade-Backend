@@ -42,13 +42,13 @@ export async function enqueueMirror(tx: Tx, playerId: string, version: number, n
   const nowIso = now.toISOString();
   const urgent = options.dueNow === true;
   await tx.execute(sql`
-    INSERT INTO ugs_mirror_outbox (player_id, version, due_at, attempts, last_error)
+    INSERT INTO ugs_mirror_outbox (player_id, version, due_at, attempts, last_error, first_enqueued_at)
     SELECT l.player_id, ${version},
       CASE WHEN ${urgent}::boolean OR ${options.minIntervalSec}::int <= 0 OR pace.last_mirrored_at IS NULL
         THEN ${nowIso}::timestamptz
         ELSE GREATEST(${nowIso}::timestamptz, pace.last_mirrored_at + ${options.minIntervalSec}::int * interval '1 second')
       END,
-      0, NULL
+      0, NULL, ${nowIso}::timestamptz
     FROM ugs_links l
     LEFT JOIN ugs_mirror_pace pace ON pace.player_id = l.player_id AND pace.ugs_player_id = l.ugs_player_id
     WHERE l.player_id = ${playerId}

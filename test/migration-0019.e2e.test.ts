@@ -5,6 +5,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { withFrozenTriggersOff } from "./frozen-cleanup.js";
 
 // Migration 0019 (docs/plans/media-rights-and-public.md): over media rows that exist at 0018, in a throwaway `_test` database that
 // is dropped afterwards. The re-added publishable CHECK is NOT VALID, so old published rows (no rights statement) survive while
@@ -79,7 +80,9 @@ describe("migration 0019", () => {
 
       expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(items);
       const after = (await pool.query("SELECT * FROM media_versions ORDER BY media_id")).rows;
-      expect(after.map(({ rights_statement, rights_stated_by, rights_stated_at, description, licence_waiver, ...rest }) => rest)).toEqual(versions);
+      // 0027 adds updated_at/updated_by (backfilled); every other column is unchanged.
+      expect(after.map(({ rights_statement, rights_stated_by, rights_stated_at, description, licence_waiver, updated_at, updated_by, ...rest }) => rest)).toEqual(versions);
+      expect(after.every((r) => r.updated_at instanceof Date && r.updated_by === "mig-owner")).toBe(true);
       expect(after.every((r) => r.rights_statement === null && r.rights_stated_by === null && r.rights_stated_at === null && r.description === null)).toBe(true);
       expect((await pool.query("SELECT count(*)::int AS n FROM admin_audit")).rows[0].n).toBe(audit);
 
@@ -90,8 +93,8 @@ describe("migration 0019", () => {
       const insert = (mediaId: number, version: number, o: { rights: string | null; published: boolean; licence?: string | null }) =>
         pool.query(
           `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_name, credit_required, licence_name, published_at,
-              created_by, created_at, rights_statement, rights_stated_by, rights_stated_at)
-           VALUES ($1, $2, $3, 'image/png', 100, 64, 48, 'Credit', true, $4, ${o.published ? "now()" : "NULL"}, 'mig-owner', now(),
+              created_by, created_at, updated_at, updated_by, rights_statement, rights_stated_by, rights_stated_at)
+           VALUES ($1, $2, $3, 'image/png', 100, 64, 48, 'Credit', true, $4, ${o.published ? "now()" : "NULL"}, 'mig-owner', now(), now(), 'mig-owner',
               $5::text, CASE WHEN $5::text IS NULL THEN NULL ELSE 'mig-owner' END, CASE WHEN $5::text IS NULL THEN NULL ELSE now() END)`,
           [mediaId, version, SHA, o.licence === undefined ? "CC BY 4.0" : o.licence, o.rights],
         );
@@ -104,9 +107,13 @@ describe("migration 0019", () => {
       expect(await violated(insert(ids[1]!, 7, { rights: "other", published: false }))).toBe("media_versions_rights_statement_check");
 
       // The old published row is left alone until it is UPDATED (then the check applies to it): why the service gates publish first.
-      expect(await violated(pool.query("UPDATE media_versions SET byte_size = 101 WHERE media_id = $1 AND version = 1", [ids[0]]))).toBe(
-        "media_versions_publishable_check",
-      );
+      // Since 0027 the freeze trigger refuses any UPDATE of a published row first (23001); it is switched off here (test-only) to keep proving the CHECK.
+      await expect(pool.query("UPDATE media_versions SET byte_size = 101 WHERE media_id = $1 AND version = 1", [ids[0]])).rejects.toMatchObject({ code: "23001" });
+      expect(
+        await violated(
+          withFrozenTriggersOff(pool, ["media_versions"], (client) => client.query("UPDATE media_versions SET byte_size = 101 WHERE media_id = $1 AND version = 1", [ids[0]])),
+        ),
+      ).toBe("media_versions_publishable_check");
       expect(await violated(pool.query("UPDATE media_items SET revision = revision + 1 WHERE id = $1", [ids[0]]))).toBeNull();
 
       // The new audit actions and the imports table exist.

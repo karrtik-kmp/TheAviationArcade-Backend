@@ -1,7 +1,7 @@
 import type { StoreProductRow } from "../db/schema.js";
 
-/** A catalog row as seeded: the database fills `version` (1) and the timestamps. */
-export type DemoProduct = Omit<StoreProductRow, "version" | "createdAt" | "updatedAt">;
+/** A catalog row as seeded: the database fills `version` (1) and the timestamps; the seed sets createdBy/updatedBy (`operator:<os user>`). */
+export type DemoProduct = Omit<StoreProductRow, "version" | "createdAt" | "updatedAt" | "createdBy" | "updatedBy">;
 
 /**
  * The one seed list (user ruling R1, docs/plans/purchases.md): the client's catalog from Unity `Contracts/products.v1.json`

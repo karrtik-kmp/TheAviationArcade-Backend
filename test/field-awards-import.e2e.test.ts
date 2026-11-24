@@ -13,6 +13,7 @@ import { XLSX_MIME, readFirstSheet } from "../src/content/xlsx.js";
 import { BLOB_STORE } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import type { TestCell } from "./fixtures.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { xlsx } from "./fixtures.js";
 import { seedAdmins } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
@@ -43,7 +44,7 @@ let blobs: MemoryBlobStore;
 
 async function reset() {
   await sql.query("DELETE FROM content_drafts");
-  await sql.query("DELETE FROM admin_audit WHERE action = 'content_publish'");
+  await frozenDelete(sql, "admin_audit", "action = 'content_publish'");
   const client = await sql.connect();
   try {
     await client.query("BEGIN");

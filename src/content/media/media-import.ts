@@ -463,6 +463,8 @@ async function writeEntry(entry: ImportEntry, prepared: Prepared, ctx: ImportCon
         rightsStatedAt: prepared.submittedAt,
         createdBy: by,
         createdAt: now,
+        updatedAt: now,
+        updatedBy: by,
       });
       const won = await tx
         .insert(mediaImports)

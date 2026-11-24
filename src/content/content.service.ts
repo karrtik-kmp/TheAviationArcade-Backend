@@ -98,7 +98,7 @@ function summary(row: ContentImportRow): ImportSummary {
     updated: row.updated,
     unchanged: row.unchanged,
     retired: row.retired,
-    createdAt: row.createdAt.toISOString(),
+    createdAt: row.lastAppliedAt.toISOString(), // API field name kept; it is the last time this receipt was applied
   };
 }
 
@@ -197,8 +197,11 @@ export class ContentService {
           retired: locked.counts.retired,
           importedBy: principal,
           createdAt: now,
+          lastAppliedAt: now,
+          lastAppliedBy: principal,
         })
-        // Same bytes imported before but no longer the latest: this run refreshes that receipt.
+        // Same bytes imported before but no longer the latest: this run refreshes that receipt's last-applied
+        // stamp and counts; created_at / imported_by keep recording the first import.
         .onConflictDoUpdate({
           target: [contentImports.module, contentImports.sha256],
           set: {
@@ -209,8 +212,8 @@ export class ContentService {
             updated: locked.counts.updated,
             unchanged: locked.counts.unchanged,
             retired: locked.counts.retired,
-            importedBy: principal,
-            createdAt: now,
+            lastAppliedAt: now,
+            lastAppliedBy: principal,
           },
         })
         .returning();
@@ -229,9 +232,11 @@ export class ContentService {
             data: r.data,
             version: 1,
             importId,
+            createdImportId: importId,
             // Military: the Clipper Card key is frozen at first import (design 3.5); staff edits never change it.
             cardKey: module === "aircraft-identifier-military" ? militaryCardKey(String(r.data["answer"] ?? "")) || null : null,
             createdAt: now,
+            createdBy: principal,
             updatedAt: now,
             updatedBy: principal,
           })),
@@ -285,6 +290,7 @@ export class ContentService {
           fileName,
           kind: locked.kind,
           ...locked.counts,
+          createdIds: creates.map((r) => r.id),
           retiredIds: locked.retirements.map((r) => r.id),
           updatedIds: locked.rows.filter((r) => r.action === "update").map((r) => r.id),
         },
@@ -433,7 +439,7 @@ export class ContentService {
   /**
    * The receipt to replay for these bytes, or undefined to plan normally: the module's latest receipt has this sha256
    * AND no item of the module changed after it. A staff edit or retire stamps `updated_at` (an import's own writes
-   * stamp the receipt's `created_at`, never later), so a later `updated_at` means the stored content no longer matches
+   * stamp the receipt's `last_applied_at`, never later), so a later `updated_at` means the stored content no longer matches
    * the sheet and re-uploading the client's sheet must plan (and restore the client's data) instead of being a no-op.
    * Item timestamps are used rather than audit rows because they cover every writer, not only the known actions.
    */
@@ -444,7 +450,7 @@ export class ContentService {
       .select({ id: contentItems.id })
       .from(contentItems)
       // Compared in SQL against the stored receipt stamp (microseconds), never a JS Date, which would round it down.
-      .where(and(eq(contentItems.module, module), sql`${contentItems.updatedAt} > (SELECT created_at FROM content_imports WHERE id = ${latest.id})`))
+      .where(and(eq(contentItems.module, module), sql`${contentItems.updatedAt} > (SELECT last_applied_at FROM content_imports WHERE id = ${latest.id})`))
       .limit(1);
     return edited ? undefined : latest;
   }
@@ -455,7 +461,7 @@ export class ContentService {
       .select()
       .from(contentImports)
       .where(eq(contentImports.module, module))
-      .orderBy(desc(contentImports.createdAt), desc(contentImports.id))
+      .orderBy(desc(contentImports.lastAppliedAt), desc(contentImports.id))
       .limit(1);
     return row;
   }

@@ -30,6 +30,7 @@ import {
   STORES,
   TRIP_OUTCOMES,
   TRIP_STATUSES,
+  UGS_LINK_EVENT_KINDS,
 } from "../src/db/enums.js";
 import { MEDIA_IMPORT_SOURCE_SYSTEMS } from "../src/content/media/media-import.js";
 import * as schema from "../src/db/schema.js";
@@ -92,6 +93,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "store_claims.store_claims_kind_check": STORE_CLAIM_KINDS,
   "store_subscriptions.store_subscriptions_store_check": STORES,
   "store_subscriptions.store_subscriptions_status_check": STORE_SUBSCRIPTION_STATUSES,
+  "ugs_link_events.ugs_link_events_kind_check": UGS_LINK_EVENT_KINDS,
 };
 
 /**
@@ -109,6 +111,8 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "content_items.content_items_prep_all_or_none_check",
   "editorial_items.editorial_items_identifier_rule_check",
   "editorial_items.editorial_items_potd_rule_check",
+  // `(status = 'abandoned') = (abandoned_at IS NOT NULL)`: a rule (migration 0027), though Postgres prints a single `= 'abandoned'::text`.
+  "rounds.rounds_abandoned_at_check",
 ]);
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

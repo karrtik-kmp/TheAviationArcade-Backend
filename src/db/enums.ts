@@ -83,6 +83,9 @@ export const RELEASE_DEAL_RULES = ["nearest-ranks"] as const;
 export const RELEASE_FLIGHT_KINDS = ["choice"] as const;
 export const RELEASE_ACTIVATION_KINDS = ["activate", "restore"] as const;
 
+/** UGS link history (migration 0027): first link, a different UGS id for the same player, and the stale holder losing the id to another player. */
+export const UGS_LINK_EVENT_KINDS = ["linked", "replaced", "moved_away"] as const;
+
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 export type RoundCompletion = (typeof ROUND_COMPLETIONS)[number];
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
@@ -109,6 +112,7 @@ export type PrepStage = (typeof PREP_STAGES)[number];
 export type ReleaseDealRule = (typeof RELEASE_DEAL_RULES)[number];
 export type ReleaseFlightKind = (typeof RELEASE_FLIGHT_KINDS)[number];
 export type ReleaseActivationKind = (typeof RELEASE_ACTIVATION_KINDS)[number];
+export type UgsLinkEventKind = (typeof UGS_LINK_EVENT_KINDS)[number];
 export type EditorialKind = (typeof EDITORIAL_KINDS)[number];
 export type EditorialStatus = (typeof EDITORIAL_STATUSES)[number];
 export type StoreSubscriptionStatus = (typeof STORE_SUBSCRIPTION_STATUSES)[number];

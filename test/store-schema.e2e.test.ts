@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEMO_PRODUCTS } from "../src/store/demo-products.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { DEMO_HINT_5, DEMO_MILES_5000, DEMO_PASS_MONTHLY, seedDemoProducts, seedProduct } from "./store-helpers.js";
 
 // Migration 0020 (docs/plans/purchases.md, slice P-A): the store tables' CHECKs, keys and cascades against the real test database,
@@ -24,7 +25,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pool.query("DELETE FROM players WHERE id = ANY($1)", [[PLAYER, OTHER]]);
-  await pool.query("DELETE FROM admin_audit WHERE target = $1", [EXTRA]);
+  await frozenDelete(pool, "admin_audit", "target = $1", [EXTRA]);
   await pool.query("DELETE FROM store_products WHERE product_id = $1", [EXTRA]);
   await pool.end();
 });
@@ -49,8 +50,8 @@ const product = (
   extra: { title?: string; status?: string; version?: number; miles?: number | null } = {},
 ) =>
   violated(
-    `INSERT INTO store_products (product_id, kind, hints, miles, pass_period, title, demo, status, version)
-     VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8)`,
+    `INSERT INTO store_products (product_id, kind, hints, miles, pass_period, title, demo, status, version, created_by, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, 'test:seed', 'test:seed')`,
     [id, kind, hints, extra.miles ?? null, period, extra.title ?? "t", extra.status ?? "active", extra.version ?? 1],
   );
 

@@ -52,8 +52,8 @@ export function factsFor(module = "atc-match", overrides: Record<string, unknown
 /** A well-formed content item for the Military module (ids mil-aN), so a Military Round can name it. */
 export async function ensureMilitaryItem(sql: pg.Pool, id = "mil-a1", answer = "Aircraft 1") {
   await sql.query(
-    `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by)
-     VALUES ('aircraft-identifier-military', $1, 'trainee', 'approved', 'client_sheet', $2::jsonb, 1, now(), now(), 'test')
+    `INSERT INTO content_items (module, id, rank, status, source, data, version, created_at, updated_at, updated_by, created_by)
+     VALUES ('aircraft-identifier-military', $1, 'trainee', 'approved', 'client_sheet', $2::jsonb, 1, now(), now(), 'test', 'test')
      ON CONFLICT DO NOTHING`,
     [id, JSON.stringify({ answer, wrong: ["a", "b", "c"], sourceFile: `${id}.jpg`, photographer: "T" })],
   );

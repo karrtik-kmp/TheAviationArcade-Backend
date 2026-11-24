@@ -10,6 +10,7 @@ import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
 import { setTestDatabaseClockSkew } from "../src/database/clock.js";
 import { verifyCdnToken } from "../src/platform/cdn-signer.js";
 import { demoPrincipal, seedRole } from "./roles-helpers.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { emulatorToken } from "./tokens.js";
 
 // Media plan T5 (docs/plans/media-pipeline.md): staff list and get with a signed preview link. Roles are seeded in account_roles;
@@ -92,9 +93,9 @@ afterAll(async () => {
   setTestDatabaseClockSkew(0);
   const owned = "(SELECT id FROM media_items WHERE owner = ANY($1))";
   await sql.query(`DELETE FROM media_upload_keys WHERE media_id IN ${owned}`, [principals]);
-  await sql.query(`DELETE FROM media_versions WHERE media_id IN ${owned}`, [principals]);
+  await frozenDelete(sql, "media_versions", `media_id IN ${owned}`, [principals]);
   await sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM admin_audit WHERE actor = ANY($1)", [principals]);
+  await frozenDelete(sql, "admin_audit", "actor = ANY($1)", [principals]);
   await sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [principals]);
   await sql.end();
   await withCdn.app.close();

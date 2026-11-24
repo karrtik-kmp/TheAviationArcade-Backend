@@ -128,7 +128,7 @@ export class StoreCatalogService {
       if (version === undefined) {
         const [inserted] = await tx
           .insert(storeProducts)
-          .values({ productId, kind: body.kind, hints, miles, passPeriod, title: body.title, demo: body.demo, status: "active", createdAt: now, updatedAt: now })
+          .values({ productId, kind: body.kind, hints, miles, passPeriod, title: body.title, demo: body.demo, status: "active", createdAt: now, updatedAt: now, createdBy: principal, updatedBy: principal })
           .onConflictDoNothing()
           .returning();
         if (!inserted) {
@@ -163,7 +163,7 @@ export class StoreCatalogService {
       if (diff.length === 0) return { ok: true, created: false, row: stored };
       const [row] = await tx
         .update(storeProducts)
-        .set({ title: body.title, hints, miles, passPeriod, version: sql`${storeProducts.version} + 1`, updatedAt: now })
+        .set({ title: body.title, hints, miles, passPeriod, version: sql`${storeProducts.version} + 1`, updatedAt: now, updatedBy: principal })
         .where(and(eq(storeProducts.productId, productId), eq(storeProducts.version, stored.version)))
         .returning();
       if (!row) throw new Error("Product update was not stored."); // the row lock makes this unreachable
@@ -184,7 +184,7 @@ export class StoreCatalogService {
       const now = await databaseNow(tx);
       const [row] = await tx
         .update(storeProducts)
-        .set({ status, version: sql`${storeProducts.version} + 1`, updatedAt: now })
+        .set({ status, version: sql`${storeProducts.version} + 1`, updatedAt: now, updatedBy: principal })
         .where(and(eq(storeProducts.productId, productId), eq(storeProducts.version, stored.version)))
         .returning();
       if (!row) throw new Error("Product update was not stored."); // the row lock makes this unreachable

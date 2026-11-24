@@ -10,6 +10,7 @@ import { normaliseMediaDescription } from "../src/content/media/media-descriptio
 import { BLOB_STORE } from "../src/storage/blob-store.js";
 import { MemoryBlobStore } from "../src/storage/memory-blob-store.js";
 import { demoPrincipal, seedRole } from "./roles-helpers.js";
+import { frozenDelete } from "./frozen-cleanup.js";
 import { emulatorToken } from "./tokens.js";
 
 // Wave R (docs/plans/media-rights-and-public.md): rights statement on upload, owner-only file uploads, PUT rights, the publish
@@ -123,8 +124,8 @@ async function rawItem(owner: Actor, o: RawItem = {}): Promise<string> {
       const bytes = freshPng();
       await client.query(
         `INSERT INTO media_versions (media_id, version, sha256, content_type, byte_size, width, height, credit_name, credit_required, licence_name,
-            published_at, created_by, created_at, rights_statement, rights_stated_by, rights_stated_at)
-         VALUES ($1, $2, $3, 'image/png', $4, 64, 48, 'Raw Credit', true, 'CC BY 4.0', ${live ? "clock_timestamp()" : "NULL"}, $5, clock_timestamp(), $6, $7, ${stamp ?? "NULL"})`,
+            published_at, created_by, created_at, updated_at, updated_by, rights_statement, rights_stated_by, rights_stated_at)
+         VALUES ($1, $2, $3, 'image/png', $4, 64, 48, 'Raw Credit', true, 'CC BY 4.0', ${live ? "clock_timestamp()" : "NULL"}, $5, clock_timestamp(), clock_timestamp(), $5, $6, $7, ${stamp ?? "NULL"})`,
         [id, v, sha(bytes), bytes.length, owner.principal, rights, by],
       );
     }
@@ -164,9 +165,9 @@ beforeAll(async () => {
 afterAll(async () => {
   const owned = "(SELECT id FROM media_items WHERE owner = ANY($1))";
   await sql.query(`DELETE FROM media_upload_keys WHERE media_id IN ${owned}`, [principals]);
-  await sql.query(`DELETE FROM media_versions WHERE media_id IN ${owned}`, [principals]);
+  await frozenDelete(sql, "media_versions", `media_id IN ${owned}`, [principals]);
   await sql.query("DELETE FROM media_items WHERE owner = ANY($1)", [principals]);
-  await sql.query("DELETE FROM admin_audit WHERE actor = ANY($1)", [principals]);
+  await frozenDelete(sql, "admin_audit", "actor = ANY($1)", [principals]);
   await sql.query("DELETE FROM account_roles WHERE principal = ANY($1)", [principals]);
   await sql.end();
   await app.close();

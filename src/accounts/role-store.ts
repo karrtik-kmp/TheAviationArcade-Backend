@@ -227,7 +227,7 @@ export class RoleStore {
       const at = await databaseNow(tx);
       const inserted = await tx
         .insert(accountRoles)
-        .values({ principal, role: "player", state: "active", requestedAt: at, decidedAt: at, decidedBy: SIGNUP_ACTOR })
+        .values({ principal, role: "player", state: "active", requestedAt: at, decidedAt: at, decidedBy: SIGNUP_ACTOR, updatedAt: at })
         .onConflictDoNothing()
         .returning();
       const row = inserted[0];
@@ -267,13 +267,14 @@ export class RoleStore {
       if (before?.state === "blocked") return { ok: false, error: blockedError() };
       const [row] = await tx
         .insert(accountRoles)
-        .values({ principal, role: "photographer", state: "pending", requestedAt: at, requestEmail: email })
+        .values({ principal, role: "photographer", state: "pending", requestedAt: at, requestEmail: email, updatedAt: at })
         .onConflictDoUpdate({
           target: [accountRoles.principal, accountRoles.role],
           set: {
             state: "pending",
             requestedAt: at,
             requestEmail: email,
+            updatedAt: at,
             decidedAt: null,
             decidedBy: null,
             note: null,
@@ -338,7 +339,7 @@ export class RoleStore {
       }
       const [row] = await tx
         .update(accountRoles)
-        .set({ state: transition.to, decidedAt: at, decidedBy: actorName(actor), note, revision: sql`${accountRoles.revision} + 1` })
+        .set({ state: transition.to, updatedAt: at, decidedAt: at, decidedBy: actorName(actor), note, revision: sql`${accountRoles.revision} + 1` })
         .where(
           and(
             eq(accountRoles.principal, principal),
@@ -400,12 +401,13 @@ export class RoleStore {
       const by = actorName(actor);
       const [row] = await tx
         .insert(accountRoles)
-        .values({ principal, role: "admin", state: "active", requestedAt: at, decidedAt: at, decidedBy: by, note, grantEmail: typedEmail })
+        .values({ principal, role: "admin", state: "active", requestedAt: at, decidedAt: at, decidedBy: by, note, grantEmail: typedEmail, updatedAt: at })
         .onConflictDoUpdate({
           target: [accountRoles.principal, accountRoles.role],
           set: {
             state: "active",
             decidedAt: at,
+            updatedAt: at,
             decidedBy: by,
             note,
             ...(typedEmail === null ? {} : { grantEmail: typedEmail }),
@@ -473,12 +475,12 @@ export class RoleStore {
       if (!before) {
         [row] = await tx
           .insert(accountRoles)
-          .values({ principal, role: "photographer", state: "active", requestedAt: at, decidedAt: at, decidedBy: by, note })
+          .values({ principal, role: "photographer", state: "active", requestedAt: at, decidedAt: at, decidedBy: by, note, updatedAt: at })
           .returning();
       } else {
         [row] = await tx
           .update(accountRoles)
-          .set({ state: "active", decidedAt: at, decidedBy: by, note, revision: sql`${accountRoles.revision} + 1` })
+          .set({ state: "active", updatedAt: at, decidedAt: at, decidedBy: by, note, revision: sql`${accountRoles.revision} + 1` })
           .where(
             and(
               eq(accountRoles.principal, principal),
@@ -530,7 +532,7 @@ export class RoleStore {
       }
       const [row] = await tx
         .update(accountRoles)
-        .set({ state: blocking ? "blocked" : "revoked", decidedAt: at, decidedBy: actorName(actor), note, revision: sql`${accountRoles.revision} + 1` })
+        .set({ state: blocking ? "blocked" : "revoked", updatedAt: at, decidedAt: at, decidedBy: actorName(actor), note, revision: sql`${accountRoles.revision} + 1` })
         .where(
           and(
             eq(accountRoles.principal, principal),
@@ -575,7 +577,7 @@ export class RoleStore {
       if (current.grantEmail === email) return { ok: true, row: current };
       const [row] = await tx
         .update(accountRoles)
-        .set({ grantEmail: email, revision: sql`${accountRoles.revision} + 1` })
+        .set({ grantEmail: email, updatedAt: at, revision: sql`${accountRoles.revision} + 1` })
         .where(
           and(
             eq(accountRoles.principal, principal),
@@ -599,14 +601,19 @@ export class RoleStore {
 
   /**
    * Account deletion: clear the emails kept on role rows (a photographer's request email, an admin's typed email). Role rows and
-   * audit rows stay (ADR-0002, decision 1); no state or revision changes, so this is not a role change and takes no role lock.
-   * Idempotent.
+   * audit rows stay (ADR-0002, decision 1); no state change; it bumps `revision` and `updated_at` (database clock) so an editor holding the old row is fenced.
+   * It takes the role lock like every other role write: a decision that read the row before the bump would otherwise find its
+   * revision-fenced UPDATE matching nothing and fail with a 500 instead of waiting. Idempotent.
    */
   async clearEmails(principal: string): Promise<void> {
-    await this.database.db
-      .update(accountRoles)
-      .set({ requestEmail: null, grantEmail: null })
-      .where(and(eq(accountRoles.principal, principal), or(isNotNull(accountRoles.requestEmail), isNotNull(accountRoles.grantEmail))));
+    await this.database.withTransaction(async (tx) => {
+      await lockAccountRoles(tx);
+      const at = await databaseNow(tx);
+      await tx
+        .update(accountRoles)
+        .set({ requestEmail: null, grantEmail: null, updatedAt: at, revision: sql`${accountRoles.revision} + 1` })
+        .where(and(eq(accountRoles.principal, principal), or(isNotNull(accountRoles.requestEmail), isNotNull(accountRoles.grantEmail))));
+    });
   }
 
   /** The admin queue, oldest request first (requested_at, principal, role). Reads `limit + 1` rows to know whether more follow. */

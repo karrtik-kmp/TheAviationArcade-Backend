@@ -21,7 +21,7 @@ export default defineConfig({
       "test/import-plan.test.ts",
       "test/ugs.test.ts",
       "test/mirror-worker.test.ts",
-      "test/balance-guard.test.ts",
+      "test/balance-guard.test.ts", "test/no-trigger-disable.test.ts",
       "test/schema-parity.test.ts",
       "test/trips.test.ts",
       "test/trip-segments.test.ts",
