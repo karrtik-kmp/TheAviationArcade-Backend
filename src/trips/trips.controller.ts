@@ -93,7 +93,11 @@ export class TripsController {
       case "opened":
       case "replayed":
         res.status(outcome.kind === "opened" ? 201 : 200);
-        return { trip: outcome.trip, progress: progressView(outcome.player) };
+        return {
+          trip: outcome.trip,
+          progress: progressView(outcome.player),
+          ...(outcome.codeSearchBoards ? { codeSearchBoards: outcome.codeSearchBoards } : {}),
+        };
     }
   }
 

@@ -23,6 +23,8 @@ delete process.env.TRUST_PROXY;
 delete process.env.DEMO_ACCOUNT_UID;
 // Nor the dev-demo waiver (docs/plans/dev-licence-waiver.md): test/dev-demo-waiver.e2e.test.ts sets it per app.
 delete process.env.DEV_DEMO_WAIVER;
+// Nor the dev-only Code Search dealing switch (docs/plans/code-search.md): test/code-search-trips.e2e.test.ts sets it per app.
+delete process.env.DEAL_FROM_ITEMS;
 
 // Local throwaway default (matches docker-compose.yml). Never the dev database.
 const DEFAULT_TEST_DATABASE_URL =

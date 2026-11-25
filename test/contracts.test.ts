@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { renderCatalogJson } from "../src/rules/catalog.js";
 import { renderDealerJson } from "../src/rules/dealer-fixture.js";
+import { renderGridJson } from "../src/rules/grid-fixture.js";
 import { RANKS } from "../src/rules/ranks.js";
 
 type CatalogFile = {
@@ -79,5 +80,51 @@ describe("contracts/dealer.v1.json", () => {
     expect(text).not.toContain("\r");
     expect(text.startsWith('{\n  "format": "dealer.v1",\n  "rng": "fnv1a32-utf16+xorshift32",\n')).toBe(true);
     expect(renderDealerJson()).toBe(text);
+  });
+});
+
+const gridFile = new URL("../contracts/grid.v1.json", import.meta.url);
+
+describe("contracts/grid.v1.json", () => {
+  it("is exactly what renderGridJson() produces (byte for byte)", () => {
+    const committed = readFileSync(gridFile, "utf8");
+    expect(
+      committed === renderGridJson(),
+      "contracts/grid.v1.json is out of date. Run `npm run contracts:write` and commit the result; never hand-edit it.",
+    ).toBe(true);
+  });
+
+  it("is stable: 2-space indent, LF, one trailing newline, format tag first", () => {
+    const text = renderGridJson();
+    expect(text.endsWith("}\n")).toBe(true);
+    expect(text.endsWith("\n\n")).toBe(false);
+    expect(text).not.toContain("\r");
+    expect(text.startsWith('{\n  "format": "grid.v1",\n  "rng": "fnv1a32-utf16+xorshift32",\n')).toBe(true);
+    expect(renderGridJson()).toBe(text);
+  });
+
+  it("carries the ladder, the policy and a pool that exercises both can-deal and cannot-deal ranks", () => {
+    const grid = JSON.parse(renderGridJson()) as {
+      flightsPerTrip: number;
+      ladder: { rank: string; unity: string; gridSide: number; directions: string[] }[];
+      modulePolicy: Record<string, string>;
+      pool: { id: string; rank: string }[];
+      coverage: { perRank: Record<string, number> };
+    };
+    expect(grid.flightsPerTrip).toBe(10);
+    expect(grid.ladder.map((r) => r.rank)).toEqual([...RANKS]);
+    expect(grid.ladder.map((r) => r.unity)).toEqual(["Trainee", "FirstOfficer", "Captain", "CheckAirman", "ChiefPilot"]);
+    expect(grid.ladder.map((r) => r.gridSide)).toEqual([6, 7, 8, 8, 8]);
+    expect(grid.modulePolicy).toEqual({ "code-search": "grid-draw.v1" });
+    expect(grid.pool.every((b) => b.id.startsWith("FIXTURE-"))).toBe(true);
+    const counts = RANKS.map((rank) => grid.pool.filter((b) => b.rank === rank).length);
+    expect(counts.every((n) => n > 0)).toBe(true);
+    expect(counts.some((n) => n >= 10)).toBe(true);
+    expect(counts.some((n) => n < 10)).toBe(true);
+    expect(grid.coverage.perRank.trainee).toBe(10);
+  });
+
+  it("leaves dealer.v1.json without a grid policy", () => {
+    expect(JSON.parse(readFileSync(dealerFile, "utf8")).modulePolicy).not.toHaveProperty("code-search");
   });
 });

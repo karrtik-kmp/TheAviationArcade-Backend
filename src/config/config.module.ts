@@ -78,7 +78,15 @@ export type AppConfig = {
   devDemoWaiver?: "dev-demo" | undefined;
   /** Swagger UI served at /docs (local only; src/platform/api-docs.ts). */
   apiDocs: boolean;
+  /**
+   * DEAL_FROM_ITEMS (docs/plans/code-search.md section G): modules whose Trips are dealt from approved `content_items` at open. Dev
+   * only (releases cannot deliver yet); only `code-search` exists. Empty = off, the default everywhere, production included.
+   */
+  dealFromItems: readonly DealFromItemsModule[];
 };
+
+export type DealFromItemsModule = "code-search";
+export const DEAL_FROM_ITEMS_MODULES: readonly DealFromItemsModule[] = ["code-search"];
 
 export type AppleStoreConfig = {
   bundleId: string;
@@ -214,6 +222,8 @@ const CDN_HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9
 const CDN_TOKEN_KEY = /^[!-~]{16,256}$/;
 
 const envSchema = z.object({
+  /** Comma list of modules dealt from content items at Trip open. Only code-search; any other entry refuses to boot. Default empty = off. */
+  DEAL_FROM_ITEMS: optionalText,
   /** Where this process runs. Required, so a deployment can never fall back to local behaviour. */
   APP_ENV: z.enum(["local", "test", "production"]),
   DATABASE_URL: z.string().min(1),
@@ -325,6 +335,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_MIRROR_MIN_INTERVAL_SEC,
     DEMO_ACCOUNT_UID,
     DEV_DEMO_WAIVER,
+    DEAL_FROM_ITEMS,
     API_DOCS,
     FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE,
     FIREBASE_AUTH_EMULATOR_HOST,
@@ -468,6 +479,14 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       throw new Error("Invalid environment configuration: DEV_DEMO_WAIVER is allowed only with a database whose name ends _dev (or the test suite)");
     }
   }
+  // Names only, never the value. Allowed in every APP_ENV (the hosted dev backend runs production); the production env file leaves it unset.
+  const dealFromItems: DealFromItemsModule[] = [];
+  for (const entry of (DEAL_FROM_ITEMS === undefined ? [] : DEAL_FROM_ITEMS.split(",")).map((part) => part.trim())) {
+    if (!(DEAL_FROM_ITEMS_MODULES as readonly string[]).includes(entry)) {
+      throw new Error("Invalid environment configuration: DEAL_FROM_ITEMS");
+    }
+    if (!dealFromItems.includes(entry as DealFromItemsModule)) dealFromItems.push(entry as DealFromItemsModule);
+  }
   return {
     appEnv: APP_ENV,
     databaseUrl: DATABASE_URL,
@@ -497,6 +516,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     demoPrincipal,
     devDemoWaiver: DEV_DEMO_WAIVER,
     apiDocs,
+    dealFromItems,
   };
 }
 

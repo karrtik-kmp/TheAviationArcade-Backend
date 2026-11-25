@@ -92,6 +92,9 @@ export class ContentItemEditService {
       if (!rank) throw new ApiError(422, "import_invalid", "The stored rank is not valid; send a rank. Nothing was changed.");
       const data = checked?.data ?? (stored.data as Record<string, unknown>);
       if (rank === stored.rank && canonicalJson(data) === canonicalJson(stored.data)) return { kind: "unchanged" };
+      // A rank-aware rule (Code Search: the board fits its rung): checked on every real change, a rank-only one included.
+      const fit = mapping.validateItem?.(id, rank, data) ?? [];
+      if (fit.length > 0) throw new ApiError(422, "import_invalid", `The item is not valid: ${fit.join(" ")} Nothing was changed.`);
       // The natural-key rule lives in the planner (non-blank, unique across the module, retired items included):
       // plan this one row as an admin-export update against the locked rows and take any error it finds.
       const plan = planImport(

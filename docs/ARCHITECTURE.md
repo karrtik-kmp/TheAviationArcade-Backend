@@ -290,6 +290,18 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   Awards (the backend owns the catalog, thresholds and progress since C12, 2026-10-28; built after the Trips contract),
   website integration.
 
+## Code Search dealt from items (M-CS, API 0.31.0, migration 0030, built 2026-11-25, dev only)
+
+- **What.** `code-search` items are boards (one item = one board of the client's master pack, imported by `npm run demo:seed-code-search`
+  or the Admin import). The filler letters come from Unity's importer, seeded by board id, and are stored as-is, never regenerated.
+  Payload rules are a port of Unity's `WordGridPuzzleValidator`; rank fit (grid side, targets, city clues, directions) is the port of
+  `CodeSearchLadder`, checked on import, on every staff edit (`validateItem`) and again when the pool is built.
+- **Dealing.** Only where config `DEAL_FROM_ITEMS=code-search` (off by default; the hosted dev backend sets it, production does not): a
+  Code Search Trip open draws ten approved boards at the Trip's rank by `grid-draw.v1` (`contracts/grid.v1.json`; seed = Trip id, the
+  shared dealer RNG) inside the open transaction, stores them in `trip_decks` (insert-only, about 14 KB per Trip, kept with the Trip) and
+  returns all ten in `codeSearchBoards` (ruling R-6, an exception to R-1). Fewer than ten boards at the rank: client mode. This deals
+  from items, not from a release: releases deliver nothing yet, and R4 must accept or migrate these Trips. Rounds stay client facts.
+
 ## Editorial desks and Plane of the Day (W1, API 0.23.0, built 2026-11-05)
 
 Plan `docs/plans/website-content.md`. The website's Aircraft Identifier and Plane of the Day desks keep their records in

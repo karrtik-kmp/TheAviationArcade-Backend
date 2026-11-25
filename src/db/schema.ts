@@ -23,6 +23,7 @@ import type {
   ContentDocumentName,
   ContentSource,
   ContentStatus,
+  DeckFormat,
   EditorialKind,
   PrepStage,
   EditorialStatus,
@@ -164,6 +165,27 @@ export const trips = pgTable(
       "trips_completed_result_check",
       sql`${t.status} <> 'completed' OR (${t.correct} IS NOT NULL AND ${t.hintUsed} IS NOT NULL AND ${t.bestStreak} IS NOT NULL AND ${t.miles} IS NOT NULL AND ${t.statusPoints} IS NOT NULL AND ${t.goAround} IS NOT NULL AND ${t.nightTrip} IS NOT NULL AND ${t.completionLocalDate} IS NOT NULL AND ${t.catalogVersion} IS NOT NULL)`,
     ),
+  ],
+);
+
+/**
+ * The ten boards a Trip was dealt (Code Search, `grid.v1`; migration 0030, docs/plans/code-search.md section G). One row per dealt
+ * Trip, written with the Trip, never updated (trigger; deletes only by the Trip's cascade). Element: `{ itemId, itemVersion, board }`
+ * with `board` the wire board. A Trip with no row is in client mode. Kept apart from `trips` so lockTrip and the Logbook never read it.
+ */
+export const tripDecks = pgTable(
+  "trip_decks",
+  {
+    tripId: uuid("trip_id")
+      .primaryKey()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    format: text("format").$type<DeckFormat>().notNull(),
+    deck: jsonb("deck").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    check("trip_decks_format_check", sql`${t.format} IN ('grid.v1')`),
+    check("trip_decks_deck_check", sql`jsonb_typeof(${t.deck}) = 'array' AND jsonb_array_length(${t.deck}) = 10`),
   ],
 );
 

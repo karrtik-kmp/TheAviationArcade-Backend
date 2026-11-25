@@ -1,0 +1,443 @@
+{
+  "format": "grid.v1",
+  "rng": "fnv1a32-utf16+xorshift32",
+  "draw": "grid-draw.v1: keep the pool's boards of the rank in the given order (the server passes the rank's approved boards sorted by id); rng = DeckRandom(fnv1a32(seed)); for i in 0..9: j = i + (nextUInt() % (n - i)); swap(order[i], order[j]); deal order[0..9]. Fewer than flightsPerTrip boards at the rank deals nothing.",
+  "flightsPerTrip": 10,
+  "maxGridSide": 8,
+  "ladder": [
+    {
+      "rank": "trainee",
+      "unity": "Trainee",
+      "gridSide": 6,
+      "targetCount": 4,
+      "cityClues": 0,
+      "durationSeconds": 60,
+      "directions": [
+        "East",
+        "South"
+      ]
+    },
+    {
+      "rank": "first-officer",
+      "unity": "FirstOfficer",
+      "gridSide": 7,
+      "targetCount": 6,
+      "cityClues": 2,
+      "durationSeconds": 75,
+      "directions": [
+        "East",
+        "SouthEast",
+        "South",
+        "SouthWest"
+      ]
+    },
+    {
+      "rank": "captain",
+      "unity": "Captain",
+      "gridSide": 8,
+      "targetCount": 7,
+      "cityClues": 4,
+      "durationSeconds": 90,
+      "directions": [
+        "East",
+        "SouthEast",
+        "South",
+        "SouthWest",
+        "West",
+        "NorthWest",
+        "North",
+        "NorthEast"
+      ]
+    },
+    {
+      "rank": "check-airman",
+      "unity": "CheckAirman",
+      "gridSide": 8,
+      "targetCount": 7,
+      "cityClues": 7,
+      "durationSeconds": 90,
+      "directions": [
+        "East",
+        "SouthEast",
+        "South",
+        "SouthWest",
+        "West",
+        "NorthWest",
+        "North",
+        "NorthEast"
+      ]
+    },
+    {
+      "rank": "chief-pilot",
+      "unity": "ChiefPilot",
+      "gridSide": 8,
+      "targetCount": 8,
+      "cityClues": 8,
+      "durationSeconds": 75,
+      "directions": [
+        "East",
+        "SouthEast",
+        "South",
+        "SouthWest",
+        "West",
+        "NorthWest",
+        "North",
+        "NorthEast"
+      ]
+    }
+  ],
+  "modulePolicy": {
+    "code-search": "grid-draw.v1"
+  },
+  "pool": [
+    {
+      "id": "FIXTURE-CA-01",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-02",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-03",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-04",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-05",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-06",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-07",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-08",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CA-09",
+      "rank": "captain"
+    },
+    {
+      "id": "FIXTURE-CH-01",
+      "rank": "check-airman"
+    },
+    {
+      "id": "FIXTURE-CH-02",
+      "rank": "check-airman"
+    },
+    {
+      "id": "FIXTURE-CH-03",
+      "rank": "check-airman"
+    },
+    {
+      "id": "FIXTURE-CP-01",
+      "rank": "chief-pilot"
+    },
+    {
+      "id": "FIXTURE-FO-01",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-02",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-03",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-04",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-05",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-06",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-07",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-08",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-09",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-FO-10",
+      "rank": "first-officer"
+    },
+    {
+      "id": "FIXTURE-TR-01",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-02",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-03",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-04",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-05",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-06",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-07",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-08",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-09",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-10",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-11",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-12",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-13",
+      "rank": "trainee"
+    },
+    {
+      "id": "FIXTURE-TR-14",
+      "rank": "trainee"
+    }
+  ],
+  "cases": [
+    {
+      "name": "fixture/grid-draw.v1/trainee/trip-1",
+      "rank": "trainee",
+      "seed": "trip-1",
+      "boardIds": [
+        "FIXTURE-TR-06",
+        "FIXTURE-TR-01",
+        "FIXTURE-TR-08",
+        "FIXTURE-TR-04",
+        "FIXTURE-TR-05",
+        "FIXTURE-TR-12",
+        "FIXTURE-TR-09",
+        "FIXTURE-TR-03",
+        "FIXTURE-TR-07",
+        "FIXTURE-TR-13"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/trainee/trip-2",
+      "rank": "trainee",
+      "seed": "trip-2",
+      "boardIds": [
+        "FIXTURE-TR-03",
+        "FIXTURE-TR-11",
+        "FIXTURE-TR-12",
+        "FIXTURE-TR-02",
+        "FIXTURE-TR-09",
+        "FIXTURE-TR-04",
+        "FIXTURE-TR-08",
+        "FIXTURE-TR-01",
+        "FIXTURE-TR-05",
+        "FIXTURE-TR-10"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/trainee/trip-3",
+      "rank": "trainee",
+      "seed": "trip-3",
+      "boardIds": [
+        "FIXTURE-TR-11",
+        "FIXTURE-TR-07",
+        "FIXTURE-TR-08",
+        "FIXTURE-TR-14",
+        "FIXTURE-TR-12",
+        "FIXTURE-TR-02",
+        "FIXTURE-TR-05",
+        "FIXTURE-TR-13",
+        "FIXTURE-TR-10",
+        "FIXTURE-TR-04"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/first-officer/trip-1",
+      "rank": "first-officer",
+      "seed": "trip-1",
+      "boardIds": [
+        "FIXTURE-FO-06",
+        "FIXTURE-FO-08",
+        "FIXTURE-FO-04",
+        "FIXTURE-FO-10",
+        "FIXTURE-FO-07",
+        "FIXTURE-FO-05",
+        "FIXTURE-FO-09",
+        "FIXTURE-FO-03",
+        "FIXTURE-FO-01",
+        "FIXTURE-FO-02"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/first-officer/trip-2",
+      "rank": "first-officer",
+      "seed": "trip-2",
+      "boardIds": [
+        "FIXTURE-FO-05",
+        "FIXTURE-FO-02",
+        "FIXTURE-FO-08",
+        "FIXTURE-FO-04",
+        "FIXTURE-FO-07",
+        "FIXTURE-FO-09",
+        "FIXTURE-FO-03",
+        "FIXTURE-FO-10",
+        "FIXTURE-FO-06",
+        "FIXTURE-FO-01"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/first-officer/trip-3",
+      "rank": "first-officer",
+      "seed": "trip-3",
+      "boardIds": [
+        "FIXTURE-FO-09",
+        "FIXTURE-FO-04",
+        "FIXTURE-FO-02",
+        "FIXTURE-FO-07",
+        "FIXTURE-FO-06",
+        "FIXTURE-FO-05",
+        "FIXTURE-FO-08",
+        "FIXTURE-FO-03",
+        "FIXTURE-FO-10",
+        "FIXTURE-FO-01"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/captain/trip-1",
+      "rank": "captain",
+      "seed": "trip-1",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/captain/trip-2",
+      "rank": "captain",
+      "seed": "trip-2",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/captain/trip-3",
+      "rank": "captain",
+      "seed": "trip-3",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/check-airman/trip-1",
+      "rank": "check-airman",
+      "seed": "trip-1",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/check-airman/trip-2",
+      "rank": "check-airman",
+      "seed": "trip-2",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/check-airman/trip-3",
+      "rank": "check-airman",
+      "seed": "trip-3",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/chief-pilot/trip-1",
+      "rank": "chief-pilot",
+      "seed": "trip-1",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/chief-pilot/trip-2",
+      "rank": "chief-pilot",
+      "seed": "trip-2",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/chief-pilot/trip-3",
+      "rank": "chief-pilot",
+      "seed": "trip-3",
+      "boardIds": []
+    },
+    {
+      "name": "fixture/grid-draw.v1/trainee/(empty seed)",
+      "rank": "trainee",
+      "seed": "",
+      "boardIds": [
+        "FIXTURE-TR-12",
+        "FIXTURE-TR-03",
+        "FIXTURE-TR-04",
+        "FIXTURE-TR-11",
+        "FIXTURE-TR-14",
+        "FIXTURE-TR-13",
+        "FIXTURE-TR-06",
+        "FIXTURE-TR-10",
+        "FIXTURE-TR-09",
+        "FIXTURE-TR-05"
+      ]
+    },
+    {
+      "name": "fixture/grid-draw.v1/trainee/Zürich-✈",
+      "rank": "trainee",
+      "seed": "Zürich-✈",
+      "boardIds": [
+        "FIXTURE-TR-14",
+        "FIXTURE-TR-04",
+        "FIXTURE-TR-03",
+        "FIXTURE-TR-01",
+        "FIXTURE-TR-13",
+        "FIXTURE-TR-06",
+        "FIXTURE-TR-07",
+        "FIXTURE-TR-02",
+        "FIXTURE-TR-09",
+        "FIXTURE-TR-08"
+      ]
+    }
+  ],
+  "coverage": {
+    "perRank": {
+      "trainee": 10,
+      "first-officer": 10,
+      "captain": 9,
+      "check-airman": 3,
+      "chief-pilot": 1
+    }
+  }
+}

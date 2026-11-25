@@ -6,6 +6,7 @@ import { Roles } from "../auth/roles.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { DEAL_POLICY } from "../rules/dealer.js";
+import { GRID_DEAL_POLICY } from "../rules/grid-draw.js";
 import { RANKS } from "../rules/ranks.js";
 import { MODULE_IDS } from "../rules/modules.js";
 import type { ModuleId } from "../rules/modules.js";
@@ -140,7 +141,7 @@ export class ContentController {
       throw new ApiError(415, "invalid_request", "Send the body as application/json.");
     }
     const mapping = mappingFor(module);
-    if (!isModuleId(mapping.module) || !Object.hasOwn(DEAL_POLICY, mapping.module)) {
+    if (!isModuleId(mapping.module) || !(Object.hasOwn(DEAL_POLICY, mapping.module) || Object.hasOwn(GRID_DEAL_POLICY, mapping.module))) {
       throw new ApiError(404, "not_found", "No such endpoint.");
     }
     return this.content.tripCoverage(mapping.module, body?.itemIds);

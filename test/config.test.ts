@@ -54,6 +54,7 @@ describe("loadConfig", () => {
       storeVerifier: "none",
       bunny: undefined,
       apiDocs: true,
+      dealFromItems: [],
     });
   });
 
@@ -178,6 +179,29 @@ describe("loadConfig", () => {
       for (const bad of ["true", "1", "DEV-DEMO", "dev-demo,x"]) {
         const text = message(real("airplane_games_dev", { DEV_DEMO_WAIVER: bad }));
         expect(text, bad).toContain("DEV_DEMO_WAIVER");
+        expect(text, bad).not.toContain(`"${bad}"`);
+      }
+    });
+  });
+
+  describe("DEAL_FROM_ITEMS (docs/plans/code-search.md section G)", () => {
+    it("is off by default and when blank, in every APP_ENV", () => {
+      expect(loadConfig(local).dealFromItems).toEqual([]);
+      expect(loadConfig(production).dealFromItems).toEqual([]);
+      expect(loadConfig({ ...local, DEAL_FROM_ITEMS: "  " }).dealFromItems).toEqual([]);
+    });
+
+    it("accepts code-search, trimmed and deduplicated, under production too", () => {
+      expect(loadConfig({ ...local, DEAL_FROM_ITEMS: "code-search" }).dealFromItems).toEqual(["code-search"]);
+      expect(loadConfig({ ...local, DEAL_FROM_ITEMS: " code-search , code-search" }).dealFromItems).toEqual(["code-search"]);
+      expect(loadConfig({ ...production, DEAL_FROM_ITEMS: "code-search" }).dealFromItems).toEqual(["code-search"]);
+      expect(loadConfig({ ...local, APP_ENV: "test", DEAL_FROM_ITEMS: "code-search" }).dealFromItems).toEqual(["code-search"]);
+    });
+
+    it("refuses any other module or a stray comma, naming the variable and not the value", () => {
+      for (const bad of ["identifier", "military-aircraft-identifier", "Code-Search", "code-search,identifier", "code-search,", ","]) {
+        const text = message({ ...local, DEAL_FROM_ITEMS: bad });
+        expect(text, bad).toContain("DEAL_FROM_ITEMS");
         expect(text, bad).not.toContain(`"${bad}"`);
       }
     });

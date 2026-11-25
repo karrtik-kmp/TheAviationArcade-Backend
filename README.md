@@ -331,6 +331,27 @@ account; folders that are not the client's. Exit codes after that are as `media:
 
 Run the dry run first and read it, then `--yes`.
 
+### Dev Code Search boards
+
+An operator command that loads the client's Code Search master (compiled by Unity, `code_search_master.json`, 3,740 boards) into a DEV
+backend as `code-search` items, one item per board (plan [code-search](docs/plans/code-search.md)). No HTTP route, no photos:
+
+```
+npm run demo:seed-code-search -- --pack <code_search_master.json>          # dry run: prints, writes nothing
+npm run demo:seed-code-search -- --pack <code_search_master.json> --yes    # writes
+```
+
+The pack must be the compiled schemaVersion 2 file (`reviewState` `client-supplied`, its rank table equal to the ladder, every board valid
+for its rank through the port of Unity's `WordGridPuzzleValidator`). It is turned into the client-sheet layout (`Game ID | Level | Letters |
+Targets`) and imported through the same content import the Admin uses, as `operator:<os user>`. It creates boards only: a run that would
+update or retire a stored board is refused (exit 3) and the Admin import is the place for that. A re-run writes nothing. Refusals (exit 2,
+before connecting): a `DATABASE_URL` with no database or one ending `_prod`, under `APP_ENV=production` any name not ending `_dev`, `--yes`
+under production without `BLOB_STORE=bunny` (the import receipt keeps the generated sheet) or with `BLOB_STORE=none`. Running it on the
+hosted dev database needs the user's sign-off, as the demo seed above.
+
+Trips deal these boards only where `DEAL_FROM_ITEMS=code-search` is set (dev only; production leaves it unset): a Code Search Trip open
+then carries ten boards of the player's rank in `codeSearchBoards`.
+
 ## Purchases (wave P)
 
 Plan [docs/plans/purchases.md](docs/plans/purchases.md). The catalog is server data in `store_products`, edited by admins. Seed

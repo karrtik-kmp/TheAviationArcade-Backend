@@ -67,6 +67,12 @@ export interface ContentModuleMapping {
    * check does not apply. Military and Airport Spotter leave this unset.
    */
   readonly keyIsId?: true;
+  /**
+   * Optional rank-aware check of one stored item (Code Search: the id prefix names the rank, and the board fits the rung's
+   * grid). Returns the problems, empty when fine. The sheet parser runs the same rules itself; `ContentItemEditService.edit`
+   * calls this on every edit, a rank-only change included, because `validatePayload` has no rank. Unset = no rank rule.
+   */
+  validateItem?(id: string, rank: Rank, data: unknown): string[];
   /** The id for the Nth item of the module (Military: mil-a<N>), or undefined when N is beyond what an id can express. */
   formatId(n: number): string | undefined;
   /** The N in an id made by formatId, or undefined for any other shape (with `keyIsId`: the id shape check; a `-2` suffix keeps N). */

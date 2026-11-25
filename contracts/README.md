@@ -70,3 +70,28 @@ it). The expected decks are whatever `dealTripWithPolicy` deals, never hand-writ
 
 The repo's `.gitattributes` pins `contracts/*.json` to LF so a Windows checkout (`core.autocrlf=true`) keeps the
 bytes the test compares. Consumers should do the same for their vendored copy.
+
+## grid.v1.json
+
+Golden draws for Code Search (`grid-draw.v1`, `src/rules/grid-draw.ts`), the ladder, and the policy per Module.
+Generated from `src/rules/grid-fixture.ts`; expected `boardIds` are whatever `drawGridBoards` returns, never
+hand-written. Separate from `dealer.v1.json` (choice Modules), which does not list `code-search`.
+
+```
+{ "format": "grid.v1", "rng": "fnv1a32-utf16+xorshift32", "draw": "<recipe text>",
+  "flightsPerTrip": 10, "maxGridSide": 8,
+  "ladder":       [{ "rank", "unity", "gridSide", "targetCount", "cityClues", "durationSeconds", "directions": [..] }],  // 5, lowest first
+  "modulePolicy": { "code-search": "grid-draw.v1" },
+  "pool":         [{ "id", "rank" }],                                   // synthetic FIXTURE- ids, natural id order
+  "cases":        [{ "name", "rank", "seed", "boardIds": [..] }],       // [] = cannot deal (fewer than 10 at the rank)
+  "coverage":     { "perRank": { "<rank>": count } } }                  // min(10, boards at the rank) over `pool`
+```
+
+- Draw: keep the pool's boards of the rank in the given order; `rng` as in `dealer.v1.json` (FNV-1a 32 over the seed's
+  UTF-16 units seeds xorshift32; `Next(n) = u32 % n`); then `for i in 0..9: j = i + Next(n - i); swap(order[i], order[j])`
+  and deal `order[0..9]`. Unity `CodeSearchContent.Deal` has the same loop with `System.Random`; porting it to this RNG is
+  the Unity change. The `seed` is the Trip id on the server.
+- `ladder` is Unity `CodeSearchLadder.For` (`unity` = the `FlightRank` enum name, `directions` = `GridDirection` names).
+- `pool` items carry only `id` and `rank`: the draw ignores a board's content. Ids start with `FIXTURE-` so no importer
+  accepts them as real boards.
+- Format: 2-space indent, LF, one trailing newline, keys in the order shown. Versioning rules are as for the catalog.

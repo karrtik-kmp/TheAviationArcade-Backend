@@ -1,10 +1,24 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.30.0
+  version: 0.31.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.31.0 (Code Search on the server; docs/plans/code-search.md; ADDITIVE for every client, no existing field changes; migration 0030).**
+    `POST /v1/trips` (201 opened, 200 replayed) gains the OPTIONAL root field `codeSearchBoards`: ten boards in Unity's `CodeSearchBoardWire`
+    shape (schemas `CodeSearchBoard`, `CodeSearchTarget`, `GridCell`), present ONLY for a Code Search Trip that the server dealt a deck.
+    It is absent for every other module and for a Code Search Trip opened in client mode. All ten boards are sent at open (user
+    ruling R-6, 2026-11-25, an exception to R-1: one Flight at a time); a Code Search board IS its answer, so the targets are in it.
+    The deck is drawn by rule `grid-draw.v1` from approved Code Search items at the Trip's rank (Active Rank), stored with the Trip
+    (table `trip_decks`, migration 0030) and never changed afterwards: a replay with the same Idempotency-Key returns the same boards,
+    whatever staff edit or retire meanwhile. **Dev only for now:** the server deals from content items only when started with
+    `DEAL_FROM_ITEMS=code-search` (the default, and the production setting, is off: Trips open in client mode, no boards), and only when
+    the rank has at least ten dealable boards (otherwise client mode). Staff routes: the module `code-search` becomes importable,
+    exportable, listable and editable on the `/v1/admin/content/{module}/...` routes and `POST .../code-search/trip-coverage` answers
+    with the new policy `grid-draw.v1` (`TripCoverage.policy` gains that value; the release routes stay Military-only). One board is one
+    Flight and the deck is one Trip (Unity ADR-0007). No route is added; no other response changes.
 
     **Changelog 0.30.0 (photo review feedback; staff media; requests additive, RESPONSES BREAKING for strict staff-media readers and strict error parsers; no change for the game's own calls; migration 0029).**
     New route `POST /v1/admin/media/{mediaId}/review` (admin only): an admin sends a photo back with `changes_requested` or turns it down
@@ -1028,6 +1042,11 @@ paths:
         One open Flight Segment per player (it replaces the one-open-Round rule as the unit the app works in).
         Opening one abandons the player's open segment and its open Round and starts the new segment's Perfect Streak at
         0 (D-3), so `progress.perfectStreak` is 0 afterwards.
+
+        **Code Search boards (0.31.0, dev only).** Where the server runs with `DEAL_FROM_ITEMS=code-search`, a `code-search`
+        segment is dealt ten boards of its rank from the stored items, all sent here in `codeSearchBoards` (ruling R-6) and
+        stored with the segment, so a replay answers the same boards. Absent for every other module, when the switch is off,
+        and when fewer than ten boards are stored at the rank.
 
         **A full open segment is completed first.** When the open segment has all ten Rounds banked, opening a newer one
         completes it in the same transaction (its Clipper Cards, Award counters, Field Awards and Trip hint are recorded,
@@ -2268,7 +2287,14 @@ paths:
         Admin only. The body is the raw `.xlsx` (Content-Type
         `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, at most 5 MB; also bounded when
         unpacked). The first worksheet is read. Only modules with a mapping can be imported (today
-        `aircraft-identifier-military`, `airport-spotter` and `identifier`); any other module is 404 `not_found`.
+        `aircraft-identifier-military`, `airport-spotter`, `identifier` and `code-search`); any other module is 404 `not_found`.
+
+        `code-search` (the client's Code Search master pack; one item = one board; sheet columns `Game ID`, `Level`, `Letters`,
+        `Targets`, the last holding the pack's target list as JSON; an admin export adds `Id`, `Version` and `Status`): ids come from the
+        sheet (`CS-TR-0001` ... `CS-CP-0750`, the prefix naming the rank), payload `{ letters, targets[{ airportId, code, clue, city, row,
+        column, direction }] }`. Every board is checked by the same rules the game uses (a square grid of A-Z with a side of 1 to 8, the
+        target placements, no code appearing twice) and against its rank's rung (grid side, target count, city clues, directions); a row
+        that fails is a row error.
 
         `identifier` (commercial Aircraft Identifier; sheet "Airplane Identifier v1.xlsx", columns Level, Correct Answer,
         Wrong Answer 1-3, file; other columns are ignored, there is no photographer column): payload
@@ -2448,8 +2474,8 @@ paths:
         422 `unknown_item_ids` and nothing is computed; a stored id that is not approved is not counted. An
         empty body, `{}` and `{ "itemIds": [] }` are valid (the last counts nothing). Any other field is 400.
 
-        Only modules with a content mapping AND a deal policy answer (today `aircraft-identifier-military` and
-        `identifier`); any other module is 404 `not_found` (`airport-spotter` is importable but has no deal policy yet, so it is
+        Only modules with a content mapping AND a deal policy answer (today `aircraft-identifier-military`,
+        `identifier` and `code-search`, whose policy is `grid-draw.v1`: boards at the rank, capped at ten); any other module is 404 `not_found` (`airport-spotter` is importable but has no deal policy yet, so it is
         404 here). Order of checks: auth (401, 403), body size (413), body validation
         (400, then 415), and only then the module (404): a bad body for an unmapped module is 400, not 404.
       parameters:
@@ -4305,7 +4331,7 @@ components:
       name: module
       in: path
       required: true
-      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`, `airport-spotter` and `identifier`); others are 404.
+      description: A module ID. Only modules with an import mapping are served (today `aircraft-identifier-military`, `airport-spotter`, `identifier` and `code-search`); others are 404.
       schema: { $ref: "#/components/schemas/ModuleId" }
 
     ReleaseNumber:
@@ -5181,8 +5207,8 @@ components:
         module: { $ref: "#/components/schemas/ModuleId" }
         policy:
           type: string
-          enum: [lower-ranks, nearest-ranks]
-          description: The module's deal policy (`modulePolicy` in `contracts/dealer.v1.json`).
+          enum: [lower-ranks, nearest-ranks, grid-draw.v1]
+          description: The module's deal policy (`modulePolicy` in `contracts/dealer.v1.json`; `grid-draw.v1` for Code Search, `contracts/grid.v1.json`).
         flightsPerTrip: { type: integer, const: 10 }
         ranks:
           type: array
@@ -6159,6 +6185,56 @@ components:
       properties:
         trip: { $ref: "#/components/schemas/FlightSegment" }
         progress: { $ref: "#/components/schemas/Progress" }
+        codeSearchBoards:
+          type: array
+          minItems: 10
+          maxItems: 10
+          description: |
+            0.31.0. The ten Code Search boards dealt to this Trip, in deal order (user ruling R-6: all ten at open). Present ONLY when
+            the Trip's module is `code-search` and the server dealt it a deck; absent for every other module and when the Trip opened
+            in client mode (the dev switch `DEAL_FROM_ITEMS=code-search` is off, which is the default and the production setting, or
+            the rank has fewer than ten dealable boards). A replay (200) returns the same stored boards. A board reveals its answers
+            (the targets), as the client's own bundled pack does.
+          items: { $ref: "#/components/schemas/CodeSearchBoard" }
+    CodeSearchBoard:
+      type: object
+      additionalProperties: false
+      description: One Code Search board, Unity `CodeSearchBoardWire` (keys in this order).
+      required: [id, width, height, letters, durationSeconds, clueMode, targets]
+      properties:
+        id: { type: string, pattern: "^CS-(TR|FO|CA|CH|CP)-[0-9]{4}$", description: "The pack's board id; the prefix names the rank." }
+        width: { type: integer, minimum: 1, maximum: 8 }
+        height: { type: integer, minimum: 1, maximum: 8 }
+        letters: { type: string, minLength: 1, maxLength: 64, description: "width x height upper-case letters A-Z, row by row." }
+        durationSeconds: { type: integer, minimum: 1, description: "The rank's clock (client ruling 2026-11-19)." }
+        clueMode:
+          type: string
+          enum: [Code, City, Mixed]
+          description: "`Code` when no target shows its city, `City` when all do, `Mixed` otherwise."
+        targets:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/CodeSearchTarget" }
+    CodeSearchTarget:
+      type: object
+      additionalProperties: false
+      required: [airportId, code, clue, cityClue, cells]
+      properties:
+        airportId: { type: string }
+        code: { type: string, description: "The 3-letter IATA code to find." }
+        clue: { type: string, description: "The city (or airport) clue shown when `cityClue` is true." }
+        cityClue: { type: boolean, description: "True when the FIND entry shows the clue instead of the code." }
+        cells:
+          type: array
+          description: "The grid cells of the code, in reading order."
+          items: { $ref: "#/components/schemas/GridCell" }
+    GridCell:
+      type: object
+      additionalProperties: false
+      required: [row, column]
+      properties:
+        row: { type: integer, minimum: 0 }
+        column: { type: integer, minimum: 0 }
     FlightSegmentAbandoned:
       type: object
       additionalProperties: false

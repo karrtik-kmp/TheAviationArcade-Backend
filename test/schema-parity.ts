@@ -6,6 +6,7 @@ import {
   CONTENT_DOCUMENT_NAMES,
   CONTENT_SOURCES,
   CONTENT_STATUSES,
+  DECK_FORMATS,
   EDITORIAL_KINDS,
   EDITORIAL_STATUSES,
   MEDIA_CONTENT_TYPES,
@@ -71,6 +72,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "trips.trips_rank_check": RANKS,
   "trips.trips_status_check": TRIP_STATUSES,
   "trips.trips_outcome_check": TRIP_OUTCOMES,
+  "trip_decks.trip_decks_format_check": DECK_FORMATS,
   "player_counters.player_counters_previous_outcome_check": TRIP_OUTCOMES,
   "player_clipper_cards.player_clipper_cards_module_check": CARD_MODULES,
   "player_field_awards.player_field_awards_award_id_check": FIELD_AWARD_IDS,
@@ -119,6 +121,8 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "editorial_items.editorial_items_potd_rule_check",
   // `(status = 'abandoned') = (abandoned_at IS NOT NULL)`: a rule (migration 0027), though Postgres prints a single `= 'abandoned'::text`.
   "rounds.rounds_abandoned_at_check",
+  // `jsonb_typeof(deck) = 'array' AND jsonb_array_length(deck) = 10`: a shape rule (migration 0030), tested in migration-0030.e2e.test.ts.
+  "trip_decks.trip_decks_deck_check",
 ]);
 
 /** The quoted string literals of a CHECK expression, in order. Works on schema.ts text and on pg_get_constraintdef output. */

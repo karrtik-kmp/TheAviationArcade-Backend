@@ -126,14 +126,15 @@ export class DeckRandom {
 
   shuffle<T>(items: T[]): void {
     for (let i = items.length - 1; i > 0; i--) {
-      const j = this.next(i + 1);
+      const j = this.nextIndex(i + 1);
       const swap = items[i] as T;
       items[i] = items[j] as T;
       items[j] = swap;
     }
   }
 
-  private next(maxExclusive: number): number {
+  /** `Next(n)`: the next u32 modulo `maxExclusive`. Public so `grid-draw.v1` draws with the same stream. */
+  nextIndex(maxExclusive: number): number {
     return this.nextUInt() % maxExclusive;
   }
 

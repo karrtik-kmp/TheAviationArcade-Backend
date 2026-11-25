@@ -23,6 +23,7 @@
     "auth:emulator": "node scripts/auth-emulator.mjs",
     "media:import": "nest build && node scripts/media-import.mjs",
     "demo:seed-content": "nest build && node scripts/demo-seed-content.mjs",
+    "demo:seed-code-search": "nest build && node scripts/demo-seed-code-search.mjs",
     "store:seed-demo": "nest build && node scripts/store-seed-demo.mjs"
   },
   "dependencies": {

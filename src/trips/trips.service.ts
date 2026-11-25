@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { and, eq } from "drizzle-orm";
+import { APP_CONFIG } from "../config/config.module.js";
+import type { AppConfig } from "../config/config.module.js";
+import type { GridWireBoard } from "../content/grid-boards.js";
 import { PlayerBalance } from "../balance/player-balance.js";
 import { DatabaseService } from "../database/database.module.js";
 import type { BalanceChange, Step } from "../balance/player-balance.js";
@@ -23,6 +26,7 @@ import {
   withLiveStreak,
 } from "./trip-store.js";
 import type { LivePlayer, TripView } from "./trip-store.js";
+import { dealCodeSearchDeck, dealsDeck, readCodeSearchBoards } from "./trip-deck.js";
 import { completeFullTrip, completionChange, storedCompletion } from "./trip-completion.js";
 import type { CompletionLists } from "./trip-completion.js";
 
@@ -34,7 +38,7 @@ export type OpenTripInput = {
 };
 
 export type OpenTripOutcome =
-  | { kind: "opened" | "replayed"; trip: TripView; player: LivePlayer }
+  | { kind: "opened" | "replayed"; trip: TripView; player: LivePlayer; codeSearchBoards?: GridWireBoard[] }
   | { kind: "no_player" }
   | { kind: "local_date_mismatch" }
   /** The Idempotency-Key was used before with a different request (U14: a key names one intent). */
@@ -66,6 +70,7 @@ export class TripsService {
   constructor(
     private readonly balance: PlayerBalance,
     private readonly database: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /** Every Progress this service returns reads the Perfect Streak through withLiveStreak (U13, lazy expiry), replays included. */
@@ -91,8 +96,8 @@ export class TripsService {
    */
   async openTrip(principal: string, idempotencyKey: string, input: OpenTripInput): Promise<OpenTripOutcome> {
     type Inner =
-      | { kind: "opened"; trip: TripView }
-      | { kind: "replayed"; trip: TripView }
+      | { kind: "opened"; trip: TripView; codeSearchBoards?: GridWireBoard[] }
+      | { kind: "replayed"; trip: TripView; codeSearchBoards?: GridWireBoard[] }
       | { kind: "local_date_mismatch" }
       | { kind: "idempotency_key_reused" };
     const result = await this.balance.update<Inner>(principal, async ({ player, now, tx }): Promise<Step<Inner>> => {
@@ -111,7 +116,15 @@ export class TripsService {
           existing.utcOffsetMinutes !== input.utcOffsetMinutes ||
           existing.contentVersion !== input.contentVersion
         ) return { value: { kind: "idempotency_key_reused" } };
-        return { value: { kind: "replayed", trip: await tripView(tx, existing, player.perfectStreak, now) } };
+        // A replay answers the stored deck (if the Trip was dealt one), never a fresh draw.
+        const boards = await readCodeSearchBoards(tx, existing.id);
+        return {
+          value: {
+            kind: "replayed",
+            trip: await tripView(tx, existing, player.perfectStreak, now),
+            ...(boards ? { codeSearchBoards: boards } : {}),
+          },
+        };
       }
 
       if (!localDateMatches(input.localDate, now, input.utcOffsetMinutes)) return { value: { kind: "local_date_mismatch" } };
@@ -130,10 +143,11 @@ export class TripsService {
       await abandonOpenRounds(tx, principal, now);
 
       const rank = activeRankFor(player.statusPoints, player.activeRank);
+      const tripId = randomUUID();
       const [row] = await tx
         .insert(trips)
         .values({
-          id: randomUUID(),
+          id: tripId,
           playerId: principal,
           idempotencyKey,
           module: input.module,
@@ -150,8 +164,13 @@ export class TripsService {
         })
         .returning();
       if (!row) throw new Error("Flight Segment was not stored.");
+      // Dev-only dealing from content items (DEAL_FROM_ITEMS); only Code Search, only a real new open. No deck = client mode.
+      let boards: GridWireBoard[] | undefined;
+      if (dealsDeck(input.module, this.config.dealFromItems) && (await dealCodeSearchDeck(tx, tripId, rank, now))) {
+        boards = await readCodeSearchBoards(tx, tripId);
+      }
       return {
-        value: { kind: "opened", trip: await tripView(tx, row, 0, now) },
+        value: { kind: "opened", trip: await tripView(tx, row, 0, now), ...(boards ? { codeSearchBoards: boards } : {}) },
         ...(change ? { change } : {}),
         // The "write at Trip end" trigger: the completed segment's copy is due now (C3).
         ...(completed ? { republish: true as const, mirrorNow: true as const, logbook: true as const } : {}),
@@ -161,8 +180,10 @@ export class TripsService {
     // Neither an open (which may post a trip_grant hint through the implicit completion) nor a Trip hint can be refused for funds: only additions post.
     if (result.kind === "insufficient") throw new Error("Opening a Flight Segment was refused for funds.");
     const value = result.value;
-    if (value.kind === "opened") return { kind: "opened", trip: value.trip, player: await this.live(result.player) };
-    if (value.kind === "replayed") return { kind: "replayed", trip: value.trip, player: await this.live(result.player) };
+    if (value.kind === "opened" || value.kind === "replayed") {
+      const { kind, trip, codeSearchBoards } = value;
+      return { kind, trip, player: await this.live(result.player), ...(codeSearchBoards ? { codeSearchBoards } : {}) };
+    }
     return value;
   }
 

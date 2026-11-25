@@ -23,6 +23,7 @@ import { DEMO_HINT_5, DEMO_MILES_5000, DEMO_PASS_MONTHLY, seedDemoProducts } fro
 import { APP_CONFIG, loadConfig } from "../src/config/config.module.js";
 import { fakeReference } from "../src/purchases/fake-store-verifier.js";
 import { emulatorToken } from "./tokens.js";
+import { clearCodeSearchItems, insertCodeSearchItems, loadSampleRecords } from "./code-search-rows.js";
 import { factsFor, newKey, openBody } from "./trip-helpers.js";
 
 // docs/openapi.yaml is the client contract. These tests fail when it and the code drift.
@@ -479,6 +480,59 @@ describe("openapi contract: real responses validate against the spec", () => {
     expect(auditBad.status).toBe(400);
     check("Error", auditBad.body);
     rejects("AuditEventList", { events: [{ ...editEvent, action: "not_an_action" }] });
+  });
+
+  it("Code Search Trip open (0.31.0): a dealt open and its replay validate, another module carries no codeSearchBoards, a stripped board is refused", async () => {
+    const records = loadSampleRecords();
+    expect(records, "test/fixtures/code-search-sample.json is missing").toBeDefined();
+    // The shared app has the dev switch off (the default); a second app deals from items.
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(APP_CONFIG)
+      .useValue({ ...loadConfig(process.env), dealFromItems: ["code-search"] })
+      .compile();
+    const dealApp = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, bodyParser: false });
+    configureApp(dealApp);
+    await dealApp.listen(0, "127.0.0.1");
+    const dealServer = dealApp.getHttpServer();
+    const playerUid = `spec-cs-${randomUUID()}`;
+    const player = { Authorization: `Bearer ${emulatorToken(playerUid)}` };
+    try {
+      await clearCodeSearchItems(sql);
+      await insertCodeSearchItems(sql, records!);
+      expect((await request(dealServer).put("/v1/me").set(player)).status).toBe(201);
+      const key = newKey();
+      const opened = await request(dealServer).post("/v1/trips").set(player).set("Idempotency-Key", key).send(openBody("code-search"));
+      expect(opened.status).toBe(201);
+      check("FlightSegmentEnvelope", opened.body);
+      expect(opened.body.codeSearchBoards).toHaveLength(10);
+      const replay = await request(dealServer).post("/v1/trips").set(player).set("Idempotency-Key", key).send(openBody("code-search"));
+      expect(replay.status).toBe(200);
+      check("FlightSegmentEnvelope", replay.body);
+      expect(replay.body.codeSearchBoards).toEqual(opened.body.codeSearchBoards);
+      check("CodeSearchBoard", opened.body.codeSearchBoards[0]);
+
+      const other = await request(dealServer).post("/v1/trips").set(player).set("Idempotency-Key", newKey()).send(openBody("identifier"));
+      expect(other.status).toBe(201);
+      check("FlightSegmentEnvelope", other.body);
+      expect(other.body).not.toHaveProperty("codeSearchBoards");
+
+      // Contract strictness: an unknown key, a short deck and a missing board key are all refused.
+      const board = opened.body.codeSearchBoards[0];
+      rejects("CodeSearchBoard", { ...board, answer: "x" });
+      rejects("CodeSearchBoard", { ...board, clueMode: "Hard" });
+      const { durationSeconds: _d, ...withoutClock } = board;
+      rejects("CodeSearchBoard", withoutClock);
+      rejects("CodeSearchTarget", { ...board.targets[0], cells: [{ row: 0 }] });
+      rejects("FlightSegmentEnvelope", { ...opened.body, codeSearchBoards: opened.body.codeSearchBoards.slice(1) });
+      // With the switch off (the shared app, the default) a Code Search open validates without the field.
+      const client = await request(server).post("/v1/trips").set(player).set("Idempotency-Key", newKey()).send(openBody("code-search"));
+      expect(client.status).toBe(201);
+      check("FlightSegmentEnvelope", client.body);
+      expect(client.body).not.toHaveProperty("codeSearchBoards");
+    } finally {
+      await clearCodeSearchItems(sql);
+      await dealApp.close();
+    }
   });
 
   it("Miles packs: a real purchase response, the product lists and a staff row validate against the spec", async () => {

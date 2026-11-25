@@ -9,11 +9,14 @@ import type { ContentImportRow } from "../db/schema.js";
 import { militaryCardKey } from "../rules/clipper-cards.js";
 import { DEAL_POLICY, tripCoverage } from "../rules/dealer.js";
 import type { DealPolicy } from "../rules/dealer.js";
+import { GRID_DEAL_POLICY, gridCoverage } from "../rules/grid-draw.js";
+import type { GridPolicy } from "../rules/grid-draw.js";
 import type { ModuleId } from "../rules/modules.js";
 import { RANKS, isRank } from "../rules/ranks.js";
 import type { Rank } from "../rules/ranks.js";
 import { FLIGHTS_PER_TRIP } from "../rules/trips.js";
 import { rowToDealItem } from "./deal-items.js";
+import { rowToGridBoard } from "./grid-boards.js";
 import { BLOB_STORE } from "../storage/blob-store.js";
 import { storeImportBlob } from "./import-blob.js";
 import type { BlobStore } from "../storage/blob-store.js";
@@ -326,11 +329,13 @@ export class ContentService {
    * stored id that is not approved is simply not counted. The caller has checked that the module has a
    * DEAL_POLICY. Repeated ids count once.
    */
-  async tripCoverage(module: ModuleId, itemIds?: readonly string[]): Promise<{ module: ModuleId; policy: DealPolicy; flightsPerTrip: number; ranks: { rank: Rank; dealable: number }[] }> {
-    const policy = DEAL_POLICY[module];
+  async tripCoverage(module: ModuleId, itemIds?: readonly string[]): Promise<{ module: ModuleId; policy: DealPolicy | GridPolicy; flightsPerTrip: number; ranks: { rank: Rank; dealable: number }[] }> {
+    const choicePolicy = Object.hasOwn(DEAL_POLICY, module) ? DEAL_POLICY[module] : undefined;
+    const gridPolicy = Object.hasOwn(GRID_DEAL_POLICY, module) ? GRID_DEAL_POLICY[module] : undefined;
+    const policy = choicePolicy ?? gridPolicy;
     if (!policy) throw new ApiError(404, "not_found", "No such endpoint.");
     const rows = await this.database.db
-      .select({ id: contentItems.id, rank: contentItems.rank, status: contentItems.status, data: contentItems.data })
+      .select({ id: contentItems.id, rank: contentItems.rank, status: contentItems.status, version: contentItems.version, data: contentItems.data })
       .from(contentItems)
       .where(eq(contentItems.module, module));
     const wanted = itemIds ? new Set(itemIds) : undefined;
@@ -343,6 +348,15 @@ export class ContentService {
       }
     }
     const counted = rows.filter((r) => r.status === "approved" && (!wanted || wanted.has(r.id))).sort((a, b) => compareIds(a.id, b.id));
+    if (gridPolicy && !choicePolicy) {
+      // Grid modules: a board counts only when it validates and fits its rung (the same filter as dealing it).
+      const boards = counted.flatMap((r) => (isRank(r.rank) && rowToGridBoard({ id: r.id, rank: r.rank, version: r.version, data: r.data }) ? [{ rank: r.rank }] : []));
+      if (boards.length < counted.length) {
+        this.logger.warn(`trip coverage for ${module}: ${counted.length - boards.length} approved row(s) are not valid boards for their rank and were left out`);
+      }
+      const perRank = gridCoverage(boards);
+      return { module, policy: gridPolicy, flightsPerTrip: FLIGHTS_PER_TRIP, ranks: RANKS.map((rank) => ({ rank, dealable: perRank[rank] })) };
+    }
     const pool = counted.flatMap((r) => {
       const item = rowToDealItem(r);
       return item ? [item] : [];
@@ -351,7 +365,7 @@ export class ContentService {
       this.logger.warn(`trip coverage for ${module}: ${counted.length - pool.length} approved row(s) have a malformed payload and were left out`);
     }
     const perRank = tripCoverage(module, pool);
-    return { module, policy, flightsPerTrip: FLIGHTS_PER_TRIP, ranks: RANKS.map((rank) => ({ rank, dealable: perRank[rank] })) };
+    return { module, policy: policy as DealPolicy, flightsPerTrip: FLIGHTS_PER_TRIP, ranks: RANKS.map((rank) => ({ rank, dealable: perRank[rank] })) };
   }
 
   /** The module's items as an xlsx in the client's column wording, natural id order. */

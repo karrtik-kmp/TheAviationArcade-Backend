@@ -43,6 +43,9 @@ export const ADMIN_AUDIT_ACTIONS = [
   "media_review",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
+/** Formats of a stored Trip deck (`trip_decks.format`, migration 0030). Only Code Search deals one: `grid.v1` (docs/plans/code-search.md section G). */
+export const DECK_FORMATS = ["grid.v1"] as const;
+export type DeckFormat = (typeof DECK_FORMATS)[number];
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
 export const CONTENT_DOCUMENT_NAMES = ["field-awards", "clipper-cards", "aircraft-tags"] as const;
 /** Account roles (Backend ADR-0002). Only an `active` row grants anything (`blocked` is a photographer-only state, plan R-d); `admin` includes every `photographer` permission. */

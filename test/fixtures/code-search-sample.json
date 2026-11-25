@@ -1,0 +1,3964 @@
+{
+ "schemaVersion": 2,
+ "packId": "code-search-client-master",
+ "contentVersion": "2026-11-17-revised",
+ "moduleId": "code-search",
+ "reviewState": "client-supplied",
+ "source": "docs/client-content/2026-11-19/Code_Search_Slot_Details_REVISED_24000.csv",
+ "sourceSha256": "7b727c43f66333747546488adc818692946c79e6db2c69f4e19aac6535bd0c4c",
+ "ranks": [
+  {
+   "rank": "Trainee",
+   "gridSide": 6,
+   "targetCount": 4,
+   "cityClues": 0,
+   "durationSeconds": 60,
+   "directions": [
+    "East",
+    "South"
+   ]
+  },
+  {
+   "rank": "FirstOfficer",
+   "gridSide": 7,
+   "targetCount": 6,
+   "cityClues": 2,
+   "durationSeconds": 75,
+   "directions": [
+    "East",
+    "SouthEast",
+    "South",
+    "SouthWest"
+   ]
+  },
+  {
+   "rank": "Captain",
+   "gridSide": 8,
+   "targetCount": 7,
+   "cityClues": 4,
+   "durationSeconds": 90,
+   "directions": [
+    "East",
+    "SouthEast",
+    "South",
+    "SouthWest",
+    "West",
+    "NorthWest",
+    "North",
+    "NorthEast"
+   ]
+  },
+  {
+   "rank": "CheckAirman",
+   "gridSide": 8,
+   "targetCount": 7,
+   "cityClues": 7,
+   "durationSeconds": 90,
+   "directions": [
+    "East",
+    "SouthEast",
+    "South",
+    "SouthWest",
+    "West",
+    "NorthWest",
+    "North",
+    "NorthEast"
+   ]
+  },
+  {
+   "rank": "ChiefPilot",
+   "gridSide": 8,
+   "targetCount": 8,
+   "cityClues": 8,
+   "durationSeconds": 75,
+   "directions": [
+    "East",
+    "SouthEast",
+    "South",
+    "SouthWest",
+    "West",
+    "NorthWest",
+    "North",
+    "NorthEast"
+   ]
+  }
+ ],
+ "records": [
+  {
+   "id": "CS-CA-0001",
+   "rank": "Captain",
+   "letters": "EFQEXDNIXLSDTEWOTEDLFODYQHAMDGBGATLHSBONTCHCFLLLLKOHGAOEPDQODBSL",
+   "targets": [
+    {
+     "airportId": "KFLL",
+     "code": "FLL",
+     "clue": "FORT LAUDERDALE",
+     "city": false,
+     "row": 5,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "KAEX",
+     "code": "AEX",
+     "clue": "ALEXANDRIA · LOUISIANA",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "LFSB",
+     "code": "BSL",
+     "clue": "BASEL · EUROAIRPORT",
+     "city": false,
+     "row": 7,
+     "column": 5,
+     "direction": "East"
+    },
+    {
+     "airportId": "KIND",
+     "code": "IND",
+     "clue": "INDIANAPOLIS",
+     "city": true,
+     "row": 0,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "HKJK",
+     "code": "NBO",
+     "clue": "NAIROBI · JOMO KENYATTA",
+     "city": true,
+     "row": 4,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "NZCH",
+     "code": "CHC",
+     "clue": "CHRISTCHURCH",
+     "city": true,
+     "row": 5,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KSDF",
+     "code": "SDF",
+     "clue": "LOUISVILLE",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0002",
+   "rank": "Captain",
+   "letters": "INGHNHAMTURWYRNMHLIZHXDPRSACNAIGTDGRTUGVFDNCQETWUTRIVFDCQWBBQUQR",
+   "targets": [
+    {
+     "airportId": "ZUUU",
+     "code": "CTU",
+     "clue": "CHENGDU · SHUANGLIU",
+     "city": false,
+     "row": 6,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KCRW",
+     "code": "CRW",
+     "clue": "CHARLESTON · WEST VIRGINIA",
+     "city": false,
+     "row": 5,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KPDX",
+     "code": "PDX",
+     "clue": "PORTLAND · OREGON",
+     "city": false,
+     "row": 2,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "KIND",
+     "code": "IND",
+     "clue": "INDIANAPOLIS",
+     "city": true,
+     "row": 6,
+     "column": 3,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "PANC",
+     "code": "ANC",
+     "clue": "ANCHORAGE",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "KITH",
+     "code": "ITH",
+     "clue": "ITHACA",
+     "city": true,
+     "row": 0,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "EDDH",
+     "code": "HAM",
+     "clue": "HAMBURG",
+     "city": true,
+     "row": 0,
+     "column": 5,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0003",
+   "rank": "Captain",
+   "letters": "ULFWYNMSBKMCHVUJVVNVYAKBGLHADUMYFDWURCLDHFCUARXKSHCNONTVBXZYYIDG",
+   "targets": [
+    {
+     "airportId": "VCBI",
+     "code": "CMB",
+     "clue": "COLOMBO",
+     "city": false,
+     "row": 4,
+     "column": 5,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "VOHS",
+     "code": "HYD",
+     "clue": "HYDERABAD",
+     "city": false,
+     "row": 1,
+     "column": 4,
+     "direction": "South"
+    },
+    {
+     "airportId": "KFWA",
+     "code": "FWA",
+     "clue": "FORT WAYNE",
+     "city": false,
+     "row": 5,
+     "column": 1,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KAUS",
+     "code": "AUS",
+     "clue": "AUSTIN",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KONT",
+     "code": "ONT",
+     "clue": "ONTARIO · CALIFORNIA",
+     "city": true,
+     "row": 6,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "OMAA",
+     "code": "AUH",
+     "clue": "ABU DHABI",
+     "city": true,
+     "row": 5,
+     "column": 4,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KCHS",
+     "code": "CHS",
+     "clue": "CHARLESTON · SOUTH CAROLINA",
+     "city": true,
+     "row": 6,
+     "column": 2,
+     "direction": "West"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0004",
+   "rank": "Captain",
+   "letters": "ZBBJDYSMQILBBPSZIBEDUMBDXJUVVLYGDIWDADEGZGTBBEFMTDWAIISKMIHJKCMN",
+   "targets": [
+    {
+     "airportId": "OBBI",
+     "code": "BAH",
+     "clue": "BAHRAIN",
+     "city": false,
+     "row": 5,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "EIDW",
+     "code": "DUB",
+     "clue": "DUBLIN",
+     "city": false,
+     "row": 4,
+     "column": 3,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KSEA",
+     "code": "SEA",
+     "clue": "SEATTLE",
+     "city": false,
+     "row": 6,
+     "column": 6,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "YSSY",
+     "code": "SYD",
+     "clue": "SYDNEY",
+     "city": true,
+     "row": 0,
+     "column": 6,
+     "direction": "West"
+    },
+    {
+     "airportId": "GMMN",
+     "code": "CMN",
+     "clue": "CASABLANCA",
+     "city": true,
+     "row": 7,
+     "column": 5,
+     "direction": "East"
+    },
+    {
+     "airportId": "KBWI",
+     "code": "BWI",
+     "clue": "BALTIMORE",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KLBB",
+     "code": "LBB",
+     "clue": "LUBBOCK",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0005",
+   "rank": "Captain",
+   "letters": "MFXGKOAKAIJHCYRLONLUPJMPUKBRBWWYXBAYLULHHDERGATZPFMALUFMQTZITFFZ",
+   "targets": [
+    {
+     "airportId": "OERK",
+     "code": "RUH",
+     "clue": "RIYADH",
+     "city": false,
+     "row": 3,
+     "column": 3,
+     "direction": "North"
+    },
+    {
+     "airportId": "LDZA",
+     "code": "ZAG",
+     "clue": "ZAGREB",
+     "city": false,
+     "row": 7,
+     "column": 2,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "ROAH",
+     "code": "OKA",
+     "clue": "NAHA · OKINAWA",
+     "city": false,
+     "row": 2,
+     "column": 0,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KBNA",
+     "code": "BNA",
+     "clue": "NASHVILLE",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "CYHZ",
+     "code": "YHZ",
+     "clue": "HALIFAX",
+     "city": true,
+     "row": 3,
+     "column": 7,
+     "direction": "South"
+    },
+    {
+     "airportId": "SPJC",
+     "code": "LIM",
+     "clue": "LIMA",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KOAK",
+     "code": "OAK",
+     "clue": "OAKLAND",
+     "city": true,
+     "row": 0,
+     "column": 5,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0006",
+   "rank": "Captain",
+   "letters": "BMPFJVEPCLTLWPENTUMWBJLKSCUARFCRRYMLGEUBAAKYIULZJWKSILAFWUMRRQMO",
+   "targets": [
+    {
+     "airportId": "KMLB",
+     "code": "MLB",
+     "clue": "MELBOURNE · FLORIDA",
+     "city": false,
+     "row": 2,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "MGGT",
+     "code": "GUA",
+     "clue": "GUATEMALA CITY",
+     "city": false,
+     "row": 4,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "EDDF",
+     "code": "FRA",
+     "clue": "FRANKFURT AM MAIN",
+     "city": false,
+     "row": 3,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "LPPT",
+     "code": "LIS",
+     "clue": "LISBON",
+     "city": true,
+     "row": 6,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "KTUS",
+     "code": "TUS",
+     "clue": "TUCSON",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KMYR",
+     "code": "MYR",
+     "clue": "MYRTLE BEACH",
+     "city": true,
+     "row": 4,
+     "column": 2,
+     "direction": "West"
+    },
+    {
+     "airportId": "KCLE",
+     "code": "CLE",
+     "clue": "CLEVELAND",
+     "city": true,
+     "row": 3,
+     "column": 6,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0007",
+   "rank": "Captain",
+   "letters": "IUOLFIQVIFNCFHVNTZOQKLJAKUDUBLUSXATVZSWLSSKCIGSAMIHLRBRLNFKOAZID",
+   "targets": [
+    {
+     "airportId": "EIDW",
+     "code": "DUB",
+     "clue": "DUBLIN",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KSAN",
+     "code": "SAN",
+     "clue": "SAN DIEGO",
+     "city": false,
+     "row": 3,
+     "column": 7,
+     "direction": "North"
+    },
+    {
+     "airportId": "LIRF",
+     "code": "FCO",
+     "clue": "ROME · FIUMICINO",
+     "city": false,
+     "row": 0,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "LFSB",
+     "code": "BSL",
+     "clue": "BASEL · EUROAIRPORT",
+     "city": true,
+     "row": 6,
+     "column": 5,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "LPPT",
+     "code": "LIS",
+     "clue": "LISBON",
+     "city": true,
+     "row": 6,
+     "column": 3,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "PHKO",
+     "code": "KOA",
+     "clue": "KONA · HAWAII",
+     "city": true,
+     "row": 7,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "ZUUU",
+     "code": "CTU",
+     "clue": "CHENGDU · SHUANGLIU",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "NorthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0008",
+   "rank": "Captain",
+   "letters": "LYCTSHQJUHJGKAVPSZEFZPHFTZJAJGBKJFCHGEXGISMFTEKRWKTAHIHOMHFLNXTT",
+   "targets": [
+    {
+     "airportId": "CYHZ",
+     "code": "YHZ",
+     "clue": "HALIFAX",
+     "city": false,
+     "row": 0,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KJFK",
+     "code": "JFK",
+     "clue": "NEW YORK · JOHN F. KENNEDY",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KAVP",
+     "code": "AVP",
+     "clue": "WILKES-BARRE–SCRANTON",
+     "city": false,
+     "row": 1,
+     "column": 5,
+     "direction": "East"
+    },
+    {
+     "airportId": "RJCC",
+     "code": "CTS",
+     "clue": "SAPPORO · NEW CHITOSE",
+     "city": true,
+     "row": 0,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KITH",
+     "code": "ITH",
+     "clue": "ITHACA",
+     "city": true,
+     "row": 6,
+     "column": 5,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KSMF",
+     "code": "SMF",
+     "clue": "SACRAMENTO",
+     "city": true,
+     "row": 5,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KPHF",
+     "code": "PHF",
+     "clue": "NEWPORT NEWS–WILLIAMSBURG",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0009",
+   "rank": "Captain",
+   "letters": "ITFYEHRQTAVZRBAHHNMGYQHIBCBHKFEXQAANXUVVAGARAEEHXMUMHXSBNJUATFAV",
+   "targets": [
+    {
+     "airportId": "VOMM",
+     "code": "MAA",
+     "clue": "CHENNAI",
+     "city": false,
+     "row": 6,
+     "column": 3,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "EGBB",
+     "code": "BHX",
+     "clue": "BIRMINGHAM · ENGLAND",
+     "city": false,
+     "row": 1,
+     "column": 5,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KBNA",
+     "code": "BNA",
+     "clue": "NASHVILLE",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "CYZF",
+     "code": "YZF",
+     "clue": "YELLOWKNIFE",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "MGGT",
+     "code": "GUA",
+     "clue": "GUATEMALA CITY",
+     "city": true,
+     "row": 5,
+     "column": 1,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "PANC",
+     "code": "ANC",
+     "clue": "ANCHORAGE",
+     "city": true,
+     "row": 1,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KITH",
+     "code": "ITH",
+     "clue": "ITHACA",
+     "city": true,
+     "row": 0,
+     "column": 0,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0010",
+   "rank": "Captain",
+   "letters": "HJJGLXBFCVLZFWBUIWXXBGWHXFVNULCDQVEEKLEBJFWSPLAJMPOIFWTCHNDWOFLZ",
+   "targets": [
+    {
+     "airportId": "RJTT",
+     "code": "HND",
+     "clue": "TOKYO · HANEDA",
+     "city": false,
+     "row": 7,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "ELLX",
+     "code": "LUX",
+     "clue": "LUXEMBOURG",
+     "city": false,
+     "row": 4,
+     "column": 5,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KATL",
+     "code": "ATL",
+     "clue": "ATLANTA",
+     "city": false,
+     "row": 5,
+     "column": 6,
+     "direction": "South"
+    },
+    {
+     "airportId": "VIDP",
+     "code": "DEL",
+     "clue": "DELHI · INDIRA GANDHI",
+     "city": true,
+     "row": 3,
+     "column": 7,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "EGKK",
+     "code": "LGW",
+     "clue": "LONDON · GATWICK",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "North"
+    },
+    {
+     "airportId": "KMFE",
+     "code": "MFE",
+     "clue": "MCALLEN",
+     "city": true,
+     "row": 6,
+     "column": 0,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "NZWN",
+     "code": "WLG",
+     "clue": "WELLINGTON",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "NorthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0011",
+   "rank": "Captain",
+   "letters": "HABJODAZMNAAJCWDXWMTOWFOQDKCUFZBNZEAILMAMJYYTBVWQUQHXBGHSPEKKXAH",
+   "targets": [
+    {
+     "airportId": "KFWA",
+     "code": "FWA",
+     "clue": "FORT WAYNE",
+     "city": false,
+     "row": 2,
+     "column": 6,
+     "direction": "North"
+    },
+    {
+     "airportId": "ZBAA",
+     "code": "PEK",
+     "clue": "BEIJING · CAPITAL",
+     "city": false,
+     "row": 7,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "LIRF",
+     "code": "FCO",
+     "clue": "ROME · FIUMICINO",
+     "city": false,
+     "row": 2,
+     "column": 6,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KTUL",
+     "code": "TUL",
+     "clue": "TULSA",
+     "city": true,
+     "row": 2,
+     "column": 3,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KMKE",
+     "code": "MKE",
+     "clue": "MILWAUKEE",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "CYYJ",
+     "code": "YYJ",
+     "clue": "VICTORIA · BRITISH COLUMBIA",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "West"
+    },
+    {
+     "airportId": "OBBI",
+     "code": "BAH",
+     "clue": "BAHRAIN",
+     "city": true,
+     "row": 0,
+     "column": 2,
+     "direction": "West"
+    }
+   ]
+  },
+  {
+   "id": "CS-CA-0012",
+   "rank": "Captain",
+   "letters": "LNBVHXDDZZRLIAMMLGYSAWDHBTVZJSGQLHAPYDDDUHGEREGUXHGIJQKCHLWFGUUX",
+   "targets": [
+    {
+     "airportId": "KLAS",
+     "code": "LAS",
+     "clue": "LAS VEGAS",
+     "city": false,
+     "row": 1,
+     "column": 3,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "OEJN",
+     "code": "JED",
+     "clue": "JEDDAH",
+     "city": false,
+     "row": 6,
+     "column": 4,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KATL",
+     "code": "ATL",
+     "clue": "ATLANTA",
+     "city": false,
+     "row": 4,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "CYEG",
+     "code": "YEG",
+     "clue": "EDMONTON",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "SBGL",
+     "code": "GIG",
+     "clue": "RIO DE JANEIRO · GALEAO",
+     "city": true,
+     "row": 5,
+     "column": 2,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "ELLX",
+     "code": "LUX",
+     "clue": "LUXEMBOURG",
+     "city": true,
+     "row": 4,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "MMSD",
+     "code": "SJD",
+     "clue": "LOS CABOS",
+     "city": true,
+     "row": 2,
+     "column": 3,
+     "direction": "SouthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0001",
+   "rank": "CheckAirman",
+   "letters": "TUABVMDSOQMALSMFWSRLHRDMGGOVDDEXTDHUTHORSBFDSYDOPLZGNACCQMIGZDCV",
+   "targets": [
+    {
+     "airportId": "KRSW",
+     "code": "RSW",
+     "clue": "FORT MYERS",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "West"
+    },
+    {
+     "airportId": "SKRG",
+     "code": "MDE",
+     "clue": "MEDELLIN · JOSE MARIA CORDOVA",
+     "city": true,
+     "row": 1,
+     "column": 6,
+     "direction": "South"
+    },
+    {
+     "airportId": "KMLB",
+     "code": "MLB",
+     "clue": "MELBOURNE · FLORIDA",
+     "city": true,
+     "row": 7,
+     "column": 1,
+     "direction": "North"
+    },
+    {
+     "airportId": "KHDN",
+     "code": "HDN",
+     "clue": "STEAMBOAT SPRINGS–HAYDEN",
+     "city": true,
+     "row": 4,
+     "column": 2,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KSHV",
+     "code": "SHV",
+     "clue": "SHREVEPORT",
+     "city": true,
+     "row": 1,
+     "column": 5,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "PHOG",
+     "code": "OGG",
+     "clue": "KAHULUI · MAUI",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "West"
+    },
+    {
+     "airportId": "DGAA",
+     "code": "ACC",
+     "clue": "ACCRA",
+     "city": true,
+     "row": 6,
+     "column": 5,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0002",
+   "rank": "CheckAirman",
+   "letters": "RJGDFEZWJYUKFUPTRGSRBOLNIGJBGJEMBKHBNJYPZBHGIDXEUZWILNLNLUYIIICE",
+   "targets": [
+    {
+     "airportId": "KMLU",
+     "code": "MLU",
+     "clue": "MONROE · LOUISIANA",
+     "city": true,
+     "row": 3,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KSYR",
+     "code": "SYR",
+     "clue": "SYRACUSE",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "CYUL",
+     "code": "YUL",
+     "clue": "MONTREAL · TRUDEAU",
+     "city": true,
+     "row": 7,
+     "column": 2,
+     "direction": "West"
+    },
+    {
+     "airportId": "KHGR",
+     "code": "HGR",
+     "clue": "HAGERSTOWN",
+     "city": true,
+     "row": 4,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KIND",
+     "code": "IND",
+     "clue": "INDIANAPOLIS",
+     "city": true,
+     "row": 7,
+     "column": 5,
+     "direction": "North"
+    },
+    {
+     "airportId": "KFOE",
+     "code": "FOE",
+     "clue": "TOPEKA",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "WMKP",
+     "code": "PEN",
+     "clue": "PENANG",
+     "city": true,
+     "row": 4,
+     "column": 7,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0003",
+   "rank": "CheckAirman",
+   "letters": "CICXLEMOZLITCBVIBJXHBKEIUKAZFLCCYGUUMLELXQLLSECLUAKSSVFDSOSCPBMU",
+   "targets": [
+    {
+     "airportId": "EGBB",
+     "code": "BHX",
+     "clue": "BIRMINGHAM · ENGLAND",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "West"
+    },
+    {
+     "airportId": "LFSB",
+     "code": "BSL",
+     "clue": "BASEL · EUROAIRPORT",
+     "city": true,
+     "row": 7,
+     "column": 5,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KCEC",
+     "code": "CEC",
+     "clue": "CRESCENT CITY",
+     "city": true,
+     "row": 5,
+     "column": 6,
+     "direction": "North"
+    },
+    {
+     "airportId": "KLIT",
+     "code": "LIT",
+     "clue": "LITTLE ROCK",
+     "city": true,
+     "row": 1,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KLAS",
+     "code": "LAS",
+     "clue": "LAS VEGAS",
+     "city": true,
+     "row": 5,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "RPVM",
+     "code": "CEB",
+     "clue": "CEBU",
+     "city": true,
+     "row": 3,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KCIC",
+     "code": "CIC",
+     "clue": "CHICO",
+     "city": true,
+     "row": 0,
+     "column": 0,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0004",
+   "rank": "CheckAirman",
+   "letters": "CBHXMAOVHXMSOIEGLLAYJLGHVAHTAGZHIGSBPSJZLEBTRMOBMRGQKMCDYTTDHRGT",
+   "targets": [
+    {
+     "airportId": "MSLP",
+     "code": "SAL",
+     "clue": "SAN SALVADOR",
+     "city": true,
+     "row": 4,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "EGBB",
+     "code": "BHX",
+     "clue": "BIRMINGHAM · ENGLAND",
+     "city": true,
+     "row": 0,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "EDDH",
+     "code": "HAM",
+     "clue": "HAMBURG",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "North"
+    },
+    {
+     "airportId": "LGAV",
+     "code": "ATH",
+     "clue": "ATHENS",
+     "city": true,
+     "row": 3,
+     "column": 4,
+     "direction": "West"
+    },
+    {
+     "airportId": "OOMS",
+     "code": "MCT",
+     "clue": "MUSCAT",
+     "city": true,
+     "row": 5,
+     "column": 5,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KMLI",
+     "code": "MLI",
+     "clue": "MOLINE · QUAD CITIES",
+     "city": true,
+     "row": 6,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "KGPT",
+     "code": "GPT",
+     "clue": "GULFPORT–BILOXI",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "SouthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0005",
+   "rank": "CheckAirman",
+   "letters": "WOGXHPKKCGYYTHTLJLSYDOTMNJSHATWFACEKOLPEJZBSPJEGWUNWAVHBSNUGJNXM",
+   "targets": [
+    {
+     "airportId": "CYYT",
+     "code": "YYT",
+     "clue": "ST. JOHN'S · NEWFOUNDLAND",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KGPT",
+     "code": "GPT",
+     "clue": "GULFPORT–BILOXI",
+     "city": true,
+     "row": 5,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "YSSY",
+     "code": "SYD",
+     "clue": "SYDNEY",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KOAK",
+     "code": "OAK",
+     "clue": "OAKLAND",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KASE",
+     "code": "ASE",
+     "clue": "ASPEN",
+     "city": true,
+     "row": 6,
+     "column": 4,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KPHX",
+     "code": "PHX",
+     "clue": "PHOENIX",
+     "city": true,
+     "row": 0,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "LEBL",
+     "code": "BCN",
+     "clue": "BARCELONA",
+     "city": true,
+     "row": 5,
+     "column": 2,
+     "direction": "NorthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0006",
+   "rank": "CheckAirman",
+   "letters": "LFGSPOIILSONWAPMWMHBMGTQSKPHNRKFQTNFCIDQKFMLHAYCIOKBBVIHGWDJCECP",
+   "targets": [
+    {
+     "airportId": "KSGF",
+     "code": "SGF",
+     "clue": "SPRINGFIELD · MISSOURI",
+     "city": true,
+     "row": 0,
+     "column": 3,
+     "direction": "West"
+    },
+    {
+     "airportId": "KLNK",
+     "code": "LNK",
+     "clue": "LINCOLN",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KPWM",
+     "code": "PWM",
+     "clue": "PORTLAND · MAINE",
+     "city": true,
+     "row": 0,
+     "column": 4,
+     "direction": "South"
+    },
+    {
+     "airportId": "HECA",
+     "code": "CAI",
+     "clue": "CAIRO",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KGRI",
+     "code": "GRI",
+     "clue": "GRAND ISLAND",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "KBHM",
+     "code": "BHM",
+     "clue": "BIRMINGHAM · ALABAMA",
+     "city": true,
+     "row": 2,
+     "column": 3,
+     "direction": "West"
+    },
+    {
+     "airportId": "ENGM",
+     "code": "OSL",
+     "clue": "OSLO · GARDERMOEN",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "West"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0007",
+   "rank": "CheckAirman",
+   "letters": "PATMWGWFFYAPVIQMZXIOJNUKLMDSYWVEBUAUZDAIBYBDFFJPRBUDEODUGUSKVLVJ",
+   "targets": [
+    {
+     "airportId": "BIKF",
+     "code": "KEF",
+     "clue": "REYKJAVIK · KEFLAVIK",
+     "city": true,
+     "row": 7,
+     "column": 3,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "EDDL",
+     "code": "DUS",
+     "clue": "DUSSELDORF",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "North"
+    },
+    {
+     "airportId": "KGRB",
+     "code": "GRB",
+     "clue": "GREEN BAY",
+     "city": true,
+     "row": 7,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "KSDF",
+     "code": "SDF",
+     "clue": "LOUISVILLE",
+     "city": true,
+     "row": 7,
+     "column": 2,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KIDA",
+     "code": "IDA",
+     "clue": "IDAHO FALLS",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "PAJN",
+     "code": "JNU",
+     "clue": "JUNEAU",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "KIAD",
+     "code": "IAD",
+     "clue": "WASHINGTON · DULLES",
+     "city": true,
+     "row": 4,
+     "column": 7,
+     "direction": "West"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0008",
+   "rank": "CheckAirman",
+   "letters": "PRRVBSYTLIGRUOCVWPISOASEFDGCLCJRNLFAZKNEXIXUOGMLLBLXVRVMZTUMGLAC",
+   "targets": [
+    {
+     "airportId": "KACK",
+     "code": "ACK",
+     "clue": "NANTUCKET",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "KBIL",
+     "code": "BIL",
+     "clue": "BILLINGS",
+     "city": true,
+     "row": 6,
+     "column": 1,
+     "direction": "North"
+    },
+    {
+     "airportId": "KELM",
+     "code": "ELM",
+     "clue": "ELMIRA–CORNING",
+     "city": true,
+     "row": 4,
+     "column": 7,
+     "direction": "South"
+    },
+    {
+     "airportId": "KBOS",
+     "code": "BOS",
+     "clue": "BOSTON",
+     "city": true,
+     "row": 0,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "EGPF",
+     "code": "GLA",
+     "clue": "GLASGOW",
+     "city": true,
+     "row": 7,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "KROA",
+     "code": "ROA",
+     "clue": "ROANOKE",
+     "city": true,
+     "row": 6,
+     "column": 5,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KCVG",
+     "code": "CVG",
+     "clue": "CINCINNATI",
+     "city": true,
+     "row": 7,
+     "column": 7,
+     "direction": "NorthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0009",
+   "rank": "CheckAirman",
+   "letters": "RPYREYLEPXDRULTAJQSTSADPYWMZHZTNYQRQQWLVTTYUVXWHJFYPLAHSBUNXSKCP",
+   "targets": [
+    {
+     "airportId": "KMRY",
+     "code": "MRY",
+     "clue": "MONTEREY",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "CYQR",
+     "code": "YQR",
+     "clue": "REGINA",
+     "city": true,
+     "row": 4,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "KATL",
+     "code": "ATL",
+     "clue": "ATLANTA",
+     "city": true,
+     "row": 1,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "CYYT",
+     "code": "YYT",
+     "clue": "ST. JOHN'S · NEWFOUNDLAND",
+     "city": true,
+     "row": 3,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "KAST",
+     "code": "AST",
+     "clue": "ASTORIA · OREGON",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "KPHX",
+     "code": "PHX",
+     "clue": "PHOENIX",
+     "city": true,
+     "row": 7,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KSHV",
+     "code": "SHV",
+     "clue": "SHREVEPORT",
+     "city": true,
+     "row": 6,
+     "column": 7,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0010",
+   "rank": "CheckAirman",
+   "letters": "UEPNSIEMTRRAUSPGGAPTZOLCBUDHKPQTBOXUWOIMQYXYEPNUYRFFXFKJZDEEMTMR",
+   "targets": [
+    {
+     "airportId": "LGAV",
+     "code": "ATH",
+     "clue": "ATHENS",
+     "city": true,
+     "row": 1,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "CYQB",
+     "code": "YQB",
+     "clue": "QUEBEC CITY",
+     "city": true,
+     "row": 6,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "LPPR",
+     "code": "OPO",
+     "clue": "PORTO",
+     "city": true,
+     "row": 4,
+     "column": 5,
+     "direction": "North"
+    },
+    {
+     "airportId": "KMFE",
+     "code": "MFE",
+     "clue": "MCALLEN",
+     "city": true,
+     "row": 7,
+     "column": 6,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "ESSA",
+     "code": "ARN",
+     "clue": "STOCKHOLM · ARLANDA",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "LKPR",
+     "code": "PRG",
+     "clue": "PRAGUE",
+     "city": true,
+     "row": 0,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "EIDW",
+     "code": "DUB",
+     "clue": "DUBLIN",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "West"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0011",
+   "rank": "CheckAirman",
+   "letters": "ERJHNMFYTJGILVNVWHBWPFXKLBMEYMRBWOCELGDXKUZSJCDEMZOYJKDPCFSCYINC",
+   "targets": [
+    {
+     "airportId": "EDDM",
+     "code": "MUC",
+     "clue": "MUNICH",
+     "city": true,
+     "row": 6,
+     "column": 0,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "CYYZ",
+     "code": "YYZ",
+     "clue": "TORONTO · PEARSON",
+     "city": true,
+     "row": 7,
+     "column": 4,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KFMN",
+     "code": "FMN",
+     "clue": "FARMINGTON",
+     "city": true,
+     "row": 0,
+     "column": 6,
+     "direction": "West"
+    },
+    {
+     "airportId": "ZSHC",
+     "code": "HGH",
+     "clue": "HANGZHOU",
+     "city": true,
+     "row": 0,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KCLE",
+     "code": "CLE",
+     "clue": "CLEVELAND",
+     "city": true,
+     "row": 5,
+     "column": 5,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "SKRG",
+     "code": "MDE",
+     "clue": "MEDELLIN · JOSE MARIA CORDOVA",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KCYS",
+     "code": "CYS",
+     "clue": "CHEYENNE",
+     "city": true,
+     "row": 7,
+     "column": 3,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CH-0012",
+   "rank": "CheckAirman",
+   "letters": "VEYWDLQYUQMCODUPRIIVFDIFHUNGRLGCGFMYRMBKHKILQAIBDYNDUISTKRUPAIEK",
+   "targets": [
+    {
+     "airportId": "KLBB",
+     "code": "LBB",
+     "clue": "LUBBOCK",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KCOD",
+     "code": "COD",
+     "clue": "CODY",
+     "city": true,
+     "row": 1,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYQR",
+     "code": "YQR",
+     "clue": "REGINA",
+     "city": true,
+     "row": 0,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "CYKF",
+     "code": "YKF",
+     "clue": "KITCHENER–WATERLOO",
+     "city": true,
+     "row": 6,
+     "column": 1,
+     "direction": "North"
+    },
+    {
+     "airportId": "KIDA",
+     "code": "IDA",
+     "clue": "IDAHO FALLS",
+     "city": true,
+     "row": 5,
+     "column": 2,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "ZSHC",
+     "code": "HGH",
+     "clue": "HANGZHOU",
+     "city": true,
+     "row": 3,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "KMLU",
+     "code": "MLU",
+     "clue": "MONROE · LOUISIANA",
+     "city": true,
+     "row": 4,
+     "column": 2,
+     "direction": "SouthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0001",
+   "rank": "ChiefPilot",
+   "letters": "AWXUTSIEDKSRMIRBYCLEJKEFLDGCUFNPJXLCLSHIKTEWNLBOELHZIFABORXZZTHG",
+   "targets": [
+    {
+     "airportId": "MMGL",
+     "code": "GDL",
+     "clue": "GUADALAJARA",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "West"
+    },
+    {
+     "airportId": "MMSM",
+     "code": "NLU",
+     "clue": "MEXICO CITY · FELIPE ÁNGELES",
+     "city": true,
+     "row": 5,
+     "column": 4,
+     "direction": "North"
+    },
+    {
+     "airportId": "BIKF",
+     "code": "KEF",
+     "clue": "REYKJAVIK · KEFLAVIK",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "East"
+    },
+    {
+     "airportId": "YMHB",
+     "code": "HBA",
+     "clue": "HOBART",
+     "city": true,
+     "row": 4,
+     "column": 6,
+     "direction": "South"
+    },
+    {
+     "airportId": "KLFT",
+     "code": "LFT",
+     "clue": "LAFAYETTE · LOUISIANA",
+     "city": true,
+     "row": 5,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "KBOI",
+     "code": "BOI",
+     "clue": "BOISE",
+     "city": true,
+     "row": 6,
+     "column": 7,
+     "direction": "North"
+    },
+    {
+     "airportId": "KCLE",
+     "code": "CLE",
+     "clue": "CLEVELAND",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "LFML",
+     "code": "MRS",
+     "clue": "MARSEILLE",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "West"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0002",
+   "rank": "ChiefPilot",
+   "letters": "MMBPNSVWUESIYNMNTLKTWGVMRVZREUKANXMZBIDYHSEDDESTUGEBZJBSIQVQOSGW",
+   "targets": [
+    {
+     "airportId": "MROC",
+     "code": "SJO",
+     "clue": "SAN JOSE · COSTA RICA",
+     "city": true,
+     "row": 5,
+     "column": 6,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "SAEZ",
+     "code": "EZE",
+     "clue": "BUENOS AIRES · EZEIZA",
+     "city": true,
+     "row": 5,
+     "column": 2,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "YMML",
+     "code": "MEL",
+     "clue": "MELBOURNE · TULLAMARINE",
+     "city": true,
+     "row": 0,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KDBQ",
+     "code": "DBQ",
+     "clue": "DUBUQUE",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "KPNS",
+     "code": "PNS",
+     "clue": "PENSACOLA",
+     "city": true,
+     "row": 0,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "KBID",
+     "code": "BID",
+     "clue": "BLOCK ISLAND",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYTZ",
+     "code": "YTZ",
+     "clue": "TORONTO · BILLY BISHOP",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "RJAA",
+     "code": "NRT",
+     "clue": "TOKYO · NARITA",
+     "city": true,
+     "row": 4,
+     "column": 0,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0003",
+   "rank": "ChiefPilot",
+   "letters": "VUMNOSEKGDSZQDUVAGAFAWTMVGRCNBLIHPSBIUEIAQQCEMHKQOFADFEUXZRDIXKY",
+   "targets": [
+    {
+     "airportId": "KABE",
+     "code": "ABE",
+     "clue": "ALLENTOWN",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KMLU",
+     "code": "MLU",
+     "clue": "MONROE · LOUISIANA",
+     "city": true,
+     "row": 2,
+     "column": 7,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KBTV",
+     "code": "BTV",
+     "clue": "BURLINGTON · VERMONT",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KCSG",
+     "code": "CSG",
+     "clue": "COLUMBUS · GEORGIA",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KROA",
+     "code": "ROA",
+     "clue": "ROANOKE",
+     "city": true,
+     "row": 7,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KGRB",
+     "code": "GRB",
+     "clue": "GREEN BAY",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "EGPH",
+     "code": "EDI",
+     "clue": "EDINBURGH",
+     "city": true,
+     "row": 5,
+     "column": 4,
+     "direction": "South"
+    },
+    {
+     "airportId": "KAZO",
+     "code": "AZO",
+     "clue": "KALAMAZOO",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "NorthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0004",
+   "rank": "ChiefPilot",
+   "letters": "DOLJWPPRZGVNJNGLOXSQLBNECDYEQMPUMHDSAVEJAXEAGLSDEKHWWPODMXBCTKKJ",
+   "targets": [
+    {
+     "airportId": "KMCO",
+     "code": "MCO",
+     "clue": "ORLANDO",
+     "city": true,
+     "row": 4,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "KALO",
+     "code": "ALO",
+     "clue": "WATERLOO · IOWA",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "YSSY",
+     "code": "SYD",
+     "clue": "SYDNEY",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "KASE",
+     "code": "ASE",
+     "clue": "ASPEN",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "North"
+    },
+    {
+     "airportId": "KBGR",
+     "code": "BGR",
+     "clue": "BANGOR",
+     "city": true,
+     "row": 2,
+     "column": 5,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "RPLL",
+     "code": "MNL",
+     "clue": "MANILA · NINOY AQUINO",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KMKE",
+     "code": "MKE",
+     "clue": "MILWAUKEE",
+     "city": true,
+     "row": 7,
+     "column": 0,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KBWG",
+     "code": "BWG",
+     "clue": "BOWLING GREEN · KENTUCKY",
+     "city": true,
+     "row": 7,
+     "column": 2,
+     "direction": "NorthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0005",
+   "rank": "ChiefPilot",
+   "letters": "MOCABOLBOLHOUXOBNADDGNEBRLIITNUICFRCBWGAEFFWMXEQBQOSABVLNYUIDVTS",
+   "targets": [
+    {
+     "airportId": "HAAB",
+     "code": "ADD",
+     "clue": "ADDIS ABABA",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYOW",
+     "code": "YOW",
+     "clue": "OTTAWA",
+     "city": true,
+     "row": 7,
+     "column": 1,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KRNO",
+     "code": "RNO",
+     "clue": "RENO",
+     "city": true,
+     "row": 3,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "VCBI",
+     "code": "CMB",
+     "clue": "COLOMBO",
+     "city": true,
+     "row": 4,
+     "column": 3,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "RPVM",
+     "code": "CEB",
+     "clue": "CEBU",
+     "city": true,
+     "row": 4,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "KHOU",
+     "code": "HOU",
+     "clue": "HOUSTON · HOBBY",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KEUG",
+     "code": "EUG",
+     "clue": "EUGENE",
+     "city": true,
+     "row": 2,
+     "column": 6,
+     "direction": "South"
+    },
+    {
+     "airportId": "KFSD",
+     "code": "FSD",
+     "clue": "SIOUX FALLS",
+     "city": true,
+     "row": 5,
+     "column": 2,
+     "direction": "SouthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0006",
+   "rank": "ChiefPilot",
+   "letters": "RAEJLESAQBDIAZDHZEHOLIXIJHPMOLVNYOIGEIHWJISXRVLAYXEWVKUMLCNJPIRV",
+   "targets": [
+    {
+     "airportId": "KALO",
+     "code": "ALO",
+     "clue": "WATERLOO · IOWA",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "South"
+    },
+    {
+     "airportId": "KLEX",
+     "code": "LEX",
+     "clue": "LEXINGTON",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "CYXE",
+     "code": "YXE",
+     "clue": "SASKATOON",
+     "city": true,
+     "row": 6,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "KABE",
+     "code": "ABE",
+     "clue": "ALLENTOWN",
+     "city": true,
+     "row": 0,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KASE",
+     "code": "ASE",
+     "clue": "ASPEN",
+     "city": true,
+     "row": 0,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "LPPR",
+     "code": "OPO",
+     "clue": "PORTO",
+     "city": true,
+     "row": 4,
+     "column": 1,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KMLI",
+     "code": "MLI",
+     "clue": "MOLINE · QUAD CITIES",
+     "city": true,
+     "row": 6,
+     "column": 7,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "PHLI",
+     "code": "LIH",
+     "clue": "LIHUE · KAUAI",
+     "city": true,
+     "row": 0,
+     "column": 4,
+     "direction": "SouthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0007",
+   "rank": "ChiefPilot",
+   "letters": "AWYBMSTFLIZBMTJXNNTZUSZBZDGQMTNFMMHQVTCWMCMFARYCATIVOOKRHVFGZJRV",
+   "targets": [
+    {
+     "airportId": "OOMS",
+     "code": "MCT",
+     "clue": "MUSCAT",
+     "city": true,
+     "row": 4,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KFAR",
+     "code": "FAR",
+     "clue": "FARGO",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "KBZN",
+     "code": "BZN",
+     "clue": "BOZEMAN",
+     "city": true,
+     "row": 0,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KMSN",
+     "code": "MSN",
+     "clue": "MADISON",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KHDN",
+     "code": "HDN",
+     "clue": "STEAMBOAT SPRINGS–HAYDEN",
+     "city": true,
+     "row": 4,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "MMMY",
+     "code": "MTY",
+     "clue": "MONTERREY",
+     "city": true,
+     "row": 3,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "LATI",
+     "code": "TIA",
+     "clue": "TIRANA",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "EDDH",
+     "code": "HAM",
+     "clue": "HAMBURG",
+     "city": true,
+     "row": 7,
+     "column": 0,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0008",
+   "rank": "ChiefPilot",
+   "letters": "BUPFVJQVLGNCVUQDCFJACDBDSQHTYRBSQEMSYHIZSWFAQNDAHGEITUCNLPNDKGRW",
+   "targets": [
+    {
+     "airportId": "MUHA",
+     "code": "HAV",
+     "clue": "HAVANA",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "WSSS",
+     "code": "SIN",
+     "clue": "SINGAPORE",
+     "city": true,
+     "row": 3,
+     "column": 7,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KHDN",
+     "code": "HDN",
+     "clue": "STEAMBOAT SPRINGS–HAYDEN",
+     "city": true,
+     "row": 4,
+     "column": 5,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KGJT",
+     "code": "GJT",
+     "clue": "GRAND JUNCTION",
+     "city": true,
+     "row": 1,
+     "column": 1,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "SCEL",
+     "code": "SCL",
+     "clue": "SANTIAGO · ARTURO MERINO BENÍTEZ",
+     "city": true,
+     "row": 3,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "SABE",
+     "code": "AEP",
+     "clue": "BUENOS AIRES · AEROPARQUE",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KRDU",
+     "code": "RDU",
+     "clue": "RALEIGH–DURHAM",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "North"
+    },
+    {
+     "airportId": "CYYC",
+     "code": "YYC",
+     "clue": "CALGARY",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0009",
+   "rank": "ChiefPilot",
+   "letters": "BGAFPSZWSHLUAQRSFCSYOTVIUXLCJRCWNUNBICHIJUFMYRGVFUVOKENAFDDNJFVS",
+   "targets": [
+    {
+     "airportId": "KFAT",
+     "code": "FAT",
+     "clue": "FRESNO",
+     "city": true,
+     "row": 0,
+     "column": 3,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "RKPK",
+     "code": "PUS",
+     "clue": "BUSAN",
+     "city": true,
+     "row": 0,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KEKO",
+     "code": "EKO",
+     "clue": "ELKO",
+     "city": true,
+     "row": 6,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "SUMU",
+     "code": "MVD",
+     "clue": "MONTEVIDEO",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KRIC",
+     "code": "RIC",
+     "clue": "RICHMOND",
+     "city": true,
+     "row": 5,
+     "column": 5,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KSRQ",
+     "code": "SRQ",
+     "clue": "SARASOTA–BRADENTON",
+     "city": true,
+     "row": 1,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "PAJN",
+     "code": "JNU",
+     "clue": "JUNEAU",
+     "city": true,
+     "row": 5,
+     "column": 0,
+     "direction": "North"
+    },
+    {
+     "airportId": "KAGC",
+     "code": "AGC",
+     "clue": "PITTSBURGH · ALLEGHENY COUNTY",
+     "city": true,
+     "row": 6,
+     "column": 7,
+     "direction": "NorthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0010",
+   "rank": "ChiefPilot",
+   "letters": "MBJEFOYVGPHCMDMCLCUSLFRAUHMZEOYNXCERGVSUHYMAFQBVYDKKHGZRTHIELCYJ",
+   "targets": [
+    {
+     "airportId": "ELLX",
+     "code": "LUX",
+     "clue": "LUXEMBOURG",
+     "city": true,
+     "row": 2,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "KMEM",
+     "code": "MEM",
+     "clue": "MEMPHIS",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "NZCH",
+     "code": "CHC",
+     "clue": "CHRISTCHURCH",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "DNMM",
+     "code": "LOS",
+     "clue": "LAGOS",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "GMMX",
+     "code": "RAK",
+     "clue": "MARRAKESH",
+     "city": true,
+     "row": 4,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "KLGB",
+     "code": "LGB",
+     "clue": "LONG BEACH",
+     "city": true,
+     "row": 7,
+     "column": 4,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KACV",
+     "code": "ACV",
+     "clue": "ARCATA–EUREKA",
+     "city": true,
+     "row": 2,
+     "column": 7,
+     "direction": "North"
+    },
+    {
+     "airportId": "KMFE",
+     "code": "MFE",
+     "clue": "MCALLEN",
+     "city": true,
+     "row": 1,
+     "column": 6,
+     "direction": "SouthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0011",
+   "rank": "ChiefPilot",
+   "letters": "NHJPIIOWXQHYVKBQKAWREZVNVGXHPMLXJSDEXKEUPYUDNAXLNXCAQQFKSCVLJRWE",
+   "targets": [
+    {
+     "airportId": "KAUS",
+     "code": "AUS",
+     "clue": "AUSTIN",
+     "city": true,
+     "row": 6,
+     "column": 3,
+     "direction": "NorthWest"
+    },
+    {
+     "airportId": "KDAL",
+     "code": "DAL",
+     "clue": "DALLAS · LOVE FIELD",
+     "city": true,
+     "row": 5,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "ZBAD",
+     "code": "PKX",
+     "clue": "BEIJING · DAXING",
+     "city": true,
+     "row": 3,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KEWR",
+     "code": "EWR",
+     "clue": "NEWARK",
+     "city": true,
+     "row": 7,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "MUHA",
+     "code": "HAV",
+     "clue": "HAVANA",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "YMML",
+     "code": "MEL",
+     "clue": "MELBOURNE · TULLAMARINE",
+     "city": true,
+     "row": 3,
+     "column": 5,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KEKO",
+     "code": "EKO",
+     "clue": "ELKO",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KPNS",
+     "code": "PNS",
+     "clue": "PENSACOLA",
+     "city": true,
+     "row": 5,
+     "column": 0,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-CP-0012",
+   "rank": "ChiefPilot",
+   "letters": "MOALFBTMQXBJQWRAEHDKNSIMHODNCAICBMVRXJASEJDXBLIFICRDOTZFPSEQEORB",
+   "targets": [
+    {
+     "airportId": "OTHH",
+     "code": "DOH",
+     "clue": "DOHA",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "West"
+    },
+    {
+     "airportId": "KCDR",
+     "code": "CDR",
+     "clue": "CHADRON",
+     "city": true,
+     "row": 6,
+     "column": 1,
+     "direction": "NorthEast"
+    },
+    {
+     "airportId": "KALO",
+     "code": "ALO",
+     "clue": "WATERLOO · IOWA",
+     "city": true,
+     "row": 4,
+     "column": 6,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "HECA",
+     "code": "CAI",
+     "clue": "CAIRO",
+     "city": true,
+     "row": 3,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "KBRO",
+     "code": "BRO",
+     "clue": "BROWNSVILLE",
+     "city": true,
+     "row": 7,
+     "column": 7,
+     "direction": "West"
+    },
+    {
+     "airportId": "LFML",
+     "code": "MRS",
+     "clue": "MARSEILLE",
+     "city": true,
+     "row": 0,
+     "column": 7,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KBFL",
+     "code": "BFL",
+     "clue": "BAKERSFIELD",
+     "city": true,
+     "row": 0,
+     "column": 5,
+     "direction": "West"
+    },
+    {
+     "airportId": "KPIE",
+     "code": "PIE",
+     "clue": "ST. PETERSBURG–CLEARWATER",
+     "city": true,
+     "row": 7,
+     "column": 0,
+     "direction": "North"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0001",
+   "rank": "FirstOfficer",
+   "letters": "IJXLRWDAYAOOSPHHTRAZHAFKDAMZSBRTYWSNWAAECDILASYMQ",
+   "targets": [
+    {
+     "airportId": "KIAH",
+     "code": "IAH",
+     "clue": "HOUSTON · BUSH INTERCONTINENTAL",
+     "city": false,
+     "row": 0,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "KLAS",
+     "code": "LAS",
+     "clue": "LAS VEGAS",
+     "city": false,
+     "row": 6,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "EHAM",
+     "code": "AMS",
+     "clue": "AMSTERDAM · SCHIPHOL",
+     "city": false,
+     "row": 2,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KORD",
+     "code": "ORD",
+     "clue": "CHICAGO · O'HARE",
+     "city": false,
+     "row": 1,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "EDDF",
+     "code": "FRA",
+     "clue": "FRANKFURT AM MAIN",
+     "city": true,
+     "row": 3,
+     "column": 1,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "VTSP",
+     "code": "HKT",
+     "clue": "PHUKET",
+     "city": true,
+     "row": 2,
+     "column": 1,
+     "direction": "SouthEast"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0002",
+   "rank": "FirstOfficer",
+   "letters": "AHZHAXKHZWLGTTEHLDZYCOADDEMHSUCEYNLLIAVEVGMZSYDDR",
+   "targets": [
+    {
+     "airportId": "YSSY",
+     "code": "SYD",
+     "clue": "SYDNEY",
+     "city": false,
+     "row": 6,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KLAS",
+     "code": "LAS",
+     "clue": "LAS VEGAS",
+     "city": false,
+     "row": 2,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KDCA",
+     "code": "DCA",
+     "clue": "WASHINGTON · REAGAN NATIONAL",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "KDEN",
+     "code": "DEN",
+     "clue": "DENVER",
+     "city": false,
+     "row": 2,
+     "column": 3,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "CYVR",
+     "code": "YVR",
+     "clue": "VANCOUVER",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "NZWN",
+     "code": "WLG",
+     "clue": "WELLINGTON",
+     "city": true,
+     "row": 1,
+     "column": 2,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0003",
+   "rank": "FirstOfficer",
+   "letters": "EADELWUMVSRQBFCXWLGAUOBUREGOLDYDBHAGEICROKGHTTRZV",
+   "targets": [
+    {
+     "airportId": "NZWN",
+     "code": "WLG",
+     "clue": "WELLINGTON",
+     "city": false,
+     "row": 2,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYEG",
+     "code": "YEG",
+     "clue": "EDMONTON",
+     "city": false,
+     "row": 4,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "VIDP",
+     "code": "DEL",
+     "clue": "DELHI · INDIRA GANDHI",
+     "city": false,
+     "row": 0,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "EGPH",
+     "code": "EDI",
+     "clue": "EDINBURGH",
+     "city": false,
+     "row": 3,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KOAK",
+     "code": "OAK",
+     "clue": "OAKLAND",
+     "city": true,
+     "row": 3,
+     "column": 6,
+     "direction": "South"
+    },
+    {
+     "airportId": "KBUR",
+     "code": "BUR",
+     "clue": "BURBANK",
+     "city": true,
+     "row": 3,
+     "column": 1,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0004",
+   "rank": "FirstOfficer",
+   "letters": "OJYEDHSEEEAOKGGENDBFXSCMOIRRCYGLIMBVIGMGKMGHWLGCZ",
+   "targets": [
+    {
+     "airportId": "PANC",
+     "code": "ANC",
+     "clue": "ANCHORAGE",
+     "city": false,
+     "row": 1,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "OEJN",
+     "code": "JED",
+     "clue": "JEDDAH",
+     "city": false,
+     "row": 0,
+     "column": 1,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KCVG",
+     "code": "CVG",
+     "clue": "CINCINNATI",
+     "city": false,
+     "row": 4,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "SKBO",
+     "code": "BOG",
+     "clue": "BOGOTA",
+     "city": false,
+     "row": 2,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "SPJC",
+     "code": "LIM",
+     "clue": "LIMA",
+     "city": true,
+     "row": 4,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYEG",
+     "code": "YEG",
+     "clue": "EDMONTON",
+     "city": true,
+     "row": 0,
+     "column": 2,
+     "direction": "SouthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0005",
+   "rank": "FirstOfficer",
+   "letters": "SMHIQQYMXNGVGWNNDXBKMLGISANOICGCYMPNUFVTWADNRQFPC",
+   "targets": [
+    {
+     "airportId": "RKSI",
+     "code": "ICN",
+     "clue": "SEOUL · INCHEON",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "MMUN",
+     "code": "CUN",
+     "clue": "CANCUN",
+     "city": false,
+     "row": 4,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "CYVR",
+     "code": "YVR",
+     "clue": "VANCOUVER",
+     "city": false,
+     "row": 4,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KSAN",
+     "code": "SAN",
+     "clue": "SAN DIEGO",
+     "city": false,
+     "row": 3,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "RPLL",
+     "code": "MNL",
+     "clue": "MANILA · NINOY AQUINO",
+     "city": true,
+     "row": 1,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "RJTT",
+     "code": "HND",
+     "clue": "TOKYO · HANEDA",
+     "city": true,
+     "row": 0,
+     "column": 2,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0006",
+   "rank": "FirstOfficer",
+   "letters": "JVAMIAGLJGPIADCCUHYDAXZBHULEFQQCUNRSMMBNQWXPHLSYM",
+   "targets": [
+    {
+     "airportId": "KPHL",
+     "code": "PHL",
+     "clue": "PHILADELPHIA",
+     "city": false,
+     "row": 6,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "VOHS",
+     "code": "HYD",
+     "clue": "HYDERABAD",
+     "city": false,
+     "row": 2,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "MMUN",
+     "code": "CUN",
+     "clue": "CANCUN",
+     "city": false,
+     "row": 4,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "VECC",
+     "code": "CCU",
+     "clue": "KOLKATA",
+     "city": false,
+     "row": 2,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "KIAD",
+     "code": "IAD",
+     "clue": "WASHINGTON · DULLES",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "KMIA",
+     "code": "MIA",
+     "clue": "MIAMI",
+     "city": true,
+     "row": 0,
+     "column": 3,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0007",
+   "rank": "FirstOfficer",
+   "letters": "VXZPLZJCYLSAMSBMHBMTYPRKXQJZIAURJDXCEJDBOSNSSUAKE",
+   "targets": [
+    {
+     "airportId": "KBOS",
+     "code": "BOS",
+     "clue": "BOSTON",
+     "city": false,
+     "row": 5,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "EBBR",
+     "code": "BRU",
+     "clue": "BRUSSELS",
+     "city": false,
+     "row": 2,
+     "column": 0,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "RKSI",
+     "code": "ICN",
+     "clue": "SEOUL · INCHEON",
+     "city": false,
+     "row": 4,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "KRDU",
+     "code": "RDU",
+     "clue": "RALEIGH–DURHAM",
+     "city": false,
+     "row": 4,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "EHAM",
+     "code": "AMS",
+     "clue": "AMSTERDAM · SCHIPHOL",
+     "city": true,
+     "row": 1,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "MMMY",
+     "code": "MTY",
+     "clue": "MONTERREY",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0008",
+   "rank": "FirstOfficer",
+   "letters": "UCPNFGPLRIGTRZOGTPBSYOTEOEHDIWSAZGKGAZSIVGMNLEHEJ",
+   "targets": [
+    {
+     "airportId": "KSEA",
+     "code": "SEA",
+     "clue": "SEATTLE",
+     "city": false,
+     "row": 2,
+     "column": 5,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "RCTP",
+     "code": "TPE",
+     "clue": "TAIPEI · TAOYUAN",
+     "city": false,
+     "row": 1,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KPIT",
+     "code": "PIT",
+     "clue": "PITTSBURGH",
+     "city": false,
+     "row": 0,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "RPLL",
+     "code": "MNL",
+     "clue": "MANILA · NINOY AQUINO",
+     "city": false,
+     "row": 6,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYHZ",
+     "code": "YHZ",
+     "clue": "HALIFAX",
+     "city": true,
+     "row": 2,
+     "column": 6,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KBOS",
+     "code": "BOS",
+     "clue": "BOSTON",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "SouthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0009",
+   "rank": "FirstOfficer",
+   "letters": "WRGNENPBNGYMENBOCAKTEUHLRSZYEKEKHNLTTFOZYUDULFZYC",
+   "targets": [
+    {
+     "airportId": "ZBAA",
+     "code": "PEK",
+     "clue": "BEIJING · CAPITAL",
+     "city": false,
+     "row": 0,
+     "column": 6,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "RJGG",
+     "code": "NGO",
+     "clue": "NAGOYA · CHUBU CENTRAIR",
+     "city": false,
+     "row": 0,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "VTSP",
+     "code": "HKT",
+     "clue": "PHUKET",
+     "city": false,
+     "row": 3,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "MMMY",
+     "code": "MTY",
+     "clue": "MONTERREY",
+     "city": false,
+     "row": 1,
+     "column": 4,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KCLE",
+     "code": "CLE",
+     "clue": "CLEVELAND",
+     "city": true,
+     "row": 2,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "PHNL",
+     "code": "HNL",
+     "clue": "HONOLULU",
+     "city": true,
+     "row": 4,
+     "column": 4,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0010",
+   "rank": "FirstOfficer",
+   "letters": "BGHFLMMPFIHXKDFVDCJIWMAKNNXLLWBNETNIYWZZPFAOXHEJU",
+   "targets": [
+    {
+     "airportId": "RJBB",
+     "code": "KIX",
+     "clue": "OSAKA · KANSAI",
+     "city": false,
+     "row": 1,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "SAEZ",
+     "code": "EZE",
+     "clue": "BUENOS AIRES · EZEIZA",
+     "city": false,
+     "row": 4,
+     "column": 4,
+     "direction": "South"
+    },
+    {
+     "airportId": "RKSI",
+     "code": "ICN",
+     "clue": "SEOUL · INCHEON",
+     "city": false,
+     "row": 1,
+     "column": 2,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "KDAL",
+     "code": "DAL",
+     "clue": "DALLAS · LOVE FIELD",
+     "city": false,
+     "row": 2,
+     "column": 2,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "FAOR",
+     "code": "JNB",
+     "clue": "JOHANNESBURG · O.R. TAMBO",
+     "city": true,
+     "row": 2,
+     "column": 4,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KMDW",
+     "code": "MDW",
+     "clue": "CHICAGO · MIDWAY",
+     "city": true,
+     "row": 0,
+     "column": 6,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0011",
+   "rank": "FirstOfficer",
+   "letters": "NLYOSUNVIRKRAWYSHNDXBPYACDGVVNMCQZYPRHVZOCZCPERAM",
+   "targets": [
+    {
+     "airportId": "OMDB",
+     "code": "DXB",
+     "clue": "DUBAI",
+     "city": false,
+     "row": 2,
+     "column": 4,
+     "direction": "East"
+    },
+    {
+     "airportId": "LPPT",
+     "code": "LIS",
+     "clue": "LISBON",
+     "city": false,
+     "row": 0,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "YPPH",
+     "code": "PER",
+     "clue": "PERTH",
+     "city": false,
+     "row": 6,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "EDDH",
+     "code": "HAM",
+     "clue": "HAMBURG",
+     "city": false,
+     "row": 2,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "NZCH",
+     "code": "CHC",
+     "clue": "CHRISTCHURCH",
+     "city": true,
+     "row": 4,
+     "column": 3,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "LFPG",
+     "code": "CDG",
+     "clue": "PARIS · CHARLES DE GAULLE",
+     "city": true,
+     "row": 3,
+     "column": 3,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-FO-0012",
+   "rank": "FirstOfficer",
+   "letters": "HGTHQJBKGDAPJOXPYMACSTIFZVPVECIGEXPORERRGRWADDSUV",
+   "targets": [
+    {
+     "airportId": "HAAB",
+     "code": "ADD",
+     "clue": "ADDIS ABABA",
+     "city": false,
+     "row": 6,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "EDDH",
+     "code": "HAM",
+     "clue": "HAMBURG",
+     "city": false,
+     "row": 0,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "SBGR",
+     "code": "GRU",
+     "clue": "SAO PAULO · GUARULHOS",
+     "city": false,
+     "row": 4,
+     "column": 3,
+     "direction": "SouthEast"
+    },
+    {
+     "airportId": "YPPH",
+     "code": "PER",
+     "clue": "PERTH",
+     "city": false,
+     "row": 3,
+     "column": 5,
+     "direction": "SouthWest"
+    },
+    {
+     "airportId": "KBOS",
+     "code": "BOS",
+     "clue": "BOSTON",
+     "city": true,
+     "row": 0,
+     "column": 6,
+     "direction": "South"
+    },
+    {
+     "airportId": "LIRF",
+     "code": "FCO",
+     "clue": "ROME · FIUMICINO",
+     "city": true,
+     "row": 3,
+     "column": 2,
+     "direction": "SouthWest"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0001",
+   "rank": "Trainee",
+   "letters": "BOSUPZMLIORDMGTIMDFAMMSMHTAKEFIAHGAY",
+   "targets": [
+    {
+     "airportId": "KLGA",
+     "code": "LGA",
+     "clue": "NEW YORK · LAGUARDIA",
+     "city": false,
+     "row": 1,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KORD",
+     "code": "ORD",
+     "clue": "CHICAGO · O'HARE",
+     "city": false,
+     "row": 1,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "KBOS",
+     "code": "BOS",
+     "clue": "BOSTON",
+     "city": false,
+     "row": 0,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "KSEA",
+     "code": "SEA",
+     "clue": "SEATTLE",
+     "city": false,
+     "row": 3,
+     "column": 4,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0002",
+   "rank": "Trainee",
+   "letters": "IPHXIHADLSVZHSHYFRRZRDCHFPGJFBXSNZRE",
+   "targets": [
+    {
+     "airportId": "EGLL",
+     "code": "LHR",
+     "clue": "LONDON · HEATHROW",
+     "city": false,
+     "row": 1,
+     "column": 2,
+     "direction": "South"
+    },
+    {
+     "airportId": "LSZH",
+     "code": "ZRH",
+     "clue": "ZURICH",
+     "city": false,
+     "row": 1,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "KPHX",
+     "code": "PHX",
+     "clue": "PHOENIX",
+     "city": false,
+     "row": 0,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "YSSY",
+     "code": "SYD",
+     "clue": "SYDNEY",
+     "city": false,
+     "row": 1,
+     "column": 3,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0003",
+   "rank": "Trainee",
+   "letters": "NRIAHMPVSHZCTYMIMOZYZFWIEZEWWXTJFKNN",
+   "targets": [
+    {
+     "airportId": "CYYZ",
+     "code": "YYZ",
+     "clue": "TORONTO · PEARSON",
+     "city": false,
+     "row": 2,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KMCO",
+     "code": "MCO",
+     "clue": "ORLANDO",
+     "city": false,
+     "row": 0,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "KJFK",
+     "code": "JFK",
+     "clue": "NEW YORK · JOHN F. KENNEDY",
+     "city": false,
+     "row": 5,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KIAH",
+     "code": "IAH",
+     "clue": "HOUSTON · BUSH INTERCONTINENTAL",
+     "city": false,
+     "row": 0,
+     "column": 2,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0004",
+   "rank": "Trainee",
+   "letters": "JPWCEBWEIHUEKKWKDPPUEGLQNRWBOMWWRKYF",
+   "targets": [
+    {
+     "airportId": "VABB",
+     "code": "BOM",
+     "clue": "MUMBAI",
+     "city": false,
+     "row": 4,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "VHHH",
+     "code": "HKG",
+     "clue": "HONG KONG",
+     "city": false,
+     "row": 1,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "ZBAA",
+     "code": "PEK",
+     "clue": "BEIJING · CAPITAL",
+     "city": false,
+     "row": 0,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KEWR",
+     "code": "EWR",
+     "clue": "NEWARK",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0005",
+   "rank": "Trainee",
+   "letters": "MBEPDCOLXDOCNABKKGYSNDZRPYULFUSEAAMS",
+   "targets": [
+    {
+     "airportId": "CYUL",
+     "code": "YUL",
+     "clue": "MONTREAL · TRUDEAU",
+     "city": false,
+     "row": 4,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KLAS",
+     "code": "LAS",
+     "clue": "LAS VEGAS",
+     "city": false,
+     "row": 1,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "EHAM",
+     "code": "AMS",
+     "clue": "AMSTERDAM · SCHIPHOL",
+     "city": false,
+     "row": 5,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "VTBS",
+     "code": "BKK",
+     "clue": "BANGKOK · SUVARNABHUMI",
+     "city": false,
+     "row": 2,
+     "column": 2,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0006",
+   "rank": "Trainee",
+   "letters": "DDOHNDEBSEAMLVODPDIBLBKKOTBLDFPPZLLD",
+   "targets": [
+    {
+     "airportId": "KSEA",
+     "code": "SEA",
+     "clue": "SEATTLE",
+     "city": false,
+     "row": 1,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "VIDP",
+     "code": "DEL",
+     "clue": "DELHI · INDIRA GANDHI",
+     "city": false,
+     "row": 0,
+     "column": 0,
+     "direction": "South"
+    },
+    {
+     "airportId": "VTBS",
+     "code": "BKK",
+     "clue": "BANGKOK · SUVARNABHUMI",
+     "city": false,
+     "row": 3,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "RJTT",
+     "code": "HND",
+     "clue": "TOKYO · HANEDA",
+     "city": false,
+     "row": 0,
+     "column": 3,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0007",
+   "rank": "Trainee",
+   "letters": "MFYEHWIBKKEEAPNKWQMCGVSPYUFWWVQNISFO",
+   "targets": [
+    {
+     "airportId": "VTBS",
+     "code": "BKK",
+     "clue": "BANGKOK · SUVARNABHUMI",
+     "city": false,
+     "row": 1,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KSFO",
+     "code": "SFO",
+     "clue": "SAN FRANCISCO",
+     "city": false,
+     "row": 5,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "MMUN",
+     "code": "CUN",
+     "clue": "CANCUN",
+     "city": false,
+     "row": 3,
+     "column": 1,
+     "direction": "South"
+    },
+    {
+     "airportId": "KMIA",
+     "code": "MIA",
+     "clue": "MIAMI",
+     "city": false,
+     "row": 0,
+     "column": 0,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0008",
+   "rank": "Trainee",
+   "letters": "BQNFRACKEJJXNIVGBIKPEWRWUNZOQKPXYULI",
+   "targets": [
+    {
+     "airportId": "CYUL",
+     "code": "YUL",
+     "clue": "MONTREAL · TRUDEAU",
+     "city": false,
+     "row": 5,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "KEWR",
+     "code": "EWR",
+     "clue": "NEWARK",
+     "city": false,
+     "row": 3,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "EDDF",
+     "code": "FRA",
+     "clue": "FRANKFURT AM MAIN",
+     "city": false,
+     "row": 0,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "LEBL",
+     "code": "BCN",
+     "clue": "BARCELONA",
+     "city": false,
+     "row": 0,
+     "column": 0,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0009",
+   "rank": "Trainee",
+   "letters": "LHUPMADFWCZRIKDATLHMIAXDPVGONALKVXWB",
+   "targets": [
+    {
+     "airportId": "KDFW",
+     "code": "DFW",
+     "clue": "DALLAS–FORT WORTH",
+     "city": false,
+     "row": 1,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "KMIA",
+     "code": "MIA",
+     "clue": "MIAMI",
+     "city": false,
+     "row": 3,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KATL",
+     "code": "ATL",
+     "clue": "ATLANTA",
+     "city": false,
+     "row": 2,
+     "column": 3,
+     "direction": "East"
+    },
+    {
+     "airportId": "ZSPD",
+     "code": "PVG",
+     "clue": "SHANGHAI · PUDONG",
+     "city": false,
+     "row": 4,
+     "column": 0,
+     "direction": "East"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0010",
+   "rank": "Trainee",
+   "letters": "BLMEXCNOJFKLZNQPWHDWGEGRLXMADUZMURQF",
+   "targets": [
+    {
+     "airportId": "KJFK",
+     "code": "JFK",
+     "clue": "NEW YORK · JOHN F. KENNEDY",
+     "city": false,
+     "row": 1,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "MMMX",
+     "code": "MEX",
+     "clue": "MEXICO CITY · BENITO JUÁREZ",
+     "city": false,
+     "row": 0,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "LEMD",
+     "code": "MAD",
+     "clue": "MADRID",
+     "city": false,
+     "row": 4,
+     "column": 2,
+     "direction": "East"
+    },
+    {
+     "airportId": "EGLL",
+     "code": "LHR",
+     "clue": "LONDON · HEATHROW",
+     "city": false,
+     "row": 1,
+     "column": 5,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0011",
+   "rank": "Trainee",
+   "letters": "UHJBEQFLXOIXTMVSWYHQCBNYKICNKZGAKSNK",
+   "targets": [
+    {
+     "airportId": "RKSI",
+     "code": "ICN",
+     "clue": "SEOUL · INCHEON",
+     "city": false,
+     "row": 4,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYYZ",
+     "code": "YYZ",
+     "clue": "TORONTO · PEARSON",
+     "city": false,
+     "row": 2,
+     "column": 5,
+     "direction": "South"
+    },
+    {
+     "airportId": "KBOS",
+     "code": "BOS",
+     "clue": "BOSTON",
+     "city": false,
+     "row": 0,
+     "column": 3,
+     "direction": "South"
+    },
+    {
+     "airportId": "VHHH",
+     "code": "HKG",
+     "clue": "HONG KONG",
+     "city": false,
+     "row": 3,
+     "column": 0,
+     "direction": "South"
+    }
+   ]
+  },
+  {
+   "id": "CS-TR-0012",
+   "rank": "Trainee",
+   "letters": "GJJLBZHATLWKHNDINDPYYZEEMIRGONHXCUPM",
+   "targets": [
+    {
+     "airportId": "RJTT",
+     "code": "HND",
+     "clue": "TOKYO · HANEDA",
+     "city": false,
+     "row": 2,
+     "column": 0,
+     "direction": "East"
+    },
+    {
+     "airportId": "KATL",
+     "code": "ATL",
+     "clue": "ATLANTA",
+     "city": false,
+     "row": 1,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "CYYZ",
+     "code": "YYZ",
+     "clue": "TORONTO · PEARSON",
+     "city": false,
+     "row": 3,
+     "column": 1,
+     "direction": "East"
+    },
+    {
+     "airportId": "KDEN",
+     "code": "DEN",
+     "clue": "DENVER",
+     "city": false,
+     "row": 2,
+     "column": 5,
+     "direction": "South"
+    }
+   ]
+  }
+ ]
+}

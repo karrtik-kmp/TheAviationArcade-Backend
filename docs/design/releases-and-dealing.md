@@ -15,6 +15,7 @@ migrations start at **0016**. Nothing here contacts the real Bunny zone: everyth
 | R-3 | Military goes straight to **required** (no app build is deployed; all local). A rollback does **not** cancel open Trips. Staff **choose the items** of a release. | §3, §4.5; `additive` dropped |
 | R-4 | **Admin restore** of retired items is allowed (amends the 2026-10-28 ruling). | Releases freeze item versions, so a restore affects only later releases |
 | R-5 | Importers for Airport Spotter and Runway Identifier, with Unity's corrections applied. | §5 |
+| R-6 | **Exception to R-1 for Code Search** (user, 2026-11-25, verbatim "All ten at Trip open"): all ten boards go out on `POST /v1/trips` in the root `codeSearchBoards`, the shape Unity decodes; the deck stays stored server-side. | §4.2; [plan](../plans/code-search.md) |
 
 ## 0. Scope and limits
 
@@ -243,7 +244,15 @@ matching: { kind:"matching", boardId, seed, pairs:[{id,left,right,leftPhoto?:{sh
 grid:     { kind:"grid", boardId, width, height, letters, clueMode, targets:[{code,clue,cityClue,cells:[{row,column}]}] }
 ```
 
-Unity already decodes every mechanic (`ApiWireModels.cs`). Timers are not sent (Unity `TripProfiles`; Josh question).
+Unity already decodes every mechanic (`ApiWireModels.cs`). Timers are not sent (Unity `TripProfiles`; Josh question), except
+for Code Search: each board carries `durationSeconds` from its rank's rung (client clocks, 2026-11-19), because Unity's
+`CodeSearchFlight` refuses a board without one.
+
+> **Built 2026-11-25 for Code Search only ([plan](../plans/code-search.md), migration 0030, API 0.31.0).** Dev-only, behind
+> `DEAL_FROM_ITEMS=code-search`: a Code Search Trip open deals ten boards by `grid-draw.v1` from **approved `content_items`** at
+> the Trip's rank (no release: R3 delivers nothing yet), stores them in `trip_decks` (`grid.v1`, elements `{ itemId, itemVersion,
+> board }`, not trips columns) and sends them all at open (R-6). Rounds stay v1 facts; no grid answer check. When R4 lands it
+> must accept these item-dealt `grid.v1` Trips (no release version) or migrate `trip_decks`.
 
 ### 4.3 Result body for a dealt Round
 
@@ -300,7 +309,7 @@ One new error code. A 409 opens nothing; the client re-reads the manifest and re
 | **tail-identifier** | demo pack (12 records we made from Identifier photos, crops, Trainee only); client sheet not delivered | none | cropped photo + 4 airlines | `BuildTailTrip` (shuffle whole pool, balanced answer slots) | mapping + `shuffle-all` + crop in `deal` | choice | none | reuses Identifier photos | client content or Q-U9 |
 | **atc-match** | demo pack (20 airports from OurAirports); client sheet not delivered | none | board of 5/10/15 code↔city pairs by rank | stride formula; columns shuffled on device | mapping + `matching-draw.v1` + fixtures | matching | none | optional thumbnails | Q-U9; typed mode for Check Airman/Chief Pilot not built; Josh timers |
 | **call-sign-match** | demo pack (20 airlines, FAA JO 7340.2); client sheet not delivered | none | board of 5 callsign↔airline pairs | same stride | same matching adapter | matching | none | none | Q-U9 |
-| **code-search** | demo pack (10 reviewed Trainee boards); higher ranks generated at runtime with `System.Random` | none | grid + targets | Trainee: shuffle pack; above: generator | board-pack import (one item = one validated board), `WordGridPuzzleValidator` port, `grid-draw.v1`; do not port `System.Random` | grid | none | none | Unity board exporter; ladder values; ICAO codes at high ranks; Q-U9 |
+| **code-search** | client master pack 2026-11-17 (3,750 boards), compiled by Unity `c18a93c` to 3,740 (10 dropped: a code spelled twice); ladder and IATA-only ruled 2026-11-19 | **done (M-CS, 2026-11-25)**: `CS-<rank>-<NNNN>`, one item = one board, `npm run demo:seed-code-search` | grid + targets | `CodeSearchContent.Deal`: ten own-rank boards, `System.Random` | **built, dev only**: `WordGridPuzzleValidator` + `CodeSearchLadder` port, `grid-draw.v1` (`contracts/grid.v1.json`), dealt from items behind `DEAL_FROM_ITEMS` (R-6) | grid | none | none | releases for Code Search; grid answer check; Unity `/v1/trips` client and `grid-draw.v1` parity |
 
 Only the two Identifiers carry Clipper Cards. Tail, ATC and Call Sign items store `trainee` (their rank ladder is board
 size or clock, not content).
@@ -322,7 +331,7 @@ that removes an `identifier` Card → 422 `content_invalid`. No migration. Prere
 | 4 | Aircraft Identifier | I3 + R1 + M-ID; family source; website desk migration (C1/D-2); parallel with 2–3 once R4 lands |
 | 5 | Tail Identifier | Identifier photos in the store; Q-U9 or client content |
 | 6 | ATC Match, Call Sign Match | matching kind (M-MX); Q-U9; typed mode or Josh rulings |
-| 7 | Code Search | grid kind (M-CS); Unity board exporter; ladder ruling |
+| 7 | Code Search | grid kind (M-CS): **built for dev 2026-11-25** (from items, behind the switch); Unity board exporter and ladder ruling resolved (`c18a93c`, 2026-11-19) |
 
 ## 8. Data model, errors, API
 
@@ -350,7 +359,7 @@ Errors: new `content_version_mismatch` (409), `photo_invalid` (422); reused `sto
 | M-ID | I3 importer + Identifier adapter | R1, R4 |
 | M-TL | Tail importer + adapter | M-ID, Q-U9 |
 | M-MX | matching kind: ATC + Call Sign mappings, `matching-draw.v1`, `contracts/matching.v1.json` | R4, Q-U9 |
-| M-CS | grid kind: board-pack mapping, validator port, `grid-draw.v1`, `contracts/grid.v1.json` | R4, Unity exporter |
+| M-CS | grid kind: board-pack mapping, validator port, `grid-draw.v1`, `contracts/grid.v1.json` (**built 2026-11-25**, dev dealing from items; [plan](../plans/code-search.md)) | R4, Unity exporter |
 
 Waves: B1 = R0 ∥ R1 ∥ P1; B2 = R2 ∥ P2; B3 = R3 ∥ R4; B4 = M-AS ∥ M-RW ∥ M-ID; B5 = M-TL ∥ M-MX ∥ M-CS. Shared hot files
 (`openapi.yaml`, `errors.ts`, `enums.ts`, `release-modules.ts`, `dealer.ts` `DEAL_POLICY`, `dealer-fixture.ts`, the
@@ -369,7 +378,8 @@ derived ones; picks/matches/selections rules as ASSUMPTION tests; a `republish` 
 For the user:
 
 - **Q-U7 photo route: decided** (user, 2026-11-03): Bunny CDN with token-signed links, see [Backend ADR-0001](../adr/ADR-0001-image-storage-and-delivery.md). Built (media plan T0-T8, API 0.16.0); not yet live on Bunny (T10) and not yet on dealt Trips and Rounds (T9 / R4).
-- **Q-U9 non-client content.** ATC, Call Sign and Code Search packs are public reference data (OurAirports, FAA JO 7340.2);
+- **Q-U9 non-client content** (closed for Code Search 2026-11-25: its boards are the client's master of 2026-11-17; the filler
+  letters come from Unity's importer, seeded by board id, and are stored as-is, never regenerated). ATC, Call Sign and Code Search packs are public reference data (OurAirports, FAA JO 7340.2);
   Tail's labels and crops were authored by us. Moving them into the backend as content **contradicts "use only
   client-supplied content"**. Recommended: wait for the client's content, or explicitly allow reference data for these four.
 - **Q-U10 Airport names.** The sheet has codes only; Unity joins a pinned OurAirports names file (not client content).
