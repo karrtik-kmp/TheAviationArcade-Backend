@@ -11,6 +11,7 @@ import {
   MEDIA_CONTENT_TYPES,
   MEDIA_LICENCE_WAIVERS,
   MEDIA_PUBLISHABLE_RIGHTS,
+  MEDIA_REVIEW_DECISIONS,
   MEDIA_RIGHTS_STATEMENTS,
   MEDIA_STATES,
   MEDIA_UPLOAD_OPERATIONS,
@@ -78,6 +79,7 @@ export const EXPECTED_ENUM_CHECKS: Readonly<Record<string, readonly string[]>> =
   "account_roles.account_roles_role_check": ACCOUNT_ROLES,
   "account_roles.account_roles_state_check": ROLE_STATES,
   "media_items.media_items_state_check": MEDIA_STATES,
+  "media_items.media_items_review_decision_check": MEDIA_REVIEW_DECISIONS,
   "media_versions.media_versions_content_type_check": MEDIA_CONTENT_TYPES,
   "media_versions.media_versions_rights_statement_check": MEDIA_RIGHTS_STATEMENTS,
   "media_versions.media_versions_licence_waiver_check": MEDIA_LICENCE_WAIVERS,
@@ -106,6 +108,10 @@ const RULE_CHECKS: ReadonlySet<string> = new Set([
   "account_roles.account_roles_blocked_role_check",
   "account_roles.account_roles_grant_email_check",
   "media_items.media_items_published_state_check",
+  // `review_decision IS DISTINCT FROM 'declined' OR state = 'unverified'`: a rule (migration 0029).
+  "media_items.media_items_review_declined_check",
+  // `num_nulls(...) IN (0, 5)`: all five review columns set or none; Postgres prints the numbers as an ARRAY, which the live scan reads as an enumeration.
+  "media_items.media_items_review_all_or_none_check",
   "store_products.store_products_kind_rule_check",
   "store_transactions.store_transactions_kind_rule_check",
   "content_items.content_items_prep_all_or_none_check",

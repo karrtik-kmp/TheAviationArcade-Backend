@@ -1,4 +1,4 @@
-import type { MediaRightsStatement } from "../../db/enums.js";
+import type { MediaReviewDecision, MediaRightsStatement } from "../../db/enums.js";
 import { mediaItems, mediaSubmissions, mediaVersions } from "../../db/schema.js";
 
 export type MediaItemRow = typeof mediaItems.$inferSelect;
@@ -38,6 +38,12 @@ export type MediaVersionView = {
 /** The private submission fields of an item (staff views only; null on the item when it has no media_submissions row). */
 export type MediaSubmissionView = { fullName: string | null; instagramHandle: string | null; instagramDisplayConsent: boolean };
 
+/**
+ * The staff review decision on an item (docs/plans/media-review-feedback.md R6): `version` is the draft version it was made on, which
+ * can be below the item's `draftVersion` after a non-owner admin's edit. `decidedBy` (a principal) is shown to admin callers only.
+ */
+export type MediaReviewView = { decision: MediaReviewDecision; reason: string; version: number; decidedAt: string; decidedBy?: string };
+
 /** The API `MediaItem` (docs/openapi.yaml). The storage path is never part of it. */
 export type MediaItemView = {
   id: string;
@@ -47,6 +53,8 @@ export type MediaItemView = {
   publishedVersion: number | null;
   draft: MediaVersionView;
   submission: MediaSubmissionView | null;
+  /** Null when no decision stands. Staff routes only; never part of an ImageRef. */
+  review: MediaReviewView | null;
   owner?: string;
   createdAt: string;
   updatedAt: string;
@@ -94,6 +102,18 @@ export function toSubmissionView(row: MediaSubmissionRow | null | undefined): Me
   return row ? { fullName: row.fullName, instagramHandle: row.instagramHandle, instagramDisplayConsent: row.instagramDisplayConsent } : null;
 }
 
+/** The item's review decision, or null. All five columns are set together (the all-or-none CHECK). */
+export function toReviewView(item: MediaItemRow, includeOwner: boolean): MediaReviewView | null {
+  if (item.reviewDecision === null || item.reviewReason === null || item.reviewVersion === null || item.reviewDecidedAt === null) return null;
+  return {
+    decision: item.reviewDecision,
+    reason: item.reviewReason,
+    version: item.reviewVersion,
+    decidedAt: item.reviewDecidedAt.toISOString(),
+    ...(includeOwner && item.reviewDecidedBy !== null ? { decidedBy: item.reviewDecidedBy } : {}),
+  };
+}
+
 /** `submission` is the item's media_submissions row (or null): shown on every staff route, which already limits who sees the item. */
 export function toItemView(item: MediaItemRow, draft: MediaVersionRow, includeOwner: boolean, submission: MediaSubmissionRow | null): MediaItemView {
   return {
@@ -104,6 +124,7 @@ export function toItemView(item: MediaItemRow, draft: MediaVersionRow, includeOw
     publishedVersion: item.publishedVersion,
     draft: toVersionView(draft, includeOwner),
     submission: toSubmissionView(submission),
+    review: toReviewView(item, includeOwner),
     ...(includeOwner ? { owner: item.owner } : {}),
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),

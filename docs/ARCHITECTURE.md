@@ -192,6 +192,22 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   (only changed flags and the consent from/to), and the access log never holds the header or the decoded name. The owner sets
   these fields; a non-owner admin may only remove them (privacy request); publishing a v2 draft whose item has no `fullName` is
   refused. Nothing in the game's or the public read paths changes.
+- **Review feedback (migration 0029, API 0.30.0; plan [media-review-feedback](plans/media-review-feedback.md)).** An admin can send
+  a photo back or turn it down with a reason: `POST /v1/admin/media/{mediaId}/review`. **A review is a sub-record of the item, not a
+  `MediaState`**: five nullable columns on `media_items` (`review_decision` `changes_requested` | `declined`, `review_reason` 1-500
+  code points, `review_version` the draft version decided on, `review_decided_by`, `review_decided_at`), all set or all null, so
+  the game, the guest route, releases and every `state` check are untouched and a decision can apply to the pending draft of a
+  published item (the live version is never touched). Reviewable: `unverified`, or `published` with a pending draft; `declined` only
+  on `unverified`. It is written in the same `bump` UPDATE as the revision. **Clearing:** publish clears either decision; a committed
+  owner write (new file version, a PATCH that changes anything, `PUT .../rights`) clears `changes_requested` in its own `bump`
+  UPDATE, decided by `principal === owner` whatever the role; a no-op PATCH, an idempotent replay and a non-owner admin's write
+  clear nothing. **Declined block:** the non-admin owner gets 409 `media_declined` on a new version, a rights move or a PATCH, except
+  a PATCH that only removes private fields (an admin who owns the item is never blocked). **Visibility:** `MediaItem.review` for the
+  owner (reason shown word for word, no `decidedBy`) and admins; never in `ImageRef`, `GET /v1/media` or `GET /v1/public/media`.
+  **Audit:** `media_review` holds `reasonLength` only; the reason text is free text about a person's photo and never enters the
+  append-only audit (`reviewCleared` on the clearing writes names only the decision). Only the current reason is kept. **Account
+  deletion:** `media_items.review_reason` (and `review_decided_by`) is personal-adjacent free text; the account-deletion slice must
+  clear the review columns of the user's items together with `media_submissions`.
 - **D1 photo import (operator command, no route).** `npm run media:import -- --bundle <dir> [--yes]` turns the old website review
   queue into `unverified` items owned by their photographers, with rights `d1_private_review` and no licence; dry run by default,
   `--yes` only with `BLOB_STORE=bunny`; idempotent through `media_imports` ([plan](plans/media-import.md)).

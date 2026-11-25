@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
-import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { APP_CONFIG } from "../../config/config.module.js";
 import type { AppConfig } from "../../config/config.module.js";
 import { ApiError } from "../../common/errors.js";
@@ -8,7 +8,7 @@ import { DatabaseService, ExpectedRollback } from "../../database/database.modul
 import type { Database, Tx } from "../../database/database.module.js";
 import { databaseNow } from "../../database/clock.js";
 import { MEDIA_PUBLISHABLE_RIGHTS, MEDIA_V2_LICENCE_NAME, MEDIA_V2_STATEMENT } from "../../db/enums.js";
-import type { MediaPublishableRights } from "../../db/enums.js";
+import type { MediaPublishableRights, MediaReviewDecision } from "../../db/enums.js";
 import { adminAudit, mediaItems, mediaSubmissions, mediaUploadKeys, mediaVersions } from "../../db/schema.js";
 import { BLOB_STORE, StorageUnavailableError } from "../../storage/blob-store.js";
 import { storageApiError } from "../import-blob.js";
@@ -71,7 +71,31 @@ type LicenceField = keyof typeof LICENCE_COLUMNS;
 const LICENCE_FIELDS = Object.keys(LICENCE_COLUMNS) as LicenceField[];
 
 /** The item columns a write may move along with its revision. */
-type BumpPatch = Partial<Pick<typeof mediaItems.$inferInsert, "state" | "draftVersion" | "publishedVersion">>;
+type BumpPatch = Partial<
+  Pick<
+    typeof mediaItems.$inferInsert,
+    "state" | "draftVersion" | "publishedVersion" | "reviewDecision" | "reviewReason" | "reviewVersion" | "reviewDecidedBy" | "reviewDecidedAt"
+  >
+>;
+
+/** The five review columns together (the all-or-none CHECK): a write that clears the decision spreads this into its one `bump` patch. */
+const NO_REVIEW = { reviewDecision: null, reviewReason: null, reviewVersion: null, reviewDecidedBy: null, reviewDecidedAt: null } as const;
+
+/**
+ * R3/R4: a committed write by the item's OWNER (identity, whatever the caller's role) clears `changes_requested`. A non-owner admin's
+ * write never does, and `declined` is cleared only by a publish.
+ */
+const ownerClears = (item: MediaItemRow, principal: string): boolean => item.reviewDecision === "changes_requested" && item.owner === principal;
+
+/** The audit-detail key a clearing write adds; absent when nothing was cleared. */
+const clearedNote = (cleared: boolean) => (cleared ? { reviewCleared: "changes_requested" as const } : {});
+
+/** R5: a declined item blocks its non-admin owner (the reason is in the item, never in the message). */
+const declinedBlocks = (item: MediaItemRow, principal: string, isAdmin: boolean): boolean =>
+  item.reviewDecision === "declined" && item.owner === principal && !isAdmin;
+
+const mediaDeclined = () =>
+  new ApiError(409, "media_declined", "This photo was declined by an admin. It cannot be changed or replaced; see the review on the photo. Nothing was changed.");
 
 /** A concurrent request with the same (principal, Idempotency-Key) won the unique insert: roll this one back and replay. */
 class KeyAlreadyClaimed extends ExpectedRollback {}
@@ -79,20 +103,23 @@ class KeyAlreadyClaimed extends ExpectedRollback {}
 export type MediaListView = { items: MediaItemView[]; nextCursor: string | null };
 export type MediaDetailView = { item: MediaItemView; versions: MediaVersionView[]; preview: ImageRefView };
 
-const CURSOR = /^m1\.([a-z]+|-)\.([1-9][0-9]{0,14})$/;
+const CURSOR = /^m1\.((?:[a-z]+|-)(?:\+[a-z_]+)?)\.([1-9][0-9]{0,14})$/;
 
-/** Opaque to clients: base64url of `m1.<state or ->.<last id>`. */
-function encodeCursor(lastId: number, state: string | undefined): string {
-  return Buffer.from(`m1.${state ?? "-"}.${lastId}`).toString("base64url");
+/**
+ * Opaque to clients: base64url of `m1.<filter key>.<last id>`. The filter key is `<state or pending or ->`, plus `+<review>` only when
+ * the `review` filter is given, so without it the key is exactly the 0.29.0 one and old cursors still decode.
+ */
+function encodeCursor(lastId: number, key: string): string {
+  return Buffer.from(`m1.${key}.${lastId}`).toString("base64url");
 }
 
-/** The last id, or undefined when the text is not a cursor made under this state filter. */
-function decodeCursor(cursor: string, state: string | undefined): number | undefined {
+/** The last id, or undefined when the text is not a cursor made under this filter key. */
+function decodeCursor(cursor: string, key: string): number | undefined {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(cursor)) return undefined;
   const match = CURSOR.exec(Buffer.from(cursor, "base64url").toString("utf8"));
-  if (!match || match[1] !== (state ?? "-")) return undefined;
+  if (!match || match[1] !== key) return undefined;
   const id = Number(match[2]);
-  return encodeCursor(id, state) === cursor ? id : undefined; // refuses non-canonical base64url spellings
+  return encodeCursor(id, key) === cursor ? id : undefined; // refuses non-canonical base64url spellings
 }
 
 const sha256Of = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -160,13 +187,14 @@ export class MediaService {
     cursor: string | undefined,
     limit: number,
     pending = false,
+    review: "none" | MediaReviewDecision | undefined = undefined,
   ): Promise<MediaListView> {
-    // `pending` (published items whose draft is ahead of the published version) is its own cursor filter key.
-    const filterKey = pending ? "pending" : state;
+    // `pending` (published items whose draft is ahead of the published version) is its own cursor filter key; `review` adds a suffix.
+    const filterKey = `${pending ? "pending" : (state ?? "-")}${review === undefined ? "" : `+${review}`}`;
     let before: number | undefined;
     if (cursor !== undefined) {
       before = decodeCursor(cursor, filterKey);
-      if (before === undefined) throw new ApiError(400, "invalid_request", "Not a cursor this route returned (or the state filter changed). Start again without cursor.");
+      if (before === undefined) throw new ApiError(400, "invalid_request", "Not a cursor this route returned (or the filter changed). Start again without cursor.");
     }
     const rows = await this.database.db
       .select({ item: mediaItems, draft: mediaVersions, submission: mediaSubmissions })
@@ -178,6 +206,7 @@ export class MediaService {
           isAdmin ? undefined : eq(mediaItems.owner, principal),
           pending ? eq(mediaItems.state, "published") : state === undefined ? undefined : eq(mediaItems.state, state),
           pending ? sql`${mediaItems.draftVersion} > ${mediaItems.publishedVersion}` : undefined,
+          review === undefined ? undefined : review === "none" ? isNull(mediaItems.reviewDecision) : eq(mediaItems.reviewDecision, review),
           before === undefined ? undefined : lt(mediaItems.id, before),
         ),
       )
@@ -353,6 +382,7 @@ export class MediaService {
       if (twin) return this.replay(twin, "version", mediaId, sha256, isAdmin, statement, digest);
       throw staleRevision(seen, expectedRevision);
     }
+    if (declinedBlocks(seen, principal, isAdmin)) throw mediaDeclined();
     if (submission === null && (await this.readVersion(this.database.db, mediaId, seen.draftVersion)).rightsStatement === MEDIA_V2_STATEMENT) {
       throw v1OverV2();
     }
@@ -370,6 +400,7 @@ export class MediaService {
         // is decided before the fence, as on the unlocked path above.
         if (await this.findClaim(tx, principal, key)) throw new KeyAlreadyClaimed();
         if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+        if (declinedBlocks(item, principal, isAdmin)) return { ok: false, error: mediaDeclined() };
         const now = await databaseNow(tx);
         const version = item.draftVersion + 1;
         const previous = await this.readVersion(tx, mediaId, item.draftVersion);
@@ -394,7 +425,8 @@ export class MediaService {
         });
         const stored = submission ? await this.upsertSubmission(tx, mediaId, submission, principal, now) : await this.readSubmission(tx, mediaId);
         await this.claimKey(tx, { principal, idempotencyKey: key, operation: "version", mediaId, version, sha256, submissionSha256: digest, createdAt: now });
-        const updated = await this.bump(tx, item, principal, now, { draftVersion: version });
+        const cleared = ownerClears(item, principal);
+        const updated = await this.bump(tx, item, principal, now, { draftVersion: version, ...(cleared ? NO_REVIEW : {}) });
         await tx.insert(adminAudit).values({
           actor: principal,
           action: "media_version",
@@ -410,6 +442,7 @@ export class MediaService {
             width,
             height,
             rightsStatement: statement,
+            ...clearedNote(cleared),
           },
           createdAt: now,
         });
@@ -493,6 +526,16 @@ export class MediaService {
           error: new ApiError(403, "forbidden", "Only the photographer who owns this item can set the submission's name or Instagram fields; an admin can only remove them. Nothing was changed."),
         };
       }
+      // R5: a declined item blocks its non-admin owner, except an edit that only REMOVES private fields (erasure stays possible).
+      if (declinedBlocks(item, principal, isAdmin)) {
+        const removalOnly =
+          Object.keys(changes).length === 0 &&
+          submissionChanged &&
+          !(fullNameChanged && after.fullName !== null) &&
+          !(handleChanged && after.handle !== null) &&
+          !(consentChanged && after.consent);
+        if (!removalOnly) return { ok: false, error: mediaDeclined() };
+      }
       if (draft.rightsStatement === MEDIA_V2_STATEMENT) {
         const refusal = v2EditRefusal(changes);
         if (refusal) return { ok: false, error: new ApiError(422, "content_invalid", refusal) };
@@ -543,7 +586,8 @@ export class MediaService {
       const storedAfter = submissionChanged
         ? await this.upsertSubmission(tx, mediaId, { fullName: after.fullName, instagramHandle: after.handle, instagramDisplayConsent: after.consent }, principal, now)
         : stored;
-      const updatedItem = await this.bump(tx, item, principal, now, patch);
+      const cleared = ownerClears(item, principal);
+      const updatedItem = await this.bump(tx, item, principal, now, { ...patch, ...(cleared ? NO_REVIEW : {}) });
       await tx.insert(adminAudit).values({
         actor: principal,
         action: "media_edit",
@@ -558,6 +602,7 @@ export class MediaService {
           // Never the name or the handle themselves (the audit log is append-only): flags and the consent switch only.
           ...(submissionChanged ? { submission: { fullNameChanged, instagramChanged: handleChanged || consentChanged, consentFrom: before.consent, consentTo: after.consent } } : {}),
           note,
+          ...clearedNote(cleared),
         },
         createdAt: now,
       });
@@ -615,7 +660,8 @@ export class MediaService {
         if (!row) throw new Error("Media version was not published.");
         published = row;
       }
-      const updated = await this.bump(tx, item, principal, now, { state: "published", publishedVersion: draft.version });
+      // A publish clears either decision, in the same UPDATE that moves the state.
+      const updated = await this.bump(tx, item, principal, now, { state: "published", publishedVersion: draft.version, ...NO_REVIEW });
       await tx.insert(adminAudit).values({
         actor: principal,
         action: "media_publish",
@@ -628,6 +674,7 @@ export class MediaService {
           revision: updated.revision,
           sha256: draft.sha256,
           ...(waived !== null ? { licenceWaived: waived } : {}),
+          ...(item.reviewDecision !== null ? { reviewCleared: item.reviewDecision } : {}),
         },
         createdAt: now,
       });
@@ -666,6 +713,71 @@ export class MediaService {
   }
 
   /**
+   * Admin: decide on an item (docs/plans/media-review-feedback.md R2) or, with `decision: null`, withdraw the decision and erase its
+   * reason. Order: 404, the revision fence, eligibility (409 `version_conflict` with a message). Reviewable: `unverified`, or `published`
+   * with a pending draft; `declined` only on `unverified`. A new decision replaces the current one. Same decision, same normalised reason
+   * and the same draft version is a no-op (200, nothing written). The columns ride the one `bump` UPDATE; the audit row never holds the
+   * reason text, only its length.
+   */
+  async review(
+    principal: string,
+    mediaId: number,
+    expectedRevision: number,
+    wanted: { decision: MediaReviewDecision; reason: string } | { decision: null },
+  ): Promise<MediaItemView> {
+    const outcome = await this.database.withTransaction(async (tx): Promise<Outcome<MediaItemView>> => {
+      const item = await this.lockItem(tx, mediaId, principal, true);
+      if (!item) return { ok: false, error: notFound() };
+      if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+      const draft = await this.readVersion(tx, mediaId, item.draftVersion);
+      const submission = await this.readSubmission(tx, mediaId);
+      const unchanged = (): Outcome<MediaItemView> => ({ ok: true, value: toItemView(item, draft, true, submission) });
+      const refuse = (what: string): Outcome<MediaItemView> => ({
+        ok: false,
+        error: new ApiError(409, "version_conflict", `The item is ${item.state} at revision ${item.revision}; ${what} Nothing was changed.`),
+      });
+
+      if (wanted.decision === null) {
+        // Withdrawing a decision is allowed whenever one stands (its reason is erased); with none it is a no-op.
+        if (item.reviewDecision === null) return unchanged();
+      } else {
+        const pendingDraft = item.state === "published" && item.publishedVersion !== null && item.draftVersion > item.publishedVersion;
+        if (item.state === "withdrawn") return refuse("a withdrawn item cannot be reviewed.");
+        if (item.state === "published" && !pendingDraft) return refuse("a published item can be reviewed only while it has a newer draft.");
+        if (wanted.decision === "declined" && item.state !== "unverified") return refuse("only an unverified item can be declined.");
+        if (item.reviewDecision === wanted.decision && item.reviewReason === wanted.reason && item.reviewVersion === item.draftVersion) return unchanged();
+      }
+
+      const now = await databaseNow(tx);
+      const patch: BumpPatch =
+        wanted.decision === null
+          ? NO_REVIEW
+          : { reviewDecision: wanted.decision, reviewReason: wanted.reason, reviewVersion: item.draftVersion, reviewDecidedBy: principal, reviewDecidedAt: now };
+      const updated = await this.bump(tx, item, principal, now, patch);
+      await tx.insert(adminAudit).values({
+        actor: principal,
+        action: "media_review",
+        target: mediaIdOf(mediaId),
+        detail: {
+          mediaId: mediaIdOf(mediaId),
+          decision: wanted.decision,
+          previousDecision: item.reviewDecision,
+          // The version the decision was about; for a withdrawal, the version the withdrawn decision was about.
+          reviewedVersion: wanted.decision === null ? item.reviewVersion : item.draftVersion,
+          revision: updated.revision,
+          fromState: item.state,
+          // Never the reason text itself (the audit log is append-only and free text about a person's photo may name them).
+          reasonLength: wanted.decision === null ? 0 : [...wanted.reason].length,
+        },
+        createdAt: now,
+      });
+      return { ok: true, value: toItemView(updated, draft, true, submission) };
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /**
    * State the rights for the DRAFT of an item (owner only: another photographer's item is 404, an admin who is not the owner gets 403
    * `forbidden`; then the revision fence, 409 `version_conflict`).
    * v1 (`submission` null): the draft's statement must be null or `d1_private_review` and the draft must never have been published,
@@ -689,7 +801,9 @@ export class MediaService {
       if (!item) return { ok: false, error: notFound() };
       if (item.owner !== principal) return { ok: false, error: notOwner(isAdmin) };
       if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
+      if (declinedBlocks(item, principal, isAdmin)) return { ok: false, error: mediaDeclined() };
       const draft = await this.readVersion(tx, mediaId, item.draftVersion);
+      const cleared = ownerClears(item, principal);
       const alreadyStated = () =>
         new ApiError(409, "rights_already_stated", "The draft already has a rights statement or has been published; a statement cannot be changed. Nothing was changed.");
       if (submission === null) {
@@ -703,7 +817,7 @@ export class MediaService {
           .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
           .returning();
         if (!row) throw new Error("Media version was not updated.");
-        const updated = await this.bump(tx, item, principal, now, {});
+        const updated = await this.bump(tx, item, principal, now, cleared ? NO_REVIEW : {});
         await tx.insert(adminAudit).values({
           actor: principal,
           action: "media_rights",
@@ -716,6 +830,7 @@ export class MediaService {
             statement,
             previousStatement: draft.rightsStatement,
             revision: updated.revision,
+            ...clearedNote(cleared),
           },
           createdAt: now,
         });
@@ -746,7 +861,7 @@ export class MediaService {
         createdAt: now,
       });
       const stored = await this.upsertSubmission(tx, mediaId, submission, principal, now);
-      const updated = await this.bump(tx, item, principal, now, { draftVersion: version });
+      const updated = await this.bump(tx, item, principal, now, { draftVersion: version, ...(cleared ? NO_REVIEW : {}) });
       await tx.insert(adminAudit).values({
         actor: principal,
         action: "media_rights",
@@ -772,6 +887,7 @@ export class MediaService {
             fullNameChanged: (before?.fullName ?? null) !== submission.fullName,
             instagramChanged: (before?.instagramHandle ?? null) !== submission.instagramHandle || (before?.instagramDisplayConsent ?? false) !== submission.instagramDisplayConsent,
           },
+          ...clearedNote(cleared),
         },
         createdAt: now,
       });

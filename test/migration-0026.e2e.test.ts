@@ -78,7 +78,10 @@ describe("migration 0026", () => {
 
       await migrate(drizzle({ client: pool }), { migrationsFolder: "./drizzle" }); // to head
 
-      expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(items);
+      // 0029 adds the five review columns (null); every other column is unchanged.
+      expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(
+        items.map((i) => ({ ...i, review_decision: null, review_reason: null, review_version: null, review_decided_by: null, review_decided_at: null })),
+      );
       const after = (await pool.query("SELECT * FROM media_versions ORDER BY media_id")).rows;
       // 0027 adds updated_at/updated_by (backfilled) and 0028 adds title (null); every other column is unchanged.
       expect(after.map(({ licence_waiver, updated_at, updated_by, title, ...rest }) => rest)).toEqual(versions);

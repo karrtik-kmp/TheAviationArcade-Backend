@@ -78,7 +78,10 @@ describe("migration 0018", () => {
       const after = (await pool.query(`SELECT ${COLUMNS}, grant_email FROM account_roles ORDER BY principal, role`)).rows;
       expect(after.map(({ grant_email: _ignored, ...rest }) => rest)).toEqual(before);
       expect(after.every((r) => r.grant_email === null)).toBe(true);
-      expect((await pool.query("SELECT * FROM media_items")).rows).toEqual(media);
+      // 0029 adds the five review columns (null); every other column is unchanged.
+      expect((await pool.query("SELECT * FROM media_items")).rows).toEqual(
+        media.map((m) => ({ ...m, review_decision: null, review_reason: null, review_version: null, review_decided_by: null, review_decided_at: null })),
+      );
 
       // The new rules hold on the migrated table.
       await pool.query("UPDATE account_roles SET state = 'blocked' WHERE principal = 'ph-active' AND role = 'photographer'");

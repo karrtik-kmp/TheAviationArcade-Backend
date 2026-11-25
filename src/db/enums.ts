@@ -40,6 +40,7 @@ export const ADMIN_AUDIT_ACTIONS = [
   "release_create",
   "release_activate",
   "release_restore",
+  "media_review",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
@@ -49,6 +50,8 @@ export const ACCOUNT_ROLES = ["player", "photographer", "admin"] as const;
 export const ROLE_STATES = ["pending", "active", "rejected", "revoked", "blocked"] as const;
 /** Media pipeline (docs/plans/media-pipeline.md, T2). `published` exactly while `media_items.published_version` is set. */
 export const MEDIA_STATES = ["unverified", "published", "withdrawn"] as const;
+/** A staff review decision on a photo (docs/plans/media-review-feedback.md R1): a sub-record of the item, not a state. `declined` only on an unverified item. */
+export const MEDIA_REVIEW_DECISIONS = ["changes_requested", "declined"] as const;
 export const MEDIA_CONTENT_TYPES = ["image/jpeg", "image/png"] as const;
 export const MEDIA_UPLOAD_OPERATIONS = ["create", "version"] as const;
 /**
@@ -103,6 +106,7 @@ export type TripOutcome = (typeof TRIP_OUTCOMES)[number];
 export type ContentDocumentName = (typeof CONTENT_DOCUMENT_NAMES)[number];
 export type AccountRole = (typeof ACCOUNT_ROLES)[number];
 export type RoleState = (typeof ROLE_STATES)[number];
+export type MediaReviewDecision = (typeof MEDIA_REVIEW_DECISIONS)[number];
 export type MediaState = (typeof MEDIA_STATES)[number];
 export type MediaContentType = (typeof MEDIA_CONTENT_TYPES)[number];
 export type MediaRightsStatement = (typeof MEDIA_RIGHTS_STATEMENTS)[number];

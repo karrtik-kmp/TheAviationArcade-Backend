@@ -264,6 +264,7 @@ describe("codes and audit actions", () => {
       "release_create",
       "release_activate",
       "release_restore",
+      "media_review",
     ]);
   });
 });

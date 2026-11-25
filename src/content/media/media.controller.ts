@@ -6,10 +6,10 @@ import { Principal } from "../../auth/firebase-auth.guard.js";
 import { CallerRoles, Roles } from "../../auth/roles.js";
 import { ApiError } from "../../common/errors.js";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe.js";
-import { MEDIA_PUBLISHABLE_RIGHTS, MEDIA_V2_STATEMENT } from "../../db/enums.js";
+import { MEDIA_PUBLISHABLE_RIGHTS, MEDIA_REVIEW_DECISIONS, MEDIA_V2_STATEMENT } from "../../db/enums.js";
 import type { AccountRole, MediaPublishableRights } from "../../db/enums.js";
 import { SkipClientVersion } from "../../platform/client-version.js";
-import { normaliseMediaDescription } from "./media-description.js";
+import { normaliseMediaDescription, normaliseMediaReason } from "./media-description.js";
 import { decodeSubmissionHeader, instagramHandle, submissionSchema, text } from "./media-submission.js";
 import type { Submission } from "./media-submission.js";
 import { MEDIA_CONTENT_TYPES_ACCEPTED, MediaService } from "./media.service.js";
@@ -62,6 +62,7 @@ const listQuery = z.strictObject({
   state: z.enum(["unverified", "published", "withdrawn"]).optional(),
   cursor: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
   pending: z.literal("true").optional(),
+  review: z.enum(["none", ...MEDIA_REVIEW_DECISIONS]).optional(),
   limit: z
     .string()
     .regex(/^[1-9][0-9]{0,2}$/)
@@ -119,6 +120,21 @@ const editBody = z
       body.licence !== undefined || body.description !== undefined || body.title !== undefined || body.fullName !== undefined || body.instagram !== undefined,
   );
 type EditBody = z.infer<typeof editBody>;
+// A review reason: the description rules (newlines kept, CRLF to LF, other control characters refused) with a 500-character limit and a
+// well-formed check (a lone surrogate is refused).
+const reviewReason = z.string().transform((s, ctx) => {
+  const normalised = normaliseMediaReason(s);
+  if (normalised === null) {
+    ctx.addIssue({ code: "custom", message: "invalid reason" });
+    return z.NEVER;
+  }
+  return normalised;
+});
+const reviewBody = z.union([
+  z.strictObject({ revision: revisionField, decision: z.enum(MEDIA_REVIEW_DECISIONS), reason: reviewReason }),
+  z.strictObject({ revision: revisionField, decision: z.null() }),
+]);
+type ReviewBody = z.infer<typeof reviewBody>;
 const rightsBody = z.discriminatedUnion("statement", [
   z.strictObject({ revision: revisionField, statement: z.enum(["v1_own", "v1_authorised"]) }),
   z.strictObject({ revision: revisionField, statement: z.literal(MEDIA_V2_STATEMENT), submission: submissionSchema }),
@@ -141,13 +157,13 @@ export class MediaController {
   list(
     @Principal() principal: string,
     @CallerRoles() roles: readonly AccountRole[],
-    @Query(new ZodValidationPipe(listQuery, "Expected only ?state=unverified|published|withdrawn, ?pending=true, ?cursor=<a nextCursor> and ?limit=1-100.")) query: ListQuery,
+    @Query(new ZodValidationPipe(listQuery, "Expected only ?state=unverified|published|withdrawn, ?pending=true, ?review=none|changes_requested|declined, ?cursor=<a nextCursor> and ?limit=1-100.")) query: ListQuery,
   ) {
     const pending = query.pending === "true";
     if (pending && query.state !== undefined && query.state !== "published") {
       throw new ApiError(400, "invalid_request", "?pending=true lists published items with a newer draft; combine it only with ?state=published or no state.");
     }
-    return this.media.list(principal, roles.includes("admin"), query.state, query.cursor, query.limit ?? 50, pending);
+    return this.media.list(principal, roles.includes("admin"), query.state, query.cursor, query.limit ?? 50, pending, query.review);
   }
 
   /** The item, its version history and a signed preview link (404 for another photographer's item). */
@@ -248,6 +264,19 @@ export class MediaController {
     @Body(new ZodValidationPipe(revisionBody, "Expected { revision: integer } and nothing else.")) body: RevisionBody,
   ) {
     return this.media.publish(principal, mediaId, body.revision);
+  }
+
+  /** Admin: send a photo back (`changes_requested`), decline an unverified one, or withdraw the decision (`decision: null`); see MediaService.review. */
+  @Roles("admin")
+  @Post(":mediaId/review")
+  @HttpCode(200)
+  review(
+    @Principal() principal: string,
+    @Param("mediaId", new MediaIdPipe()) mediaId: number,
+    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
+    @Body(new ZodValidationPipe(reviewBody, "Expected { revision: integer, decision: changes_requested | declined, reason: 1-500 characters of text (newlines allowed) } or { revision, decision: null } and nothing else.")) body: ReviewBody,
+  ) {
+    return this.media.review(principal, mediaId, body.revision, body.decision === null ? { decision: null } : { decision: body.decision, reason: body.reason });
   }
 
   @Roles("admin")

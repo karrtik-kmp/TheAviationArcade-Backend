@@ -1,7 +1,9 @@
 # Plan: review feedback for photos (decline / changes requested), API 0.30.0
 
-Status: **approved after the plan gate** 2026-11-25 (senior-lead and backend-expert, both "approve with changes", folded
-in below); **implementation waits for the user's go-ahead** and the answers under "Needs the user". Asked by: the Admin
+Status: **implemented (local) 2026-11-25; approved after the plan gate** 2026-11-25 (senior-lead and backend-expert, both "approve with changes", folded
+in below). **User ruling 2026-11-25 ("Yes, use defaults"):** implement with the defaults under "Needs the user": the owner
+sees the reason word for word; only the current reason is kept; backend, website and Admin go to dev together at 0.30.0
+(the deploy itself still needs the user's sign-off); no email. Asked by: the Admin
 session (Desks and Integration setup, 2026-11-25, Admin plan `../Admin/docs/A3_FIX_WAVE.md` rev 4); the user approved
 planning it as 0.30.0 ("Yes, plan 0.30.0", 2026-11-25). Builds on 0.29.0 (`photo-submission-v2.md`, Backend `ef16242`).
 
@@ -53,7 +55,9 @@ R4. **What clears a review.**
   cleared. The clear rides the existing `bump` UPDATE, never a second one.
 - Not cleared by: a no-op PATCH (it stays the early return: no bump, no audit row, so an owner cannot dismiss a request
   by sending stored values), an idempotent replay, a non-owner admin's PATCH (an admin fixing a typo must not cancel their
-  own request; such a PATCH may make a new version, so `review.version < draftVersion` is possible and shown).
+  own request). Implementation note: `review.version < draftVersion` happens only when an admin who owns a declined item adds a
+  version (the decline stays). A withdraw keeps a `changes_requested` review, and `decision: null` is accepted on any item with
+  a review, withdrawn included, so a reason can always be erased.
 
 R5. **`declined` blocks the non-admin owner**, with the NEW 409 code `media_declined` (the reason is in the item, never
 in the message), except for erasure: a PATCH whose only changes REMOVE private fields (fullName → null, handle → null,

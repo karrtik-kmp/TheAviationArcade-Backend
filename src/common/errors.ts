@@ -35,6 +35,7 @@ export const ERROR_CODES = [
   "nothing_to_publish",
   "release_in_progress",
   "rights_already_stated",
+  "media_declined",
   "ugs_link_conflict",
   "storage_unavailable",
   "media_invalid",

@@ -32,6 +32,7 @@ import type {
   MediaContentType,
   MediaLicenceWaiver,
   MediaRightsStatement,
+  MediaReviewDecision,
   MediaState,
   MediaUploadOperation,
   RoleState,
@@ -373,6 +374,12 @@ export const mediaItems = pgTable(
     updatedBy: text("updated_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    // The staff review decision (docs/plans/media-review-feedback.md R1): all five set or all five null. Only the current reason is kept.
+    reviewDecision: text("review_decision").$type<MediaReviewDecision>(),
+    reviewReason: text("review_reason"),
+    reviewVersion: integer("review_version"),
+    reviewDecidedBy: text("review_decided_by"),
+    reviewDecidedAt: timestamp("review_decided_at", { withTimezone: true }),
   },
   (t) => [
     index("media_items_owner_id").on(t.owner, t.id.desc()),
@@ -388,6 +395,19 @@ export const mediaItems = pgTable(
     check("media_items_published_state_check", sql`(${t.state} = 'published') = (${t.publishedVersion} IS NOT NULL)`),
     check("media_items_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
     check("media_items_updated_by_check", sql`length(${t.updatedBy}) BETWEEN 1 AND 256`),
+    check("media_items_review_decision_check", sql`${t.reviewDecision} IN ('changes_requested', 'declined')`),
+    check("media_items_review_reason_check", sql`${t.reviewReason} IS NULL OR length(${t.reviewReason}) BETWEEN 1 AND 500`),
+    check("media_items_review_decided_by_check", sql`${t.reviewDecidedBy} IS NULL OR length(${t.reviewDecidedBy}) BETWEEN 1 AND 256`),
+    check(
+      "media_items_review_all_or_none_check",
+      sql`num_nulls(${t.reviewDecision}, ${t.reviewReason}, ${t.reviewVersion}, ${t.reviewDecidedBy}, ${t.reviewDecidedAt}) IN (0, 5)`,
+    ),
+    check("media_items_review_version_check", sql`${t.reviewVersion} BETWEEN 1 AND ${t.draftVersion}`),
+    check(
+      "media_items_review_pending_check",
+      sql`${t.reviewVersion} IS NULL OR ${t.publishedVersion} IS NULL OR ${t.reviewVersion} > ${t.publishedVersion}`,
+    ),
+    check("media_items_review_declined_check", sql`${t.reviewDecision} IS DISTINCT FROM 'declined' OR ${t.state} = 'unverified'`),
   ],
 );
 
@@ -631,7 +651,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare', 'release_create', 'release_activate', 'release_restore')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare', 'release_create', 'release_activate', 'release_restore', 'media_review')`,
     ),
   ],
 );

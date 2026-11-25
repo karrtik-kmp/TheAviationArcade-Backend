@@ -203,6 +203,7 @@ const DETAILS: Record<AdminAuditAction, { target: string; detail: Record<string,
   media_withdraw: { target: "med-1", detail: { mediaId: "med-1", fromState: "published", withdrawnVersion: 1, revision: 5 } },
   content_media_link: { target: "aircraft-identifier", detail: { id: "a1", fromVersion: 4, version: 5, diff: [{ field: "media", from: null, to: "med-1" }] } },
   media_rights: { target: "med-1", detail: { mediaId: "med-1", version: 2, fromVersion: 1, newVersion: true, statement: V2_AGREEMENT, previousStatement: D1_REVIEW, previousStatedAt: "2026-10-01T10:00:00.000Z", previousStatedBy: principal, revision: 6, changes: { credit: { from: null, to: "A. Photographer" }, licenceName: { from: null, to: "Airplane Games photo agreement" }, licenceUrl: { from: null, to: null }, title: { from: null, to: "Sunrise" } }, submission: { fullNameChanged: true, instagramChanged: false } } },
+  media_review: { target: "med-1", detail: { mediaId: "med-1", decision: "changes_requested", previousDecision: null, reviewedVersion: 2, revision: 7, fromState: "unverified", reasonLength: 42 } },
   media_import: { target: "med-2", detail: { sourceId: "d1-1", owner: principal, status: "unverified", rightsBasis: "own", submittedAt: "2026-10-01T10:00:00.000Z", mediaId: "med-2", rightsEvidence: "My own photo; call me on 555 0100.", note: "Imported D1 proposal." }, actor: "operator:josh" },
   store_product_create: { target: "hints-10", detail: { version: 1, kind: "hint_pack", title: "10 hints", hints: 10, miles: null, passPeriod: null, demo: false } },
   store_product_edit: { target: "hints-10", detail: { fromVersion: 1, version: 2, diff: [{ field: "title", from: "10 hints", to: "Ten hints" }] } },
@@ -274,6 +275,10 @@ describe("leak test: what the desk can show", () => {
     expect(imported?.detail.rightsEvidence).toBeUndefined();
     expect(seen.find((e) => e.action === "media_edit")?.detail.note).toBeUndefined();
     expect(seen.find((e) => e.action === "media_edit")?.detail.noteLength).toBe([...String(DETAILS.media_edit.detail.note)].length);
+    // A media_review row holds only the length of the reason, never any reason text (docs/plans/media-review-feedback.md R8).
+    const reviewed = seen.find((e) => e.action === "media_review");
+    expect(Object.keys(reviewed?.detail ?? {}).sort()).toEqual(["decision", "fromState", "mediaId", "previousDecision", "reasonLength", "revision", "reviewedVersion"].sort());
+    expect(reviewed?.detail.reason).toBeUndefined();
     expect(imported?.detail.rightsEvidenceLength).toBe([...String(DETAILS.media_import.detail.rightsEvidence)].length);
     // The actor is the stored principal-style string, never an email or a name.
     expect(seen.find((e) => e.action === "role_grant")?.actor).toBe("operator:josh");

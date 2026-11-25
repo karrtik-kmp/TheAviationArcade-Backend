@@ -1,10 +1,29 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.29.0
+  version: 0.30.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.30.0 (photo review feedback; staff media; requests additive, RESPONSES BREAKING for strict staff-media readers and strict error parsers; no change for the game's own calls; migration 0029).**
+    New route `POST /v1/admin/media/{mediaId}/review` (admin only): an admin sends a photo back with `changes_requested` or turns it down
+    with `declined`, each with a reason (1 to 500 code points), or withdraws the decision with `decision: null`. The decision is a
+    sub-record of the item, NOT a new `MediaState` (`unverified | published | withdrawn` are unchanged, so the game, the guest route and
+    every state check are untouched); it can also apply to the pending draft of a published item. `GET /v1/admin/media` gains the query
+    `review` (`none`, `changes_requested`, `declined`): "Photos to review" is `?state=unverified&review=none` plus
+    `?pending=true&review=none`. `declined` blocks the non-admin owner's uploads, rights moves and edits with the NEW error code
+    `media_declined` (409) on `POST .../versions`, `PATCH /v1/admin/media/{mediaId}` and `PUT .../rights`; erasing private fields stays
+    allowed. A committed owner change clears `changes_requested`; publishing clears either decision. New audit action `media_review`
+    (its detail holds `reasonLength`, never the reason); `media_version`, `media_edit`, `media_rights` and `media_publish` details gain
+    `reviewCleared` when a write cleared a review.
+    Responses (BREAKING for a strict reader): `MediaItem` gains the required `review` (`MediaReview` or null; owner and admins only; the
+    reason is shown to the owner word for word; `decidedBy` to admins only), and `Error.code` gains `media_declined`. `ImageRef`,
+    `GET /v1/media` and `GET /v1/public/media` are unchanged and carry no review; the game's calls do not change. `AuditEvent.action`
+    stays a closed enum here (a pinned list gains `media_review`); clients should still parse unknown actions leniently.
+    **Deploy order:** the website and the Admin vendor this contract first, then the backend goes to dev in ONE window together with
+    0.29.0's migration 0028 (a strict 0.30.0 reader also fails against a 0.28 backend). Migration 0029 adds five nullable review columns to
+    `media_items` and the `media_review` audit action.
 
     **Changelog 0.29.0 (photo submission v2, the client's agreement of 2026-12-01; staff media; requests additive, RESPONSES BREAKING for strict staff-media readers; no change for the game's own calls; migration 0028).**
     Requests: v1 requests behave exactly as in 0.28.0. A new rights statement `v2_agreement_2026-12-01` (the `X-Rights-Statement`
@@ -3175,11 +3194,22 @@ paths:
         `true` is accepted. A cursor made under `pending=true` is 400 without it (and the reverse, including under
         `state=published`). Pages are ordered by item id, so
         uploads made while paging never move or repeat an item. Exempt from the client version gate.
+
+        **`review` (0.30.0).** Filters by the item's review: `none` (no decision), `changes_requested` or `declined`; it combines with
+        `state` and `pending`. The Admin's "Photos to review" queue is exactly `?state=unverified&review=none` plus
+        `?pending=true&review=none` (two calls). A cursor made under a `review` filter is 400 without it and under another one (and the
+        reverse); a cursor made without `review` is the same as in 0.29.0, so old cursors still work. `nextCursor` non-null means there
+        are more items; there is no count and no `hasMore`. Each item carries `review` (owner and admins only).
       parameters:
         - name: state
           in: query
           required: false
           schema: { $ref: "#/components/schemas/MediaState" }
+        - name: review
+          in: query
+          required: false
+          description: "0.30.0. `none` = items with no review decision; the other two = items with that decision. Combines with `state` and `pending`; a repeated or unknown value is 400."
+          schema: { type: string, enum: [none, changes_requested, declined] }
         - name: pending
           in: query
           required: false
@@ -3188,7 +3218,7 @@ paths:
         - name: cursor
           in: query
           required: false
-          description: Opaque; pass back a `nextCursor` with the same `state` / `pending` filter. A malformed cursor or another filter's is 400. It is not a secret and grants nothing (visibility is checked on every page).
+          description: Opaque; pass back a `nextCursor` with the same `state` / `pending` / `review` filter. A malformed cursor or another filter's is 400. It is not a secret and grants nothing (visibility is checked on every page).
           schema: { type: string, minLength: 1, maxLength: 100 }
         - name: limit
           in: query
@@ -3280,6 +3310,14 @@ paths:
         (422 `content_invalid`); `credit` otherwise, `sourceUrl` and `attributionText` stay editable, and `creditRequired` stays
         `true` (the agreement licence always credits the photographer): turning it off is 422 `content_invalid` for an admin (403
         `forbidden` first for anyone else). These 422 checks run before anything is written.
+
+        **Review feedback (0.30.0).** While the item is `declined` (see `POST .../review`) the item's non-admin owner gets 409
+        `media_declined` for any PATCH, nothing written, except one whose only changes REMOVE private fields (`fullName` to null, handle
+        to null, `displayConsent` to false), which is allowed and leaves the decision in place. An admin (including an admin who owns the
+        item) is never blocked. A committed change by the owner clears a `changes_requested` review (the audit row gains
+        `reviewCleared: "changes_requested"`); a 200 no-op (stored values sent back), and any change by a non-owner admin, leave the
+        review alone. Order: role, ownership (404), `revision` fence (409), the `creditRequired` 403, the non-owner-admin 403, then
+        `media_declined`, then the v2 422 checks.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
       requestBody:
@@ -3300,7 +3338,17 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/MediaNotFound" }
-        "409": { $ref: "#/components/responses/MediaWriteConflict" }
+        "409":
+          description: |
+            `version_conflict`: `revision` is stale. `media_declined` (0.30.0): the item is `declined` and the caller is its non-admin
+            owner; the reason is in `MediaItem.review`, never in the message. Nothing was written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict, media_declined]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
@@ -3335,6 +3383,12 @@ paths:
         an item whose draft holds v1 or v2 is fine. A v1 file upload to an item whose draft already holds v2 is 409
         `rights_already_stated` (no downgrade; nothing is stored). It is checked after the key lookup and the `revision` fence, so an
         earlier v1 upload that succeeded before the item moved to v2 still replays 200 with the same key.
+
+        **Review feedback (0.30.0).** A new file version by the item's owner clears a `changes_requested` review (the `media_version`
+        audit row gains `reviewCleared: "changes_requested"`; the item returns to `?review=none`). While the item is `declined` the
+        non-admin owner gets 409 `media_declined` (nothing is stored); an admin who owns the item is not blocked. A replay of an
+        `Idempotency-Key` claimed before a review is 200 and does not clear anything. `media_declined` is checked after the key lookup,
+        the 404/403 checks and the `revision` fence, and before the v1-over-v2 `rights_already_stated` check.
 
         Requires an `Idempotency-Key`. The key lookup runs FIRST: it precedes the `revision` fence, so an identical retry still
         replays after the item's `revision` has moved on. A replay needs the same operation (version upload, not create), the same
@@ -3382,11 +3436,12 @@ paths:
         "409":
           description: |
             `version_conflict`: `revision` is stale. `rights_already_stated`: a v1
-            upload to an item whose draft already holds the v2 statement. Nothing was stored or written.
+            upload to an item whose draft already holds the v2 statement. `media_declined` (0.30.0): the item is `declined` and the
+            caller is its non-admin owner. Nothing was stored or written.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
-          x-error-codes: [version_conflict, rights_already_stated]
+          x-error-codes: [version_conflict, rights_already_stated, media_declined]
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3425,6 +3480,10 @@ paths:
         v2 over a draft that already holds v2 is 409 `rights_already_stated`. If a request is answered 409 after a lost response,
         reload the item: the move may already have happened.
 
+        **Review feedback (0.30.0).** A committed rights statement by the owner clears a `changes_requested` review (the `media_rights`
+        audit row gains `reviewCleared: "changes_requested"`). While the item is `declined` the non-admin owner gets 409 `media_declined`
+        (checked after the `revision` fence and before `rights_already_stated`); an admin who owns the item is not blocked.
+
         Bumps `revision`, one `media_rights` audit row. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
@@ -3449,11 +3508,87 @@ paths:
         "409":
           description: |
             `version_conflict`: `revision` is stale. `rights_already_stated`: v1 sent for a draft that already has a `v1_*` or v2
-            statement or was published once; or v2 sent for a draft that already holds v2. Nothing was written.
+            statement or was published once; or v2 sent for a draft that already holds v2. `media_declined` (0.30.0): the item is
+            `declined` and the caller is its non-admin owner. Nothing was written.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
-          x-error-codes: [version_conflict, rights_already_stated]
+          x-error-codes: [version_conflict, rights_already_stated, media_declined]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/media/{mediaId}/review:
+    post:
+      tags: [media, admin]
+      operationId: reviewMedia
+      summary: Send a photo back (changes requested), turn it down (declined) or withdraw the decision
+      description: |
+        Admin only (0.30.0); an admin may review their own uploads. Strict body, a union on `decision`: `{ revision, decision:
+        "changes_requested" | "declined", reason }` or `{ revision, decision: null }`. `reason` is 1 to 500 code points, written for the
+        photographer (they see it word for word): CRLF becomes LF, a newline is the only control character allowed, it is trimmed, lone
+        surrogates are 400. Order: role, 404, the `revision` fence (409 `version_conflict`), then eligibility (409 `version_conflict`
+        with a message naming the state, as `withdraw`).
+
+        **Reviewable items:** `unverified`, or `published` with a pending draft (`draftVersion` > `publishedVersion`; the live version is
+        not touched). A NEW decision on a `withdrawn` item, or on a published item with nothing pending, is 409; `decision: null` is accepted on any item that has a review, withdrawn included, so a reason can always be erased. `declined` is allowed only
+        on an `unverified` item (409 on a published one: withdraw it instead). The decision applies to the draft version current at that
+        moment (`MediaReview.version`).
+
+        A new decision replaces the current one, so an admin reopens a declined item by sending `changes_requested` (`declined` to
+        `changes_requested`). `decision: null` withdraws the decision and ERASES its reason; on an item with no review it is a 200 no-op.
+        **No-op:** the same decision with the same normalised reason on the same draft version is a 200 with nothing written (no
+        `revision` bump, no audit row, `decidedBy` stays the first admin). After a lost response the old `revision` is stale: that retry is
+        409 `version_conflict`, so reload; it may already be done.
+
+        **What clears a review.** Publishing clears either decision. A committed change by the item's OWNER (by identity, whatever their
+        role) clears `changes_requested`: a new file version, a `PATCH` that changes anything (including a submission-only change), or a
+        `PUT .../rights`; the item returns to `?review=none` and the write's audit row gains `reviewCleared: "changes_requested"`. Not
+        cleared by: a no-op `PATCH` (so an owner cannot dismiss a request by sending stored values), an idempotent replay, or any change
+        by a non-owner admin (a typo fix must not cancel a request). A withdraw keeps a `changes_requested` review: it ends with an owner
+        fix, a publish or `decision: null`. `review.version` can be lower than `draftVersion` when an admin who owns a declined item
+        added a version afterwards (the decline stays).
+
+        **`declined` blocks the non-admin owner**: a new version, a rights move or a `PATCH` by them is 409 `media_declined` (the reason
+        is in `MediaItem.review`, never in the message), except a `PATCH` whose only changes remove private fields (`fullName` to null,
+        handle to null, `displayConsent` to false), which is allowed and keeps the decision. An admin, including an admin who owns the
+        item, is never blocked and may `PATCH`, publish (which clears it), reopen or erase the decision.
+
+        Bumps `revision`; one `media_review` audit row (the reason text is NOT in the audit, only `reasonLength`). Only the current
+        reason is kept: it is overwritten by the next decision, erased by `decision: null` and cleared by an owner fix or a publish.
+        Answers 200, not 201. Exempt from the client version gate.
+      parameters:
+        - $ref: "#/components/parameters/MediaIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MediaReviewRequest" }
+      responses:
+        "200":
+          description: "The item as it is now (`review` set, replaced, or null after `decision: null`)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaItem" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/MediaNotFound" }
+        "409":
+          description: |
+            `version_conflict`: `revision` is stale, or a new decision was sent for an item that is not reviewable (withdrawn; published with nothing pending), or
+            `declined` was sent for an item that is not `unverified`. Nothing was written; reload and decide again.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict]
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3474,6 +3609,7 @@ paths:
         `content_invalid`. A v2 draft whose item has no `fullName` in its private submission (for instance erased) is also 422
         `content_invalid`. Publishing a draft that is already the published version is 409 `nothing_to_publish`. Fenced by `revision`
         (stale is 409 `version_conflict`). Bumps `revision`; one audit row. Answers 200, not 201. Exempt from the client version gate.
+        Publishing clears either review decision (0.30.0) in the same write; the audit detail gains `reviewCleared: <decision>`.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
       requestBody:
@@ -3525,7 +3661,8 @@ paths:
       summary: Withdraw a published image
       description: |
         Admin only. `published` to `withdrawn`: players and the website stop seeing it (`publishedVersion` becomes null). An
-        item that is not published is 409 `version_conflict`. Fenced by `revision`. Bumps `revision`; one audit row. Answers 200, not
+        item that is not published is 409 `version_conflict`. A `changes_requested` review on a pending draft stays (`MediaItem.review`);
+        it ends with an owner fix, a publish or `decision: null` on the review route. Fenced by `revision`. Bumps `revision`; one audit row. Answers 200, not
         201. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
@@ -4672,6 +4809,7 @@ components:
                 - nothing_to_publish
                 - release_in_progress
                 - rights_already_stated
+                - media_declined
                 - content_invalid
                 - ugs_link_conflict
                 - storage_unavailable
@@ -4719,7 +4857,7 @@ components:
         action:
           type: string
           description: One of the audit actions; the list is pinned to `ADMIN_AUDIT_ACTIONS` by a test.
-          enum: [content_import, content_publish, content_edit, content_retire, content_restore, role_request, role_approve, role_reject, role_grant, role_revoke, role_block, role_unblock, role_email_edit, media_upload, media_version, media_edit, media_publish, media_withdraw, content_media_link, media_rights, media_import, store_product_create, store_product_edit, store_product_retire, store_product_restore, editorial_create, editorial_save, content_prepare, release_create, release_activate, release_restore]
+          enum: [content_import, content_publish, content_edit, content_retire, content_restore, role_request, role_approve, role_reject, role_grant, role_revoke, role_block, role_unblock, role_email_edit, media_upload, media_version, media_edit, media_publish, media_withdraw, content_media_link, media_rights, media_import, store_product_create, store_product_edit, store_product_retire, store_product_restore, editorial_create, editorial_save, content_prepare, release_create, release_activate, release_restore, media_review]
         actor: { type: string, description: "The stored actor string as-is: `firebase:<project>:<uid>`, `operator:<os user>` or `system:signup`. Never an email or a name." }
         detail:
           type: object
@@ -4729,7 +4867,9 @@ components:
             `rightsEvidenceLength` instead of `rightsEvidence`, `media_edit` shows `noteLength` instead of `note` (code points). Other
             free text reaches admins: on `media_edit` the owning photographer typed `changes.description`, `changes.credit`,
             `changes.attributionText`, `changes.sourceUrl` and `changes.licenceUrl`; staff typed `note` (role and content writes),
-            `changes.description` (`content_publish`), `diff` values and `fileName`.
+            `changes.description` (`content_publish`), `diff` values and `fileName`. `media_review` (0.30.0) holds only
+            `reasonLength` (code points; 0 for `decision: null`, whose `reviewedVersion` is the version the withdrawn decision was about), never the reason text; `media_version`, `media_edit`, `media_rights` and `media_publish`
+            gain `reviewCleared` (the decision a write cleared) only when it cleared one.
         createdAt: { type: string, format: date-time }
     AuditEventList:
       type: object
@@ -6617,6 +6757,42 @@ components:
             revision: { type: integer, minimum: 1, maximum: 2147483647 }
             statement: { type: string, enum: [v2_agreement_2026-12-01] }
             submission: { $ref: "#/components/schemas/MediaSubmission" }
+    MediaReviewRequest:
+      description: |
+        A union on `decision` (0.30.0). `changes_requested` and `declined` need a `reason`; `decision: null` withdraws the current decision
+        and erases its reason, and takes no `reason` (400 if sent). `declined` is only for an `unverified` item. Rules on the route.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [revision, decision, reason]
+          properties:
+            revision: { type: integer, minimum: 1, maximum: 2147483647, description: The item's `revision` as the admin read it. }
+            decision: { type: string, enum: [changes_requested, declined] }
+            reason:
+              type: string
+              minLength: 1
+              maxLength: 500
+              description: CRLF becomes LF; a newline is the only control character allowed; trimmed; then 1 to 500 code points; lone surrogates are 400. Shown to the owner word for word.
+        - type: object
+          additionalProperties: false
+          required: [revision, decision]
+          properties:
+            revision: { type: integer, minimum: 1, maximum: 2147483647 }
+            decision: { type: "null" }
+    MediaReview:
+      type: object
+      additionalProperties: false
+      required: [decision, reason, version, decidedAt]
+      description: |
+        The current review decision on an item (0.30.0), one record per item (only the latest reason is kept). Visible to the item's owner
+        and to admins, in staff responses only; never in an `ImageRef`, `GET /v1/media` or `GET /v1/public/media`. It does not change
+        `MediaState`.
+      properties:
+        decision: { type: string, enum: [changes_requested, declined] }
+        reason: { type: string, minLength: 1, maxLength: 500, description: The admin's reason, newlines allowed. The owner sees it word for word. }
+        version: { type: integer, minimum: 1, description: The draft version the decision was made on. It is lower than `draftVersion` when an admin who owns a declined item added a version afterwards. }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string, minLength: 1, maxLength: 256, description: Admin callers only; absent otherwise (as `MediaItem.owner`). }
     MediaVersion:
       type: object
       additionalProperties: false
@@ -6642,7 +6818,7 @@ components:
     MediaItem:
       type: object
       additionalProperties: false
-      required: [id, state, revision, draftVersion, publishedVersion, draft, submission, createdAt, updatedAt]
+      required: [id, state, revision, draftVersion, publishedVersion, draft, submission, review, createdAt, updatedAt]
       description: |
         One image. `revision` (>= 1) is the optimistic fence for EVERY write to the item (new version, licence edit, publish,
         withdraw): send the value you read, a stale one is 409 `version_conflict`. `draftVersion` is the latest version (a new
@@ -6672,6 +6848,13 @@ components:
                 fullName: { type: [string, "null"], minLength: 1, maxLength: 200 }
                 instagramHandle: { type: [string, "null"], pattern: "^[A-Za-z0-9._]{1,30}$" }
                 instagramDisplayConsent: { type: boolean, description: Authorisation to display and link the handle publicly; never true without a handle. }
+            - type: "null"
+        review:
+          description: |
+            The current review decision (0.30.0): `null` when none. Visible only to the item's owner and to admins; never in an `ImageRef`,
+            `GET /v1/media` or `GET /v1/public/media`. `decidedBy` is present for admin callers only.
+          oneOf:
+            - $ref: "#/components/schemas/MediaReview"
             - type: "null"
         owner: { type: string, minLength: 1, maxLength: 256, description: Admin callers only; absent otherwise. }
         createdAt: { type: string, format: date-time }

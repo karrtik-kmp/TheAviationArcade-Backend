@@ -112,7 +112,10 @@ describe("migration 0028", () => {
     const after = await snapshot();
     expect(after.map(({ title, ...rest }) => rest)).toEqual(before);
     expect(after.every((r) => r.title === null)).toBe(true);
-    expect((await pool.query("SELECT to_jsonb(i) AS j FROM media_items i ORDER BY id")).rows.map((r) => r.j)).toEqual(items);
+    // 0029 adds the five review columns (null); every other column is unchanged.
+    expect((await pool.query("SELECT to_jsonb(i) AS j FROM media_items i ORDER BY id")).rows.map((r) => r.j)).toEqual(
+      items.map((i) => ({ ...i, review_decision: null, review_reason: null, review_version: null, review_decided_by: null, review_decided_at: null })),
+    );
     expect((await pool.query("SELECT to_jsonb(k) AS j FROM media_upload_keys k")).rows.map((r) => r.j)).toEqual(keys.map((k) => ({ ...k, submission_sha256: null })));
     expect((await pool.query("SELECT count(*)::int AS n FROM media_submissions")).rows[0].n).toBe(0);
 

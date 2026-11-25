@@ -818,7 +818,7 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
       description: null, title: null, rights: null, publishedAt: null, createdAt: "2026-11-03T12:00:00Z",
     };
     const item = {
-      id: "med-1", state: "unverified", revision: 1, draftVersion: 1, publishedVersion: null, draft: version, submission: null,
+      id: "med-1", state: "unverified", revision: 1, draftVersion: 1, publishedVersion: null, draft: version, submission: null, review: null,
       createdAt: "2026-11-03T12:00:00Z", updatedAt: "2026-11-03T12:00:00Z",
     };
     expect(valid("MediaItem", item)).toBe(true);
