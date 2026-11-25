@@ -6,10 +6,12 @@ import { Principal } from "../../auth/firebase-auth.guard.js";
 import { CallerRoles, Roles } from "../../auth/roles.js";
 import { ApiError } from "../../common/errors.js";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe.js";
-import { MEDIA_PUBLISHABLE_RIGHTS } from "../../db/enums.js";
+import { MEDIA_PUBLISHABLE_RIGHTS, MEDIA_V2_STATEMENT } from "../../db/enums.js";
 import type { AccountRole, MediaPublishableRights } from "../../db/enums.js";
 import { SkipClientVersion } from "../../platform/client-version.js";
 import { normaliseMediaDescription } from "./media-description.js";
+import { decodeSubmissionHeader, instagramHandle, submissionSchema, text } from "./media-submission.js";
+import type { Submission } from "./media-submission.js";
 import { MEDIA_CONTENT_TYPES_ACCEPTED, MediaService } from "./media.service.js";
 import type { MediaEdit } from "./media.service.js";
 
@@ -24,7 +26,10 @@ function idempotencyKey(value: string | undefined): string {
   return value;
 }
 
-/** The X-Rights-Statement header is required on both uploads (sending it is the uploader's consent): exactly `v1_own` or `v1_authorised`. */
+/**
+ * The X-Rights-Statement header is required on both uploads (sending it is the uploader's consent): exactly `v1_own`,
+ * `v1_authorised` or `v2_agreement_2026-12-01`.
+ */
 function rightsStatement(value: string | undefined): MediaPublishableRights {
   const found = (MEDIA_PUBLISHABLE_RIGHTS as readonly string[]).find((v) => v === value);
   if (found === undefined) {
@@ -67,14 +72,10 @@ const listQuery = z.strictObject({
 type ListQuery = z.infer<typeof listQuery>;
 const versionQuery = z.strictObject({ revision: z.string().regex(/^[1-9][0-9]{0,9}$/) });
 
-// Text is trimmed and otherwise kept verbatim; control characters are refused. Lengths count code points, as Postgres length() does.
+// `text()` (media-submission.ts, shared with the X-Submission decoder): trimmed and otherwise verbatim; control characters and lone
+// surrogates are refused. Lengths count code points, as Postgres length() does.
 const CONTROL = /\p{Cc}/u;
 const codePoints = (s: string) => [...s].length;
-const text = (min: number, max: number) =>
-  z
-    .string()
-    .transform((s) => s.trim())
-    .pipe(z.string().refine((s) => codePoints(s) >= min && codePoints(s) <= max && !CONTROL.test(s)));
 const url = z
   .string()
   .transform((s) => s.trim())
@@ -99,16 +100,29 @@ const description = z.string().transform((s, ctx) => {
   }
   return normalised;
 });
+// Both keys are required; a handle of "" or "@" means none, and consent needs a handle.
+const instagramEdit = z
+  .strictObject({ handle: instagramHandle.nullable(), displayConsent: z.boolean() })
+  .refine((instagram) => !instagram.displayConsent || instagram.handle !== null);
 const editBody = z
   .strictObject({
     revision: revisionField,
     licence: licenceEdit.optional(),
     description: description.nullable().optional(),
+    title: text(1, 200).nullable().optional(),
+    fullName: text(1, 200).nullable().optional(),
+    instagram: instagramEdit.optional(),
     note: text(1, 500).optional(),
   })
-  .refine((body) => body.licence !== undefined || body.description !== undefined);
+  .refine(
+    (body) =>
+      body.licence !== undefined || body.description !== undefined || body.title !== undefined || body.fullName !== undefined || body.instagram !== undefined,
+  );
 type EditBody = z.infer<typeof editBody>;
-const rightsBody = z.strictObject({ revision: revisionField, statement: z.enum(MEDIA_PUBLISHABLE_RIGHTS) });
+const rightsBody = z.discriminatedUnion("statement", [
+  z.strictObject({ revision: revisionField, statement: z.enum(["v1_own", "v1_authorised"]) }),
+  z.strictObject({ revision: revisionField, statement: z.literal(MEDIA_V2_STATEMENT), submission: submissionSchema }),
+]);
 type RightsBody = z.infer<typeof rightsBody>;
 
 /**
@@ -149,7 +163,8 @@ export class MediaController {
 
   /**
    * Upload a new image (raw bytes; the route-scoped reader in app.setup.ts reads at most 5 MB, and only for a caller whose
-   * token and role are verified). 201 for a new item, 200 when the Idempotency-Key was already used with the same bytes.
+   * token and role are verified). 201 for a new item, 200 when the Idempotency-Key was already used with the same bytes, statement
+   * and submission. The v2 statement needs the X-Submission header (docs/plans/photo-submission-v2.md D2); v1 refuses it.
    */
   @Post()
   async upload(
@@ -158,18 +173,19 @@ export class MediaController {
     @Headers("idempotency-key") rawKey: string | undefined,
     @Headers("content-type") contentType: string | undefined,
     @Headers("x-rights-statement") rawStatement: string | undefined,
+    @Headers("x-submission") rawSubmission: string | undefined,
     @Body() body: unknown,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { type, key, statement, bytes } = this.imageRequest(rawKey, contentType, rawStatement, body);
-    const result = await this.media.create(principal, key, bytes, type, roles.includes("admin"), statement);
+    const { type, key, statement, submission, bytes } = this.imageRequest(rawKey, contentType, rawStatement, rawSubmission, body);
+    const result = await this.media.create(principal, key, bytes, type, roles.includes("admin"), statement, submission);
     res.status(result.replayed ? 200 : 201);
     return result.item;
   }
 
   /**
    * A new file version of an item, fenced by `?revision=`. OWNER ONLY: a non-owner admin gets 403, a non-owner photographer 404.
-   * 201 new, 200 replay of the same Idempotency-Key, item, bytes and statement.
+   * 201 new, 200 replay of the same Idempotency-Key, item, bytes, statement and submission.
    */
   @Post(":mediaId/versions")
   async uploadVersion(
@@ -180,6 +196,7 @@ export class MediaController {
     @Headers("idempotency-key") rawKey: string | undefined,
     @Headers("content-type") contentType: string | undefined,
     @Headers("x-rights-statement") rawStatement: string | undefined,
+    @Headers("x-submission") rawSubmission: string | undefined,
     @Body() body: unknown,
     @Res({ passthrough: true }) res: Response,
   ) {
@@ -189,35 +206,36 @@ export class MediaController {
     if (!(revision >= 1 && revision <= 2_147_483_647)) {
       throw new ApiError(400, "invalid_request", "Expected ?revision=<the item's revision> (1 to 2147483647) and nothing else.");
     }
-    const { type, key, statement, bytes } = this.imageRequest(rawKey, contentType, rawStatement, body);
-    const result = await this.media.addVersion(principal, key, mediaId, revision, bytes, type, roles.includes("admin"), statement);
+    const { type, key, statement, submission, bytes } = this.imageRequest(rawKey, contentType, rawStatement, rawSubmission, body);
+    const result = await this.media.addVersion(principal, key, mediaId, revision, bytes, type, roles.includes("admin"), statement, submission);
     res.status(result.replayed ? 200 : 201);
     return result.item;
   }
 
-  /** Edit the draft version's licence and/or description (see MediaService.edit). */
+  /** Edit the draft version's licence, description and title and the item's private submission fields (see MediaService.edit). */
   @Patch(":mediaId")
   async edit(
     @Principal() principal: string,
     @CallerRoles() roles: readonly AccountRole[],
     @Param("mediaId", new MediaIdPipe()) mediaId: number,
     @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
-    @Body(new ZodValidationPipe(editBody, "Expected { revision, licence?: { ... }, description?: string or null, note? } with at least one of licence and description, text without control characters (a description may contain newlines) and nothing else.")) body: EditBody,
+    @Body(new ZodValidationPipe(editBody, "Expected { revision, licence?: { ... }, description?: string or null, title?: string or null, fullName?: string or null, instagram?: { handle: string or null, displayConsent: boolean }, note? } with at least one of them, text without control characters (a description may contain newlines), a consent only with a handle, and nothing else.")) body: EditBody,
   ) {
-    const edit: MediaEdit = { licence: body.licence, description: body.description };
+    const edit: MediaEdit = { licence: body.licence, description: body.description, title: body.title, fullName: body.fullName, instagram: body.instagram };
     return this.media.edit(principal, mediaId, roles.includes("admin"), body.revision, edit, body.note ?? null);
   }
 
-  /** State the rights for a draft that has none (owner only; see MediaService.setRights). */
+  /** State the rights for the draft: v1 for a draft that has none, or move to the v2 agreement with a new draft version (owner only; see MediaService.setRights). */
   @Put(":mediaId/rights")
   setRights(
     @Principal() principal: string,
     @CallerRoles() roles: readonly AccountRole[],
     @Param("mediaId", new MediaIdPipe()) mediaId: number,
     @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
-    @Body(new ZodValidationPipe(rightsBody, "Expected { revision: integer, statement: v1_own | v1_authorised } and nothing else.")) body: RightsBody,
+    @Body(new ZodValidationPipe(rightsBody, "Expected { revision: integer, statement: v1_own | v1_authorised } or { revision, statement: v2_agreement_2026-12-01, submission: { fullName, title, credit, instagramHandle?, instagramDisplayConsent? } } and nothing else.")) body: RightsBody,
   ) {
-    return this.media.setRights(principal, mediaId, roles.includes("admin"), body.revision, body.statement);
+    const submission = body.statement === MEDIA_V2_STATEMENT ? body.submission : null;
+    return this.media.setRights(principal, mediaId, roles.includes("admin"), body.revision, body.statement, submission);
   }
 
   @Roles("admin")
@@ -244,17 +262,33 @@ export class MediaController {
     return this.media.withdraw(principal, mediaId, body.revision);
   }
 
-  /** The checks both image routes share: Content-Type, Idempotency-Key, X-Rights-Statement and a non-empty raw body. All before the key lookup. */
-  private imageRequest(rawKey: string | undefined, contentType: string | undefined, rawStatement: string | undefined, body: unknown) {
+  /**
+   * The checks both image routes share: Content-Type, Idempotency-Key, X-Rights-Statement, X-Submission (required with the v2
+   * statement, refused with v1) and a non-empty raw body. All before the key lookup.
+   */
+  private imageRequest(
+    rawKey: string | undefined,
+    contentType: string | undefined,
+    rawStatement: string | undefined,
+    rawSubmission: string | undefined,
+    body: unknown,
+  ) {
     const type = mediaType(contentType);
     if (!(MEDIA_CONTENT_TYPES_ACCEPTED as readonly string[]).includes(type)) {
       throw new ApiError(415, "invalid_request", "Send the image as the request body with Content-Type image/jpeg or image/png.");
     }
     const key = idempotencyKey(rawKey);
     const statement = rightsStatement(rawStatement);
+    let submission: Submission | null = null;
+    if (statement === MEDIA_V2_STATEMENT) {
+      if (rawSubmission === undefined) throw new ApiError(400, "invalid_request", "The v2 statement needs an X-Submission header (base64url of the submission JSON).");
+      submission = decodeSubmissionHeader(rawSubmission);
+    } else if (rawSubmission !== undefined) {
+      throw new ApiError(400, "invalid_request", "An X-Submission header is only accepted with the v2 statement.");
+    }
     if (!Buffer.isBuffer(body) || body.length === 0) {
       throw new ApiError(400, "invalid_request", "Expected the image file as the request body.");
     }
-    return { type, key, statement, bytes: body };
+    return { type, key, statement, submission, bytes: body };
   }
 }

@@ -7,23 +7,35 @@ import { ApiError } from "../../common/errors.js";
 import { DatabaseService, ExpectedRollback } from "../../database/database.module.js";
 import type { Database, Tx } from "../../database/database.module.js";
 import { databaseNow } from "../../database/clock.js";
+import { MEDIA_PUBLISHABLE_RIGHTS, MEDIA_V2_LICENCE_NAME, MEDIA_V2_STATEMENT } from "../../db/enums.js";
 import type { MediaPublishableRights } from "../../db/enums.js";
-import { adminAudit, mediaItems, mediaUploadKeys, mediaVersions } from "../../db/schema.js";
+import { adminAudit, mediaItems, mediaSubmissions, mediaUploadKeys, mediaVersions } from "../../db/schema.js";
 import { BLOB_STORE, StorageUnavailableError } from "../../storage/blob-store.js";
 import { storageApiError } from "../import-blob.js";
 import type { BlobStore } from "../../storage/blob-store.js";
 import { sniffImage } from "./image-sniff.js";
 import { toImageRef } from "./image-ref.js";
 import type { ImageRefView } from "./image-ref.js";
+import { submissionDigest } from "./media-submission.js";
+import type { Submission } from "./media-submission.js";
 import { mediaIdOf, toItemView, toVersionView } from "./media-view.js";
-import type { MediaItemRow, MediaItemView, MediaVersionRow, MediaVersionView } from "./media-view.js";
+import type { MediaItemRow, MediaItemView, MediaSubmissionRow, MediaVersionRow, MediaVersionView } from "./media-view.js";
 
 export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 export const MEDIA_CONTENT_TYPES_ACCEPTED = ["image/jpeg", "image/png"] as const;
 const EXTENSION = { "image/jpeg": "jpg", "image/png": "png" } as const;
 
-/** What a PATCH may change: licence fields and/or the description (`null` clears it; an absent key keeps the stored value). */
-export type MediaEdit = { licence?: MediaLicenceEdit | undefined; description?: string | null | undefined };
+/**
+ * What a PATCH may change (an absent key keeps the stored value, `null` clears): licence fields, the description and the title (per
+ * version), and the private submission fields (`fullName`, `instagram`), which are edited in place on the item.
+ */
+export type MediaEdit = {
+  licence?: MediaLicenceEdit | undefined;
+  description?: string | null | undefined;
+  title?: string | null | undefined;
+  fullName?: string | null | undefined;
+  instagram?: { handle: string | null; displayConsent: boolean } | undefined;
+};
 
 /** An image that passed `MediaService.checkImage`. */
 export type CheckedImage = { sha256: string; contentType: "image/jpeg" | "image/png"; width: number; height: number; byteSize: number };
@@ -40,7 +52,8 @@ export type MediaLicenceEdit = {
   creditRequired?: boolean | undefined;
 };
 
-const PUBLISHABLE_RIGHTS: readonly string[] = ["v1_own", "v1_authorised"] satisfies readonly MediaPublishableRights[];
+/** The statements a version may be published under: derived from the enum (the publishable CHECK), never a second list. */
+const PUBLISHABLE_RIGHTS: readonly string[] = MEDIA_PUBLISHABLE_RIGHTS;
 
 /** The result of a write that can be refused. Refusals are returned (not thrown) from inside a transaction. */
 type Outcome<T> = { ok: true; value: T } | { ok: false; error: ApiError };
@@ -56,6 +69,9 @@ const LICENCE_COLUMNS = {
 } as const;
 type LicenceField = keyof typeof LICENCE_COLUMNS;
 const LICENCE_FIELDS = Object.keys(LICENCE_COLUMNS) as LicenceField[];
+
+/** The item columns a write may move along with its revision. */
+type BumpPatch = Partial<Pick<typeof mediaItems.$inferInsert, "state" | "draftVersion" | "publishedVersion">>;
 
 /** A concurrent request with the same (principal, Idempotency-Key) won the unique insert: roll this one back and replay. */
 class KeyAlreadyClaimed extends ExpectedRollback {}
@@ -81,11 +97,39 @@ function decodeCursor(cursor: string, state: string | undefined): number | undef
 
 const sha256Of = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
+/** The version columns a v2 upload or move fills from its submission (D4): credit, the agreement's licence name, the title. */
+const v2Fields = (submission: Submission) => ({
+  creditName: submission.credit,
+  licenceName: MEDIA_V2_LICENCE_NAME,
+  licenceUrl: null,
+  creditRequired: true,
+  title: submission.title,
+});
+
+/** A v2 statement always comes with its submission (the controller guarantees it); anything else is a programming error. */
+function submissionFor(statement: MediaPublishableRights, submission: Submission | null): Submission | null {
+  if ((statement === MEDIA_V2_STATEMENT) !== (submission !== null)) throw new Error("A v2 statement needs a submission and a v1 statement must not have one.");
+  return submission;
+}
+
+/** The 422 text for an edit a v2 version's CHECKs would refuse (title and credit stay set, licence name, URL and creditRequired are fixed), or null. */
+function v2EditRefusal(changes: Record<string, { from: unknown; to: unknown }>): string | null {
+  if (changes.title && changes.title.to === null) return "A v2 photo needs a title; it cannot be cleared. Nothing was changed.";
+  if (changes.credit && changes.credit.to === null) return "A v2 photo needs a credit; it cannot be cleared. Nothing was changed.";
+  if (changes.licenceName || changes.licenceUrl) return "A v2 photo's licence is the Photo Submission agreement; its licence name and URL cannot be changed. Nothing was changed.";
+  if (changes.creditRequired) return "A v2 photo's credit is always required; creditRequired cannot be changed. Nothing was changed.";
+  return null;
+}
+
 const notFound = () => new ApiError(404, "not_found", "No such media item.");
 
 /** A caller who may see the item but does not own it: file uploads and rights statements are the owner's alone. */
 const notOwner = (isAdmin: boolean) =>
   isAdmin ? new ApiError(403, "forbidden", "Only the photographer who owns this item can upload files or state rights for it.") : notFound();
+
+/** D6: a v1 file upload to an item whose draft already holds v2 would break "once any version holds v2, the draft holds v2". */
+const v1OverV2 = () =>
+  new ApiError(409, "rights_already_stated", "The item's draft already holds the v2 agreement; a v1 upload cannot replace it. Upload with the v2 statement. Nothing was changed.");
 
 const staleRevision = (item: MediaItemRow, expected: number) =>
   new ApiError(
@@ -125,9 +169,10 @@ export class MediaService {
       if (before === undefined) throw new ApiError(400, "invalid_request", "Not a cursor this route returned (or the state filter changed). Start again without cursor.");
     }
     const rows = await this.database.db
-      .select({ item: mediaItems, draft: mediaVersions })
+      .select({ item: mediaItems, draft: mediaVersions, submission: mediaSubmissions })
       .from(mediaItems)
       .innerJoin(mediaVersions, and(eq(mediaVersions.mediaId, mediaItems.id), eq(mediaVersions.version, mediaItems.draftVersion)))
+      .leftJoin(mediaSubmissions, eq(mediaSubmissions.mediaId, mediaItems.id))
       .where(
         and(
           isAdmin ? undefined : eq(mediaItems.owner, principal),
@@ -141,7 +186,7 @@ export class MediaService {
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
     return {
-      items: page.map((r) => toItemView(r.item, r.draft, isAdmin)),
+      items: page.map((r) => toItemView(r.item, r.draft, isAdmin, r.submission)),
       nextCursor: rows.length > limit && last ? encodeCursor(last.item.id, filterKey) : null,
     };
   }
@@ -154,9 +199,10 @@ export class MediaService {
     const versions = await this.database.db.select().from(mediaVersions).where(eq(mediaVersions.mediaId, mediaId)).orderBy(asc(mediaVersions.version));
     const draft = versions.find((v) => v.version === item.draftVersion);
     if (!draft) throw new Error("Media item names a missing version.");
+    const submission = await this.readSubmission(this.database.db, mediaId);
     const now = await databaseNow(this.database.db);
     return {
-      item: toItemView(item, draft, isAdmin),
+      item: toItemView(item, draft, isAdmin, submission),
       versions: versions.map((v) => toVersionView(v, isAdmin)),
       preview: toImageRef(mediaId, draft, this.config.cdn, now),
     };
@@ -189,6 +235,8 @@ export class MediaService {
    * `idempotency_key_reused`. Otherwise: sniff, store the file under its digest, read it back and compare, then ONE
    * transaction inserts the item and version 1, claims the key (the unique insert decides a concurrent duplicate) and writes
    * the audit row. Storage trouble is 503 `storage_unavailable` before anything is written to the database.
+   * A v2 upload (`submission` set, D1/D2) also fills the version's title, credit and licence from it and writes the item's
+   * media_submissions row in the same transaction; its key records the submission digest, which a replay must match (D10).
    */
   async create(
     principal: string,
@@ -197,10 +245,13 @@ export class MediaService {
     declaredType: string,
     includeOwner: boolean,
     statement: MediaPublishableRights,
+    rawSubmission: Submission | null = null,
   ): Promise<MediaUploadResult> {
+    const submission = submissionFor(statement, rawSubmission);
+    const digest = submission ? submissionDigest(submission) : null;
     const sha256 = sha256Of(bytes);
     const claimed = await this.findClaim(this.database.db, principal, key);
-    if (claimed) return this.replay(claimed, "create", null, sha256, includeOwner, statement);
+    if (claimed) return this.replay(claimed, "create", null, sha256, includeOwner, statement, digest);
 
     const image = this.inspect(bytes, declaredType);
     await this.store(`content/photos/${sha256}.${EXTENSION[image.contentType]}`, bytes, image.contentType, sha256);
@@ -231,9 +282,10 @@ export class MediaService {
           byteSize: bytes.length,
           width,
           height,
-          // A licence starts empty. Credit is required until staff decide otherwise, so an unfilled item cannot be published
-          // without a credit by accident.
+          // A v1 licence starts empty. Credit is required until staff decide otherwise, so an unfilled item cannot be published
+          // without a credit by accident. A v2 version is filled from the submission (D4).
           creditRequired: true,
+          ...(submission ? v2Fields(submission) : {}),
           // Sending the header is the uploader's consent to the statement (docs/plans/media-rights-and-public.md).
           rightsStatement: statement,
           rightsStatedBy: principal,
@@ -241,7 +293,8 @@ export class MediaService {
           createdBy: principal,
           createdAt: now,
         });
-        await this.claimKey(tx, { principal, idempotencyKey: key, operation: "create", mediaId: item.id, version: 1, sha256, createdAt: now });
+        const stored = submission ? await this.upsertSubmission(tx, item.id, submission, principal, now) : null;
+        await this.claimKey(tx, { principal, idempotencyKey: key, operation: "create", mediaId: item.id, version: 1, sha256, submissionSha256: digest, createdAt: now });
         await tx.insert(adminAudit).values({
           actor: principal,
           action: "media_upload",
@@ -249,7 +302,7 @@ export class MediaService {
           detail: { mediaId: mediaIdOf(item.id), version: 1, sha256, contentType, byteSize: bytes.length, width, height, rightsStatement: statement },
           createdAt: now,
         });
-        return toItemView(item, version, includeOwner);
+        return toItemView(item, version, includeOwner, stored);
       });
       return { item: created, replayed: false };
     } catch (error) {
@@ -257,7 +310,7 @@ export class MediaService {
       // Lost the race: the winner's transaction has committed, so its key is visible now.
       const winner = await this.findClaim(this.database.db, principal, key);
       if (!winner) throw this.retryShortly();
-      return this.replay(winner, "create", null, sha256, includeOwner, statement);
+      return this.replay(winner, "create", null, sha256, includeOwner, statement, digest);
     }
   }
 
@@ -270,6 +323,9 @@ export class MediaService {
    * fence, inserts the version (empty licence, `creditRequired` true, the previous draft's description, the uploader's rights
    * statement), claims the key, moves the draft pointer and audits.
    * The published version, the state and the live credit do not change.
+   * v2 (`submission` set): the version's title, credit and licence come from it and the item's media_submissions row is replaced.
+   * v1: the title carries forward like the description, and a v1 file for an item whose draft holds v2 is 409
+   * `rights_already_stated` (D6; checked unlocked before storage, then again under the lock).
    */
   async addVersion(
     principal: string,
@@ -280,10 +336,13 @@ export class MediaService {
     declaredType: string,
     isAdmin: boolean,
     statement: MediaPublishableRights,
+    rawSubmission: Submission | null = null,
   ): Promise<MediaUploadResult> {
+    const submission = submissionFor(statement, rawSubmission);
+    const digest = submission ? submissionDigest(submission) : null;
     const sha256 = sha256Of(bytes);
     const claimed = await this.findClaim(this.database.db, principal, key);
-    if (claimed) return this.replay(claimed, "version", mediaId, sha256, isAdmin, statement);
+    if (claimed) return this.replay(claimed, "version", mediaId, sha256, isAdmin, statement, digest);
 
     const [seen] = await this.database.db.select().from(mediaItems).where(eq(mediaItems.id, mediaId)).limit(1);
     if (!seen) throw notFound();
@@ -291,8 +350,11 @@ export class MediaService {
     if (seen.revision !== expectedRevision) {
       // A twin of this request may have committed between the key lookup above and this read: that is a replay, not a conflict.
       const twin = await this.findClaim(this.database.db, principal, key);
-      if (twin) return this.replay(twin, "version", mediaId, sha256, isAdmin, statement);
+      if (twin) return this.replay(twin, "version", mediaId, sha256, isAdmin, statement, digest);
       throw staleRevision(seen, expectedRevision);
+    }
+    if (submission === null && (await this.readVersion(this.database.db, mediaId, seen.draftVersion)).rightsStatement === MEDIA_V2_STATEMENT) {
+      throw v1OverV2();
     }
 
     const image = this.inspect(bytes, declaredType);
@@ -311,6 +373,7 @@ export class MediaService {
         const now = await databaseNow(tx);
         const version = item.draftVersion + 1;
         const previous = await this.readVersion(tx, mediaId, item.draftVersion);
+        if (submission === null && previous.rightsStatement === MEDIA_V2_STATEMENT) return { ok: false, error: v1OverV2() };
         const row = await this.insertVersion(tx, {
           mediaId,
           version,
@@ -320,14 +383,17 @@ export class MediaService {
           width,
           height,
           creditRequired: true,
-          description: previous.description, // the licence starts empty; the description carries forward (user 2026-11-04)
+          description: previous.description, // the v1 licence starts empty; the description carries forward (user 2026-11-04)
+          title: previous.title, // the title carries forward like the description; a v2 upload replaces it just below
+          ...(submission ? v2Fields(submission) : {}),
           rightsStatement: statement,
           rightsStatedBy: principal,
           rightsStatedAt: now,
           createdBy: principal,
           createdAt: now,
         });
-        await this.claimKey(tx, { principal, idempotencyKey: key, operation: "version", mediaId, version, sha256, createdAt: now });
+        const stored = submission ? await this.upsertSubmission(tx, mediaId, submission, principal, now) : await this.readSubmission(tx, mediaId);
+        await this.claimKey(tx, { principal, idempotencyKey: key, operation: "version", mediaId, version, sha256, submissionSha256: digest, createdAt: now });
         const updated = await this.bump(tx, item, principal, now, { draftVersion: version });
         await tx.insert(adminAudit).values({
           actor: principal,
@@ -347,7 +413,7 @@ export class MediaService {
           },
           createdAt: now,
         });
-        return { ok: true, value: toItemView(updated, row, isAdmin) };
+        return { ok: true, value: toItemView(updated, row, isAdmin, stored) };
       });
       if (!outcome.ok) throw outcome.error;
       return { item: outcome.value, replayed: false };
@@ -355,15 +421,20 @@ export class MediaService {
       if (!(error instanceof KeyAlreadyClaimed)) throw error;
       const winner = await this.findClaim(this.database.db, principal, key);
       if (!winner) throw this.retryShortly();
-      return this.replay(winner, "version", mediaId, sha256, isAdmin, statement);
+      return this.replay(winner, "version", mediaId, sha256, isAdmin, statement, digest);
     }
   }
 
   /**
-   * Edit the draft version's licence and/or description. The live (published) version is never touched: when the draft IS the published version,
-   * or the draft was live once before (a withdrawn item), the edit makes a NEW draft version with the same file (version + 1);
-   * otherwise the unpublished draft is edited in place. A new version copies the rights statement (an edit never changes it).
-   * Stored values sent back are a no-op: 200, no change, no new revision.
+   * Edit the draft version's licence, description and/or title, and the item's private submission fields (D8). The live (published)
+   * version is never touched: when the draft IS the published version, or the draft was live once before (a withdrawn item), a
+   * change to the version's own fields makes a NEW draft version with the same file (version + 1); otherwise the unpublished draft is
+   * edited in place. A new version copies the rights statement (an edit never changes it).
+   * The submission fields (`fullName`, `instagram`) live in media_submissions, outside the frozen version rows: they are written in
+   * place, move only the item's revision and make no version. The owner may set anything; a non-owner admin may only REMOVE (name to
+   * null, handle to null, consent off), else 403. Permission is decided on actual changes against the stored values, so stored values
+   * sent back are a no-op: 200, no change, no new revision. On a v2 draft the title and credit cannot become null and the licence
+   * name, licence URL and creditRequired cannot change (422, decided before any UPDATE so no CHECK becomes a 500).
    */
   async edit(
     principal: string,
@@ -378,6 +449,7 @@ export class MediaService {
       if (!item) return { ok: false, error: notFound() };
       if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
       const draft = await this.readVersion(tx, mediaId, item.draftVersion);
+      const stored = await this.readSubmission(tx, mediaId);
 
       const changes: Record<string, { from: unknown; to: unknown }> = {};
       const merged: Record<string, unknown> = {};
@@ -392,48 +464,86 @@ export class MediaService {
       const description = wanted.description === undefined ? draft.description : wanted.description;
       merged.description = description;
       if (description !== draft.description) changes.description = { from: draft.description, to: description };
+      const title = wanted.title === undefined ? draft.title : wanted.title;
+      merged.title = title;
+      if (title !== draft.title) changes.title = { from: draft.title, to: title };
+
+      const before = { fullName: stored?.fullName ?? null, handle: stored?.instagramHandle ?? null, consent: stored?.instagramDisplayConsent ?? false };
+      const after = {
+        fullName: wanted.fullName === undefined ? before.fullName : wanted.fullName,
+        handle: wanted.instagram === undefined ? before.handle : wanted.instagram.handle,
+        consent: wanted.instagram === undefined ? before.consent : wanted.instagram.displayConsent,
+      };
+      const fullNameChanged = after.fullName !== before.fullName;
+      const handleChanged = after.handle !== before.handle;
+      const consentChanged = after.consent !== before.consent;
+      const submissionChanged = fullNameChanged || handleChanged || consentChanged;
+
       if (!isAdmin && changes.creditRequired) {
         return { ok: false, error: new ApiError(403, "forbidden", "Only an admin can change creditRequired. Nothing was changed.") };
       }
-      if (Object.keys(changes).length === 0) return { ok: true, value: toItemView(item, draft, isAdmin) };
+      // Only the owner may set the private fields; another admin may only remove them (a privacy request, agreement section 8).
+      if (
+        submissionChanged &&
+        item.owner !== principal &&
+        ((fullNameChanged && after.fullName !== null) || (handleChanged && after.handle !== null) || (consentChanged && after.consent))
+      ) {
+        return {
+          ok: false,
+          error: new ApiError(403, "forbidden", "Only the photographer who owns this item can set the submission's name or Instagram fields; an admin can only remove them. Nothing was changed."),
+        };
+      }
+      if (draft.rightsStatement === MEDIA_V2_STATEMENT) {
+        const refusal = v2EditRefusal(changes);
+        if (refusal) return { ok: false, error: new ApiError(422, "content_invalid", refusal) };
+      }
+      const contentChanged = Object.keys(changes).length > 0;
+      if (!contentChanged && !submissionChanged) return { ok: true, value: toItemView(item, draft, isAdmin, stored) };
 
       const now = await databaseNow(tx);
-      let updatedDraft: MediaVersionRow;
-      let updatedItem: MediaItemRow;
-      const newVersion = item.draftVersion === item.publishedVersion || draft.publishedAt !== null;
-      if (newVersion) {
-        updatedDraft = await this.insertVersion(tx, {
-          mediaId,
-          version: item.draftVersion + 1,
-          sha256: draft.sha256,
-          contentType: draft.contentType,
-          byteSize: draft.byteSize,
-          width: draft.width,
-          height: draft.height,
-          creditName: merged.creditName as string | null,
-          creditRequired: merged.creditRequired as boolean,
-          licenceName: merged.licenceName as string | null,
-          licenceUrl: merged.licenceUrl as string | null,
-          sourceUrl: merged.sourceUrl as string | null,
-          attributionText: merged.attributionText as string | null,
-          description,
-          rightsStatement: draft.rightsStatement,
-          rightsStatedBy: draft.rightsStatedBy,
-          rightsStatedAt: draft.rightsStatedAt,
-          createdBy: principal,
-          createdAt: now,
-        });
-        updatedItem = await this.bump(tx, item, principal, now, { draftVersion: item.draftVersion + 1 });
-      } else {
-        const [row] = await tx
-          .update(mediaVersions)
-          .set({ ...merged, updatedAt: now, updatedBy: principal })
-          .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
-          .returning();
-        if (!row) throw new Error("Media version was not updated.");
-        updatedDraft = row;
-        updatedItem = await this.bump(tx, item, principal, now, {});
+      let updatedDraft: MediaVersionRow = draft;
+      let newVersion = false;
+      let patch: BumpPatch = {};
+      if (contentChanged) {
+        newVersion = item.draftVersion === item.publishedVersion || draft.publishedAt !== null;
+        if (newVersion) {
+          updatedDraft = await this.insertVersion(tx, {
+            mediaId,
+            version: item.draftVersion + 1,
+            sha256: draft.sha256,
+            contentType: draft.contentType,
+            byteSize: draft.byteSize,
+            width: draft.width,
+            height: draft.height,
+            creditName: merged.creditName as string | null,
+            creditRequired: merged.creditRequired as boolean,
+            licenceName: merged.licenceName as string | null,
+            licenceUrl: merged.licenceUrl as string | null,
+            sourceUrl: merged.sourceUrl as string | null,
+            attributionText: merged.attributionText as string | null,
+            description,
+            title,
+            rightsStatement: draft.rightsStatement,
+            rightsStatedBy: draft.rightsStatedBy,
+            rightsStatedAt: draft.rightsStatedAt,
+            createdBy: principal,
+            createdAt: now,
+          });
+          patch = { draftVersion: item.draftVersion + 1 };
+        } else {
+          const [row] = await tx
+            .update(mediaVersions)
+            .set({ ...merged, updatedAt: now, updatedBy: principal })
+            .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
+            .returning();
+          if (!row) throw new Error("Media version was not updated.");
+          updatedDraft = row;
+        }
       }
+      const storedAfter = submissionChanged
+        ? await this.upsertSubmission(tx, mediaId, { fullName: after.fullName, instagramHandle: after.handle, instagramDisplayConsent: after.consent }, principal, now)
+        : stored;
+      const updatedItem = await this.bump(tx, item, principal, now, patch);
       await tx.insert(adminAudit).values({
         actor: principal,
         action: "media_edit",
@@ -445,11 +555,13 @@ export class MediaService {
           newVersion,
           revision: updatedItem.revision,
           changes,
+          // Never the name or the handle themselves (the audit log is append-only): flags and the consent switch only.
+          ...(submissionChanged ? { submission: { fullNameChanged, instagramChanged: handleChanged || consentChanged, consentFrom: before.consent, consentTo: after.consent } } : {}),
           note,
         },
         createdAt: now,
       });
-      return { ok: true, value: toItemView(updatedItem, updatedDraft, isAdmin) };
+      return { ok: true, value: toItemView(updatedItem, updatedDraft, isAdmin, storedAfter) };
     });
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
@@ -483,6 +595,11 @@ export class MediaService {
       if (draft.rightsStatement === null || !PUBLISHABLE_RIGHTS.includes(draft.rightsStatement)) {
         return { ok: false, error: new ApiError(422, "content_invalid", "The photographer's rights statement is missing; it must be stated before the draft can be published.") };
       }
+      // A v2 draft needs the photographer's full name on the item (it can be erased by the owner or an admin, agreement section 8).
+      const submission = await this.readSubmission(tx, mediaId);
+      if (draft.rightsStatement === MEDIA_V2_STATEMENT && !submission?.fullName) {
+        return { ok: false, error: new ApiError(422, "content_invalid", "The item has no submission full name (it may have been erased); it must be set before a v2 draft can be published.") };
+      }
       const now = await databaseNow(tx);
       let published: MediaVersionRow;
       if (draft.publishedAt !== null) {
@@ -514,7 +631,7 @@ export class MediaService {
         },
         createdAt: now,
       });
-      return { ok: true, value: toItemView(updated, published, true) };
+      return { ok: true, value: toItemView(updated, published, true, submission) };
     });
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
@@ -542,55 +659,123 @@ export class MediaService {
         detail: { mediaId: mediaIdOf(mediaId), fromState: item.state, withdrawnVersion: item.publishedVersion, revision: updated.revision },
         createdAt: now,
       });
-      return { ok: true, value: toItemView(updated, draft, true) };
+      return { ok: true, value: toItemView(updated, draft, true, await this.readSubmission(tx, mediaId)) };
     });
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
   }
 
   /**
-   * State the rights for the DRAFT of an item that has none yet (an imported photo, or a pre-0019 row). Owner only: another
-   * photographer's item is 404, an admin who is not the owner gets 403 `forbidden`. Then the revision fence (409
-   * `version_conflict`), then eligibility: the draft's statement must be null or `d1_private_review` and the draft must never have been
-   * published, else 409 `rights_already_stated`. Written in place; the revision moves.
+   * State the rights for the DRAFT of an item (owner only: another photographer's item is 404, an admin who is not the owner gets 403
+   * `forbidden`; then the revision fence, 409 `version_conflict`).
+   * v1 (`submission` null): the draft's statement must be null or `d1_private_review` and the draft must never have been published,
+   * else 409 `rights_already_stated` (so v1 over v2 is refused: no downgrade). Written in place; the revision moves.
+   * v2 (D5): refused 409 `rights_already_stated` when the draft already holds v2; otherwise ALWAYS a new draft version of the current
+   * draft's file (description, source URL and attribution copied, title, credit and licence from the submission, the v2 statement by
+   * the owner at database now), and the item's media_submissions row is replaced. Older versions, published ones included, are
+   * never rewritten; the live version switches to v2 when an admin publishes the new draft.
    */
-  async setRights(principal: string, mediaId: number, isAdmin: boolean, expectedRevision: number, statement: MediaPublishableRights): Promise<MediaItemView> {
+  async setRights(
+    principal: string,
+    mediaId: number,
+    isAdmin: boolean,
+    expectedRevision: number,
+    statement: MediaPublishableRights,
+    rawSubmission: Submission | null = null,
+  ): Promise<MediaItemView> {
+    const submission = submissionFor(statement, rawSubmission);
     const outcome = await this.database.withTransaction(async (tx): Promise<Outcome<MediaItemView>> => {
       const item = await this.lockItem(tx, mediaId, principal, isAdmin);
       if (!item) return { ok: false, error: notFound() };
       if (item.owner !== principal) return { ok: false, error: notOwner(isAdmin) };
       if (item.revision !== expectedRevision) return { ok: false, error: staleRevision(item, expectedRevision) };
       const draft = await this.readVersion(tx, mediaId, item.draftVersion);
-      const open = draft.rightsStatement === null || draft.rightsStatement === "d1_private_review";
-      const neverPublished = item.draftVersion !== item.publishedVersion && draft.publishedAt === null;
-      if (!open || !neverPublished) {
-        return {
-          ok: false,
-          error: new ApiError(409, "rights_already_stated", "The draft already has a rights statement or has been published; a statement cannot be changed. Nothing was changed."),
-        };
+      const alreadyStated = () =>
+        new ApiError(409, "rights_already_stated", "The draft already has a rights statement or has been published; a statement cannot be changed. Nothing was changed.");
+      if (submission === null) {
+        const open = draft.rightsStatement === null || draft.rightsStatement === "d1_private_review";
+        const neverPublished = item.draftVersion !== item.publishedVersion && draft.publishedAt === null;
+        if (!open || !neverPublished) return { ok: false, error: alreadyStated() };
+        const now = await databaseNow(tx);
+        const [row] = await tx
+          .update(mediaVersions)
+          .set({ rightsStatement: statement, rightsStatedBy: principal, rightsStatedAt: now, updatedAt: now, updatedBy: principal })
+          .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
+          .returning();
+        if (!row) throw new Error("Media version was not updated.");
+        const updated = await this.bump(tx, item, principal, now, {});
+        await tx.insert(adminAudit).values({
+          actor: principal,
+          action: "media_rights",
+          target: mediaIdOf(mediaId),
+          detail: {
+            mediaId: mediaIdOf(mediaId),
+            version: row.version,
+            fromVersion: item.draftVersion,
+            newVersion: false,
+            statement,
+            previousStatement: draft.rightsStatement,
+            revision: updated.revision,
+          },
+          createdAt: now,
+        });
+        return { ok: true, value: toItemView(updated, row, isAdmin, await this.readSubmission(tx, mediaId)) };
       }
+
+      // v2: a draft that already holds v2 is v2 over v2.
+      if (draft.rightsStatement === MEDIA_V2_STATEMENT) return { ok: false, error: alreadyStated() };
       const now = await databaseNow(tx);
-      const [row] = await tx
-        .update(mediaVersions)
-        .set({ rightsStatement: statement, rightsStatedBy: principal, rightsStatedAt: now, updatedAt: now, updatedBy: principal })
-        .where(and(eq(mediaVersions.mediaId, mediaId), eq(mediaVersions.version, item.draftVersion)))
-        .returning();
-      if (!row) throw new Error("Media version was not updated.");
-      const updated = await this.bump(tx, item, principal, now, {});
+      const before = await this.readSubmission(tx, mediaId);
+      const version = item.draftVersion + 1;
+      const row = await this.insertVersion(tx, {
+        mediaId,
+        version,
+        sha256: draft.sha256,
+        contentType: draft.contentType,
+        byteSize: draft.byteSize,
+        width: draft.width,
+        height: draft.height,
+        sourceUrl: draft.sourceUrl,
+        attributionText: draft.attributionText,
+        description: draft.description,
+        ...v2Fields(submission),
+        rightsStatement: statement,
+        rightsStatedBy: principal,
+        rightsStatedAt: now,
+        createdBy: principal,
+        createdAt: now,
+      });
+      const stored = await this.upsertSubmission(tx, mediaId, submission, principal, now);
+      const updated = await this.bump(tx, item, principal, now, { draftVersion: version });
       await tx.insert(adminAudit).values({
         actor: principal,
         action: "media_rights",
         target: mediaIdOf(mediaId),
         detail: {
           mediaId: mediaIdOf(mediaId),
-          version: row.version,
+          version,
+          fromVersion: item.draftVersion,
+          newVersion: true,
           statement,
           previousStatement: draft.rightsStatement,
+          previousStatedAt: draft.rightsStatedAt ? draft.rightsStatedAt.toISOString() : null,
+          previousStatedBy: draft.rightsStatedBy,
           revision: updated.revision,
+          changes: {
+            credit: { from: draft.creditName, to: row.creditName },
+            licenceName: { from: draft.licenceName, to: row.licenceName },
+            licenceUrl: { from: draft.licenceUrl, to: row.licenceUrl },
+            title: { from: draft.title, to: row.title },
+          },
+          // Never the name or the handle themselves (the audit log is append-only).
+          submission: {
+            fullNameChanged: (before?.fullName ?? null) !== submission.fullName,
+            instagramChanged: (before?.instagramHandle ?? null) !== submission.instagramHandle || (before?.instagramDisplayConsent ?? false) !== submission.instagramDisplayConsent,
+          },
         },
         createdAt: now,
       });
-      return { ok: true, value: toItemView(updated, row, isAdmin) };
+      return { ok: true, value: toItemView(updated, row, isAdmin, stored) };
     });
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
@@ -644,6 +829,30 @@ export class MediaService {
     return row;
   }
 
+  /** The item's submission row, or null when it has none (a v1 item that never had one). */
+  private async readSubmission(db: Pick<Database, "select">, mediaId: number): Promise<MediaSubmissionRow | null> {
+    const [row] = await db.select().from(mediaSubmissions).where(eq(mediaSubmissions.mediaId, mediaId)).limit(1);
+    return row ?? null;
+  }
+
+  /** Write the item's submission row in place (INSERT ... ON CONFLICT (media_id) DO UPDATE), in the caller's transaction. */
+  private async upsertSubmission(
+    tx: Tx,
+    mediaId: number,
+    values: { fullName: string | null; instagramHandle: string | null; instagramDisplayConsent: boolean },
+    principal: string,
+    now: Date,
+  ): Promise<MediaSubmissionRow> {
+    const set = { fullName: values.fullName, instagramHandle: values.instagramHandle, instagramDisplayConsent: values.instagramDisplayConsent, updatedAt: now, updatedBy: principal };
+    const [row] = await tx
+      .insert(mediaSubmissions)
+      .values({ mediaId, ...set })
+      .onConflictDoUpdate({ target: mediaSubmissions.mediaId, set })
+      .returning();
+    if (!row) throw new Error("Media submission was not stored.");
+    return row;
+  }
+
   /** Insert a version; `updated_at`/`updated_by` start equal to `created_at`/`created_by` (migration 0027). */
   private async insertVersion(tx: Tx, values: Omit<typeof mediaVersions.$inferInsert, "updatedAt" | "updatedBy">): Promise<MediaVersionRow> {
     const [row] = await tx
@@ -666,7 +875,7 @@ export class MediaService {
     item: MediaItemRow,
     principal: string,
     now: Date,
-    patch: Partial<Pick<typeof mediaItems.$inferInsert, "state" | "draftVersion" | "publishedVersion">>,
+    patch: BumpPatch,
   ): Promise<MediaItemRow> {
     const [row] = await tx
       .update(mediaItems)
@@ -694,9 +903,12 @@ export class MediaService {
     sha256: string,
     includeOwner: boolean,
     statement: MediaPublishableRights,
+    digest: string | null,
   ): Promise<MediaUploadResult> {
-    // The claimed version's statement is stable: an uploaded version always has a v1_* statement and setRights never rewrites one.
-    const sameIntent = claim.operation === operation && claim.sha256 === sha256 && (mediaId === null || claim.mediaId === mediaId);
+    // The claimed version's statement is stable: an uploaded version always has an upload statement (v1_* or v2) and no write ever
+    // rewrites one, so a replay stays 200 after the item moved to v2. The submission must match too (the key's stored digest, D10).
+    const sameIntent =
+      claim.operation === operation && claim.sha256 === sha256 && claim.submissionSha256 === digest && (mediaId === null || claim.mediaId === mediaId);
     const claimedVersion = sameIntent ? await this.readVersion(this.database.db, claim.mediaId, claim.version) : null;
     if (claimedVersion === null || claimedVersion.rightsStatement !== statement) {
       throw new ApiError(422, "idempotency_key_reused", "This Idempotency-Key already stored a different upload; use a new key.");
@@ -704,7 +916,7 @@ export class MediaService {
     const [item] = await this.database.db.select().from(mediaItems).where(eq(mediaItems.id, claim.mediaId)).limit(1);
     if (!item) throw new Error("Idempotency key names a missing media item.");
     const draft = await this.readVersion(this.database.db, item.id, item.draftVersion);
-    return { item: toItemView(item, draft, includeOwner), replayed: true };
+    return { item: toItemView(item, draft, includeOwner, await this.readSubmission(this.database.db, item.id)), replayed: true };
   }
 
   /** Put the file, read it back and compare digests. Any trouble is a 503 and nothing is in the database yet. */

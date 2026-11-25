@@ -80,10 +80,10 @@ describe("migration 0019", () => {
 
       expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(items);
       const after = (await pool.query("SELECT * FROM media_versions ORDER BY media_id")).rows;
-      // 0027 adds updated_at/updated_by (backfilled); every other column is unchanged.
-      expect(after.map(({ rights_statement, rights_stated_by, rights_stated_at, description, licence_waiver, updated_at, updated_by, ...rest }) => rest)).toEqual(versions);
+      // 0027 adds updated_at/updated_by (backfilled) and 0028 adds title (null); every other column is unchanged.
+      expect(after.map(({ rights_statement, rights_stated_by, rights_stated_at, description, licence_waiver, updated_at, updated_by, title, ...rest }) => rest)).toEqual(versions);
       expect(after.every((r) => r.updated_at instanceof Date && r.updated_by === "mig-owner")).toBe(true);
-      expect(after.every((r) => r.rights_statement === null && r.rights_stated_by === null && r.rights_stated_at === null && r.description === null)).toBe(true);
+      expect(after.every((r) => r.rights_statement === null && r.rights_stated_by === null && r.rights_stated_at === null && r.description === null && r.title === null)).toBe(true);
       expect((await pool.query("SELECT count(*)::int AS n FROM admin_audit")).rows[0].n).toBe(audit);
 
       // The re-added constraint is NOT VALID: present, but never validated against the old rows.

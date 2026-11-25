@@ -6,7 +6,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module.js";
 import { configureApp } from "../src/app.setup.js";
-import { ADMIN_AUDIT_ACTIONS, MEDIA_RIGHTS_STATEMENTS } from "../src/db/enums.js";
+import { ADMIN_AUDIT_ACTIONS } from "../src/db/enums.js";
 import type { AdminAuditAction } from "../src/db/enums.js";
 import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
@@ -178,7 +178,9 @@ describe("the media_import projection", () => {
 
 // A detail per action that MIRRORS what its writer stores (see src/**); the writers are not run here. Free text is allowed through, so none of it holds an email.
 const SHA = "a".repeat(64);
-const [OWN, AUTHORISED, D1_REVIEW] = MEDIA_RIGHTS_STATEMENTS;
+const OWN = "v1_own";
+const V2_AGREEMENT = "v2_agreement_2026-12-01";
+const D1_REVIEW = "d1_private_review";
 const principal = "firebase:demo-airplane-games:w4-subject";
 const DETAILS: Record<AdminAuditAction, { target: string; detail: Record<string, unknown>; actor?: string }> = {
   content_import: { target: "aircraft-identifier", detail: { importId: 3, sha256: SHA, fileName: "Aircraft v2.xlsx", kind: "client_sheet", added: 1, updated: 2, retired: 0, retiredIds: [], updatedIds: ["a1"] } },
@@ -196,11 +198,11 @@ const DETAILS: Record<AdminAuditAction, { target: string; detail: Record<string,
   role_email_edit: { target: principal, detail: { role: "admin", from: { state: "active", revision: 1 }, to: { state: "active", revision: 2 }, emailChanged: true } },
   media_upload: { target: "med-1", detail: { mediaId: "med-1", version: 1, sha256: SHA, contentType: "image/jpeg", byteSize: 1000, width: 800, height: 600, rightsStatement: OWN } },
   media_version: { target: "med-1", detail: { mediaId: "med-1", version: 2, previousDraftVersion: 1, revision: 2, sha256: SHA, contentType: "image/jpeg", byteSize: 1000, width: 800, height: 600, rightsStatement: OWN } },
-  media_edit: { target: "med-1", detail: { mediaId: "med-1", fromVersion: 1, version: 2, newVersion: true, revision: 3, changes: { description: { from: null, to: "A Cessna on the apron." }, credit: { from: null, to: "A. Photographer" } }, note: "Fixed the credit." } },
+  media_edit: { target: "med-1", detail: { mediaId: "med-1", fromVersion: 1, version: 2, newVersion: true, revision: 3, changes: { description: { from: null, to: "A Cessna on the apron." }, credit: { from: null, to: "A. Photographer" }, title: { from: "Old title", to: "New title" } }, submission: { fullNameChanged: true, instagramChanged: false, consentFrom: false, consentTo: false }, note: "Fixed the credit." } },
   media_publish: { target: "med-1", detail: { mediaId: "med-1", fromState: "unverified", previousPublishedVersion: null, publishedVersion: 1, revision: 4, sha256: SHA } },
   media_withdraw: { target: "med-1", detail: { mediaId: "med-1", fromState: "published", withdrawnVersion: 1, revision: 5 } },
   content_media_link: { target: "aircraft-identifier", detail: { id: "a1", fromVersion: 4, version: 5, diff: [{ field: "media", from: null, to: "med-1" }] } },
-  media_rights: { target: "med-1", detail: { mediaId: "med-1", version: 1, statement: AUTHORISED, previousStatement: D1_REVIEW, revision: 6 } },
+  media_rights: { target: "med-1", detail: { mediaId: "med-1", version: 2, fromVersion: 1, newVersion: true, statement: V2_AGREEMENT, previousStatement: D1_REVIEW, previousStatedAt: "2026-10-01T10:00:00.000Z", previousStatedBy: principal, revision: 6, changes: { credit: { from: null, to: "A. Photographer" }, licenceName: { from: null, to: "Airplane Games photo agreement" }, licenceUrl: { from: null, to: null }, title: { from: null, to: "Sunrise" } }, submission: { fullNameChanged: true, instagramChanged: false } } },
   media_import: { target: "med-2", detail: { sourceId: "d1-1", owner: principal, status: "unverified", rightsBasis: "own", submittedAt: "2026-10-01T10:00:00.000Z", mediaId: "med-2", rightsEvidence: "My own photo; call me on 555 0100.", note: "Imported D1 proposal." }, actor: "operator:josh" },
   store_product_create: { target: "hints-10", detail: { version: 1, kind: "hint_pack", title: "10 hints", hints: 10, miles: null, passPeriod: null, demo: false } },
   store_product_edit: { target: "hints-10", detail: { fromVersion: 1, version: 2, diff: [{ field: "title", from: "10 hints", to: "Ten hints" }] } },

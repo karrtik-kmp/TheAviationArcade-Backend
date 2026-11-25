@@ -80,8 +80,8 @@ describe("migration 0026", () => {
 
       expect((await pool.query("SELECT * FROM media_items ORDER BY id")).rows).toEqual(items);
       const after = (await pool.query("SELECT * FROM media_versions ORDER BY media_id")).rows;
-      // 0027 adds updated_at/updated_by (backfilled); every other column is unchanged.
-      expect(after.map(({ licence_waiver, updated_at, updated_by, ...rest }) => rest)).toEqual(versions);
+      // 0027 adds updated_at/updated_by (backfilled) and 0028 adds title (null); every other column is unchanged.
+      expect(after.map(({ licence_waiver, updated_at, updated_by, title, ...rest }) => rest)).toEqual(versions);
       expect(after.every((r) => r.updated_at instanceof Date && r.updated_by === "mig-owner")).toBe(true);
       expect(after.every((r) => r.licence_waiver === null)).toBe(true);
       expect((await pool.query("SELECT count(*)::int AS n FROM admin_audit")).rows[0].n).toBe(audit);

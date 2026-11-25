@@ -214,6 +214,12 @@ target database, and only with the user's sign-off. Without it, old code keeps s
 inserts on the new NOT NULL columns. After a successful migrate an old build cannot run; dev rolls back with `pg_restore`. Manual
 cleanup on a hosted database now needs `DISABLE TRIGGER` (also sign-off).
 
+### Photo submission v2 wave (2026-11-25)
+
+| # | Job | State | Notes |
+|---|---|---|---|
+| 6.5 | Photo submission v2: statement `v2_agreement_2026-12-01`, `X-Submission`, `media_submissions`, `title` per version (migration 0028, API 0.29.0) | **Done (local)** 2026-11-25; not applied to hosted dev or prod | Plan [plans/photo-submission-v2.md](plans/photo-submission-v2.md) (plan gate: senior-lead and backend-expert, approve with changes, folded in). Slice A: code and tests. Slice B: contract, docs, and the notice [../docs/briefs/website-photo-submission-v2-contract.md](../../docs/briefs/website-photo-submission-v2-contract.md). Requests additive; responses breaking for strict staff-media readers (`MediaVersion.title`, `MediaItem.submission`). Deploy order: website and Admin vendor 0.29.0 first, then dev, with the user's sign-off. Independent review: ship after fixes (one missing D6 replay test, stale audit fixture, doc wording), all fixed. Verification 2026-11-25, PowerShell in `H:\Work\TheAviationArcade\Backend`, Postgres up: `npm run typecheck` clean; `npm test` 50 files / 1232 tests passed; `npm run test:e2e` 56 files / 1371 passed (incl. media-submission-v2, migration-0028 on a seeded 0027 database, openapi and schema parity); `npm run build` OK; `npm run db:generate` no changes; `npm run contracts:write` no diff. Local only: no hosted database touched. |
+
 ### Follow-ups (2026-11-04)
 
 - **`not_owner` error code** (website request): 403 for a non-owner admin on owner-only media routes, apart from

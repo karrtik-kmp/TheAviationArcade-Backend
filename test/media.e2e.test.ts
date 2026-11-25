@@ -164,11 +164,13 @@ describe("POST /v1/admin/media: create", () => {
         width: 640,
         height: 480,
         licence: { credit: null, licenceName: null, licenceUrl: null, sourceUrl: null, attributionText: null, creditRequired: true },
+        title: null,
         publishedAt: null,
       },
+      submission: null,
     });
     expect(res.body.id).toMatch(/^med-[1-9][0-9]{0,14}$/);
-    expect(Object.keys(res.body).sort()).toEqual(["createdAt", "draft", "draftVersion", "id", "publishedVersion", "revision", "state", "updatedAt"]);
+    expect(Object.keys(res.body).sort()).toEqual(["createdAt", "draft", "draftVersion", "id", "publishedVersion", "revision", "state", "submission", "updatedAt"]);
 
     const stored = await blobs.get(`content/photos/${sha(bytes)}.png`);
     expect(stored && Buffer.from(stored).equals(bytes)).toBe(true);

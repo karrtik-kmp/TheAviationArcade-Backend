@@ -815,10 +815,10 @@ describe("openapi contract: planned schemas are coherent (not served yet)", () =
     const licence = { credit: "A. Pilot", licenceName: "CC BY 4.0", licenceUrl: "https://example.org/l", sourceUrl: null, attributionText: null, creditRequired: true };
     const version = {
       version: 1, sha256: "a".repeat(64), contentType: "image/jpeg", byteSize: 1000, width: 800, height: 600, licence,
-      description: null, rights: null, publishedAt: null, createdAt: "2026-11-03T12:00:00Z",
+      description: null, title: null, rights: null, publishedAt: null, createdAt: "2026-11-03T12:00:00Z",
     };
     const item = {
-      id: "med-1", state: "unverified", revision: 1, draftVersion: 1, publishedVersion: null, draft: version,
+      id: "med-1", state: "unverified", revision: 1, draftVersion: 1, publishedVersion: null, draft: version, submission: null,
       createdAt: "2026-11-03T12:00:00Z", updatedAt: "2026-11-03T12:00:00Z",
     };
     expect(valid("MediaItem", item)).toBe(true);

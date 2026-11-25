@@ -425,6 +425,8 @@ export const mediaVersions = pgTable(
     rightsStatedAt: timestamp("rights_stated_at", { withTimezone: true }),
     // Staff-only photo description (1-2000 characters, newlines allowed).
     description: text("description"),
+    // Photo title (1-200 characters), per file version like the description; required on a v2 version (migration 0028).
+    title: text("title"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -454,7 +456,13 @@ export const mediaVersions = pgTable(
     ),
     check("media_versions_attribution_check", sql`${t.attributionText} IS NULL OR length(${t.attributionText}) <= 1000`),
     check("media_versions_created_by_check", sql`length(${t.createdBy}) BETWEEN 1 AND 256`),
-    check("media_versions_rights_statement_check", sql`${t.rightsStatement} IN ('v1_own', 'v1_authorised', 'd1_private_review')`),
+    check("media_versions_rights_statement_check", sql`${t.rightsStatement} IN ('v1_own', 'v1_authorised', 'v2_agreement_2026-12-01', 'd1_private_review')`),
+    check("media_versions_title_check", sql`${t.title} IS NULL OR length(${t.title}) BETWEEN 1 AND 200`),
+    // A v2 version always carries the submission's title and credit, the agreement's licence name and credit required.
+    check(
+      "media_versions_v2_submission_check",
+      sql`${t.rightsStatement} IS DISTINCT FROM 'v2_agreement_2026-12-01' OR (${t.title} IS NOT NULL AND ${t.creditName} IS NOT NULL AND ${t.licenceName} IS NOT NULL AND ${t.creditRequired})`,
+    ),
     check(
       "media_versions_rights_all_or_none_check",
       sql`(${t.rightsStatement} IS NULL) = (${t.rightsStatedBy} IS NULL) AND (${t.rightsStatement} IS NULL) = (${t.rightsStatedAt} IS NULL)`,
@@ -463,11 +471,11 @@ export const mediaVersions = pgTable(
     check("media_versions_licence_waiver_check", sql`${t.licenceWaiver} IN ('dev-demo')`),
     check("media_versions_licence_waiver_rule_check", sql`${t.licenceWaiver} IS NULL OR (${t.licenceName} IS NULL AND ${t.publishedAt} IS NOT NULL)`),
     // A NULL statement would pass an IN test (NULL is not false), hence the explicit IS NOT NULL.
-    // Migrations 0019, 0026 and 0027 add this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
+    // Migrations 0019, 0026, 0027 and 0028 add this constraint NOT VALID (by hand; drizzle cannot emit it): published rows from before 0019 have no
     // statement and stay as they are, while every new or changed row must satisfy it.
     check(
       "media_versions_publishable_check",
-      sql`${t.publishedAt} IS NULL OR ((${t.licenceName} IS NOT NULL OR ${t.licenceWaiver} IS NOT NULL) AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL) AND ${t.rightsStatement} IS NOT NULL AND ${t.rightsStatement} IN ('v1_own', 'v1_authorised'))`,
+      sql`${t.publishedAt} IS NULL OR ((${t.licenceName} IS NOT NULL OR ${t.licenceWaiver} IS NOT NULL) AND (NOT ${t.creditRequired} OR ${t.creditName} IS NOT NULL) AND ${t.rightsStatement} IS NOT NULL AND ${t.rightsStatement} IN ('v1_own', 'v1_authorised', 'v2_agreement_2026-12-01'))`,
     ),
   ],
 );
@@ -512,6 +520,8 @@ export const mediaUploadKeys = pgTable(
     mediaId: bigint("media_id", { mode: "number" }).notNull(),
     version: integer("version").notNull(),
     sha256: text("sha256").notNull(),
+    // Migration 0028: sha256 of the normalised X-Submission object of a v2 upload (docs/plans/photo-submission-v2.md D10); null for v1.
+    submissionSha256: text("submission_sha256"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (t) => [
@@ -525,6 +535,32 @@ export const mediaUploadKeys = pgTable(
     check("media_upload_keys_idempotency_key_check", sql`${t.idempotencyKey} ~ '^[A-Za-z0-9_-]{1,128}$'`),
     check("media_upload_keys_operation_check", sql`${t.operation} IN ('create', 'version')`),
     check("media_upload_keys_sha256_check", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+    check("media_upload_keys_submission_sha256_check", sql`${t.submissionSha256} IS NULL OR ${t.submissionSha256} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+/**
+ * The private submission fields of a media item (docs/plans/photo-submission-v2.md D3): the photographer's full name and Instagram
+ * handle with its display consent. One MUTABLE row per item, edited in place and erasable, because a published version row is frozen.
+ * Staff views only; never part of an ImageRef. No freeze trigger.
+ */
+export const mediaSubmissions = pgTable(
+  "media_submissions",
+  {
+    mediaId: bigint("media_id", { mode: "number" })
+      .primaryKey()
+      .references(() => mediaItems.id),
+    fullName: text("full_name"),
+    instagramHandle: text("instagram_handle"),
+    instagramDisplayConsent: boolean("instagram_display_consent").notNull().default(false),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  (t) => [
+    check("media_submissions_full_name_check", sql`${t.fullName} IS NULL OR length(${t.fullName}) BETWEEN 1 AND 200`),
+    check("media_submissions_instagram_handle_check", sql`${t.instagramHandle} IS NULL OR ${t.instagramHandle} ~ '^[A-Za-z0-9._]{1,30}$'`),
+    check("media_submissions_consent_check", sql`NOT ${t.instagramDisplayConsent} OR ${t.instagramHandle} IS NOT NULL`),
+    check("media_submissions_updated_by_check", sql`length(${t.updatedBy}) BETWEEN 1 AND 256`),
   ],
 );
 

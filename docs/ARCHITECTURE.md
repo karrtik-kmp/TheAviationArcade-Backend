@@ -171,6 +171,27 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
 - **Description (staff only).** `media_versions.description`, 1-2000 code points, newlines allowed, edited with
   `PATCH` (`description`, string or null). It is never part of an `ImageRef`, `GET /v1/media` or the guest route. `rights`
   appears in the staff views only, and `rights.statedBy` for admin callers only.
+- **Photo submission v2 (migration 0028, API 0.29.0; plan [photo-submission-v2](plans/photo-submission-v2.md)).** The
+  client's agreement of 2026-12-01 adds the statement `v2_agreement_2026-12-01` (same three columns on the version as v1:
+  `rights_statement`, `rights_stated_by`, `rights_stated_at`). Sending it is the photographer's acceptance of three confirmations
+  (18+, copyright or legal authority, agreement incl. worldwide commercial and promotional use without payment); the code names
+  the agreement version, a later agreement is a new code, and there is no separate boolean or `agreementVersion` field. A v2
+  upload also needs the header `X-Submission`: base64url (no padding, canonical) of UTF-8 JSON `{ fullName, title, credit,
+  instagramHandle?, instagramDisplayConsent? }`. A header, because the body is the raw image (multipart stays unbuilt) and a
+  query string would reach access logs. Decoding is strict and runs before the idempotency lookup; errors never echo a value. The
+  licence is filled in by the server (agreement name, no URL, `creditRequired`, credit from the submission) and cannot be edited
+  on a v2 draft. `title` is photo content, one per file version like `description`.
+  **`media_submissions` is the one mutable, erasable store of private submitter data**: one row per item (`full_name`,
+  `instagram_handle`, `instagram_display_consent`, `updated_at/by`), edited in place, because a published version row is frozen
+  for ever (0027 trigger) and a person's name must stay erasable (agreement section 8). Editing it makes no version and needs no
+  publish. The legal record of who accepted what and when stays on the version rows, which are kept. Credit stays per version.
+  `PUT .../rights` with v2 always makes a new draft version (never rewrites a published one); the live version switches when an
+  admin publishes it. Idempotent replay compares a digest of the normalised submission (`media_upload_keys.submission_sha256`).
+  **Privacy.** Name and Instagram fields appear only in `MediaItem.submission` for the owner and admins, never in an `ImageRef`,
+  `GET /v1/media` or `GET /v1/public/media` (no title either). No email is stored. `admin_audit` never holds a name or handle
+  (only changed flags and the consent from/to), and the access log never holds the header or the decoded name. The owner sets
+  these fields; a non-owner admin may only remove them (privacy request); publishing a v2 draft whose item has no `fullName` is
+  refused. Nothing in the game's or the public read paths changes.
 - **D1 photo import (operator command, no route).** `npm run media:import -- --bundle <dir> [--yes]` turns the old website review
   queue into `unverified` items owned by their photographers, with rights `d1_private_review` and no licence; dry run by default,
   `--yes` only with `BLOB_STORE=bunny`; idempotent through `media_imports` ([plan](plans/media-import.md)).

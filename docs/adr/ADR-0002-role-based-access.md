@@ -175,3 +175,13 @@ Admin gets no verify-email flow (editor access is requested from Admin Support).
 - **Trade-off.** Firebase then treats the address as proven for the whole project (password resets, provider linking), so the
   granting admin must know who owns the account. Revoking admin does not un-verify the email. The person's current token still
   says `email_verified: false` until it refreshes (sign out and in again, or up to an hour).
+
+## Follow-up note (2026-11-25, photo submission v2: who may change a photographer's name and Instagram data)
+
+Plan [photo-submission-v2](../plans/photo-submission-v2.md), API 0.29.0. The private submission fields on a media item
+(`fullName`, Instagram handle, display consent; table `media_submissions`) are **owner-set**: the photographer who owns the item
+may set or change them with `PATCH /v1/admin/media/{mediaId}`. A non-owner `admin` may only **remove** them (full name to null,
+handle to null, consent to false), acting on a privacy or agreement section 8 request; any other change is 403 `forbidden`. This is
+decided on actual changes against the stored value, so sending stored values back is a no-op. It extends the owner-only rulings
+above (file uploads and rights statements, 2026-11-04): an admin still edits licences, descriptions and titles, publishes and
+withdraws, but never writes another person's name. `PUT .../rights` (the v2 move) stays owner only. Roles are unchanged.

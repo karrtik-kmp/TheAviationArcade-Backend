@@ -1,10 +1,26 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.28.0
+  version: 0.29.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.29.0 (photo submission v2, the client's agreement of 2026-12-01; staff media; requests additive, RESPONSES BREAKING for strict staff-media readers; no change for the game's own calls; migration 0028).**
+    Requests: v1 requests behave exactly as in 0.28.0. A new rights statement `v2_agreement_2026-12-01` (the `X-Rights-Statement`
+    value on both uploads, and the `statement` of `PUT .../rights`) records the photographer's acceptance, at that moment, of three
+    confirmations: at least 18 years old; owns the copyright or has the legal authority and permissions to submit the photo; has read
+    and agrees to the agreement of version 2026-12-01, including worldwide commercial and promotional use without payment. A v2
+    upload also needs the new header `X-Submission` (base64url JSON: `fullName`, `title`, `credit`, optional Instagram handle and
+    display consent); the licence is filled in automatically. `PUT .../rights` may now move a v1 (or imported) draft to v2: it always
+    makes a new draft version and never rewrites a published one. `PATCH /v1/admin/media/{mediaId}` gains `title`, `fullName` and
+    `instagram`. New private store of the person's data (full name, Instagram handle and consent), editable and erasable in place
+    because published versions are frozen.
+    Responses (BREAKING for a strict reader): `MediaVersion` gains the required `title` and `MediaItem` gains the required
+    `submission` (object or null; owner and admins only); `MediaRights.statement` gains the v2 code. `ImageRef`, `GET /v1/media`
+    and `GET /v1/public/media` are unchanged and carry neither title nor submission data; the game's calls do not change.
+    **Deploy order:** the website and Admin vendor this contract first (or ship together), then the backend goes to dev. Migration
+    0028 adds `media_versions.title`, the table `media_submissions` and `media_upload_keys.submission_sha256`. No new error codes.
 
     **Changelog 0.28.0 (Admin only; ADR-0002 follow-up, user rulings 2026-11-19; no change for the game's own calls).** Granting
     `admin` (`POST /v1/admin/accounts/{principal}/roles/admin/grant`, and the operator command `roles:grant`) now also marks the
@@ -3096,15 +3112,23 @@ paths:
         owner = the verified caller) and one audit row. A bad image is 422 `media_invalid`. The licence starts empty (fill it with
         `PATCH`), with `creditRequired` `true` until staff change it; nothing reaches players until an admin publishes.
 
-        Requires an `X-Rights-Statement` header (`v1_own` or `v1_authorised`; 400 otherwise, checked before the key lookup).
+        Requires an `X-Rights-Statement` header (`v1_own`, `v1_authorised` or `v2_agreement_2026-12-01`; 400 otherwise, checked before the key lookup).
+        With `v2_agreement_2026-12-01` the header `X-Submission` is required too (400 when missing, and 400 when sent with a v1
+        statement); it is decoded and validated before the key lookup. A v2 item is created with its licence filled in automatically
+        (`licenceName` "Airplane Games Photo Submission Policy and Image License Agreement (2026-12-01)", `licenceUrl` null,
+        `creditRequired` true, `credit` from the submission), the draft `title` from the submission, and the submission's `fullName`,
+        Instagram handle and consent stored privately on the item (`MediaItem.submission`). `description` is not part of the
+        submission: set it with `PATCH` after the upload.
 
         Requires an `Idempotency-Key`, looked up FIRST (this route has no `revision` fence). A replay needs the same operation (create,
-        not a version upload), the same sha256 and the same `X-Rights-Statement`: it answers 200 with the item as stored now (current state; nothing new is written).
-        Anything else with that key (another operation, another `mediaId`, other bytes, another statement) is 422 `idempotency_key_reused`. Two callers
+        not a version upload), the same sha256, the same `X-Rights-Statement` and, for v2, the same submission (compared by a digest of
+        the normalised fields, so the key order of the JSON and `@` in the handle do not matter): it answers 200 with the item as stored now (current state; nothing new is written).
+        Anything else with that key (another operation, another `mediaId`, other bytes, another statement, another submission) is 422 `idempotency_key_reused`. Two callers
         may use the same key independently. Counts against the rate limit before the body is read. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdempotencyKey"
         - $ref: "#/components/parameters/MediaRightsStatementHeader"
+        - $ref: "#/components/parameters/MediaSubmissionHeader"
       requestBody:
         required: true
         content:
@@ -3216,11 +3240,12 @@ paths:
     patch:
       tags: [media, admin]
       operationId: editMedia
-      summary: Edit the draft version's licence and description
+      summary: Edit the draft version's licence, description and title, and the item's submission data
       description: |
         Needs an ACTIVE `photographer` role (an `admin` also qualifies); a photographer edits only their own items (others
         are 404 `not_found`), an admin may edit any. Allowed in every state, including `withdrawn`. Strict body
-        `{ revision, licence?, description?, note? }` with at least ONE of `licence` and `description` (a body with only `revision`,
+        `{ revision, licence?, description?, title?, fullName?, instagram?, note? }` with at least ONE of `licence`, `description`, `title`,
+        `fullName` and `instagram` (a body with only `revision`,
         or `revision` and `note`, is 400); inside `licence`, an absent key keeps the stored value and `null` clears it. `description`
         is a string (trimmed, CRLF becomes LF, 1 to 2000 code points, newlines allowed, every other control character is 400) or
         `null` to clear it; it is staff-only and never in `ImageRef`, `GET /v1/media` or `GET /v1/public/media`. A description edit
@@ -3239,6 +3264,22 @@ paths:
         Only an `admin` may CHANGE `creditRequired`: a photographer who sends a value different from the stored one gets 403
         `forbidden` and nothing is written (sending the stored value, with or without other fields, is fine). The checks run in
         order: role, then ownership (404), then the `revision` fence (409), then this rule (403).
+
+        **Photo submission v2 (0.29.0).** `title` (string or null, owner or admin) is photo content like `description`: it lives on the
+        file version, follows the same new-version rule and is copied forward. `fullName` (string or null) and
+        `instagram: { handle, displayConsent }` (both keys required; `handle` is a string or null, a leading `@` is stripped, `""` and
+        `"@"` mean null; `displayConsent` true with a null handle is 400) belong to the PERSON and are stored on the item in
+        place, in the private submission, not on a version. Permission is decided on actual changes against the stored value, so sending
+        stored values back is a 200 no-op. The item's owner may set any of them. An admin who is NOT the owner may only REMOVE: `fullName`
+        to null, `handle` to null, `displayConsent` to false (acting on a privacy or agreement section 8 request); any other change is 403
+        `forbidden`, nothing written. A PATCH that changes only submission fields (`fullName`, `instagram`) makes no new file version,
+        leaves `draftVersion` alone and is not `pending`; the item's `revision` still moves, and the change shows in `MediaItem.submission`
+        at once, also for a published item. Mixed with licence, description or title changes, the version rule above applies to
+        those. On a draft that holds the v2 statement: a CHANGE to `licence.licenceName` or `licence.licenceUrl` is 422 `content_invalid`
+        (they carry the agreement licence; sending the stored value is fine), and `title` or `licence.credit` cannot become null
+        (422 `content_invalid`); `credit` otherwise, `sourceUrl` and `attributionText` stay editable, and `creditRequired` stays
+        `true` (the agreement licence always credits the photographer): turning it off is 422 `content_invalid` for an admin (403
+        `forbidden` first for anyone else). These 422 checks run before anything is written.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
       requestBody:
@@ -3262,6 +3303,15 @@ paths:
         "409": { $ref: "#/components/responses/MediaWriteConflict" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: "`content_invalid`: on a draft that holds the v2 statement, a change to `licenceName` or `licenceUrl`, `title` or `credit` set to null, or an admin turning `creditRequired` off. Nothing was written."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [content_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
@@ -3276,18 +3326,26 @@ paths:
         withdrawn item; it can be published again). The body is the raw image exactly as for `POST /v1/admin/media` (same limits,
         413, 415, sniffing and 422 `media_invalid`), plus the item `revision` as a query parameter (fence: stale is 409
         `version_conflict`). The new file becomes the draft version with an empty licence to fill in; the published version and its
-        credit stay live until an admin publishes. The new version copies the previous draft's `description` (the licence starts
+        credit stay live until an admin publishes. The new version copies the previous draft's `description` and `title` (the licence starts
         empty) and takes its own rights statement from `X-Rights-Statement` (400 when missing or unknown, checked before the key lookup).
+
+        With `v2_agreement_2026-12-01` the header `X-Submission` is required (400 when missing; 400 when sent with v1) and the new
+        version gets the agreement licence automatically (as on `POST /v1/admin/media`), its `title` and `credit` from the submission,
+        and the item's private submission (full name, Instagram handle and consent) is replaced by the one sent. A v2 file upload to
+        an item whose draft holds v1 or v2 is fine. A v1 file upload to an item whose draft already holds v2 is 409
+        `rights_already_stated` (no downgrade; nothing is stored). It is checked after the key lookup and the `revision` fence, so an
+        earlier v1 upload that succeeded before the item moved to v2 still replays 200 with the same key.
 
         Requires an `Idempotency-Key`. The key lookup runs FIRST: it precedes the `revision` fence, so an identical retry still
         replays after the item's `revision` has moved on. A replay needs the same operation (version upload, not create), the same
-        `mediaId`, the same sha256 and the same `X-Rights-Statement`, and answers 200 with the item as stored now (current state; nothing new is written). Anything
-        else with that key (another operation, another `mediaId`, other bytes, another statement) is 422 `idempotency_key_reused`. A new version bumps
+        `mediaId`, the same sha256, the same `X-Rights-Statement` and, for v2, the same submission (normalised digest), and answers 200 with the item as stored now (current state; nothing new is written). Anything
+        else with that key (another operation, another `mediaId`, other bytes, another statement, another submission) is 422 `idempotency_key_reused`. A new version bumps
         `revision`; one audit row. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
         - $ref: "#/components/parameters/MediaIdempotencyKey"
         - $ref: "#/components/parameters/MediaRightsStatementHeader"
+        - $ref: "#/components/parameters/MediaSubmissionHeader"
         - name: revision
           in: query
           required: true
@@ -3321,7 +3379,17 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/MediaNotFound" }
-        "409": { $ref: "#/components/responses/MediaWriteConflict" }
+        "409":
+          description: |
+            `version_conflict`: `revision` is stale. `rights_already_stated`: a v1
+            upload to an item whose draft already holds the v2 statement. Nothing was stored or written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [version_conflict, rights_already_stated]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/MediaBodyTooLarge" }
         "415": { $ref: "#/components/responses/MediaUnsupportedType" }
         "422": { $ref: "#/components/responses/MediaUploadRefused" }
@@ -3332,16 +3400,32 @@ paths:
     put:
       tags: [media, admin]
       operationId: stateMediaRights
-      summary: State the rights for a draft that has none
+      summary: State the rights for a draft (v1 for a draft that has none; v2 to move to the agreement)
       description: |
-        For a draft with no rights statement yet (a photo imported from the old website review queue, which carries
-        `d1_private_review`, or a version from before statements existed). Needs an ACTIVE `photographer` role. OWNER ONLY: another
-        photographer's item is 404 `not_found`; an admin who is not the owner gets 403 `forbidden`. Strict body
-        `{ revision, statement }`, `statement` being `v1_own` or `v1_authorised` (the same wording and consent as the upload
-        header; `d1_private_review` is 400). Order: role, ownership, the `revision` fence (409 `version_conflict`), then eligibility:
-        the draft's statement must be absent or `d1_private_review` AND the draft must never have been published (not the
-        published version and no `publishedAt`), else 409 `rights_already_stated`. Written to the draft in place (no new version),
-        bumps `revision`, one `media_rights` audit row. Exempt from the client version gate.
+        Needs an ACTIVE `photographer` role. OWNER ONLY: another photographer's item is 404 `not_found`; an admin who is not the owner
+        gets 403 `forbidden`. Strict body, a union discriminated by `statement`: `{ revision, statement }` with `v1_own` or
+        `v1_authorised` (the same wording and consent as the upload header; `d1_private_review` is 400), or
+        `{ revision, statement: "v2_agreement_2026-12-01", submission }` where `submission` is the same JSON as `X-Submission`
+        (field rules in `MediaSubmission`); `submission` is required with v2 and refused (400) with v1. Order: role, ownership, the
+        `revision` fence (409 `version_conflict`), then eligibility.
+
+        **v1** (unchanged from 0.19.0): for a draft with no rights statement yet (a photo imported from the old website review queue,
+        which carries `d1_private_review`, or a version from before statements existed). The draft's statement must be absent or
+        `d1_private_review` AND the draft must never have been published (not the published version and no `publishedAt`), else 409
+        `rights_already_stated`; so v1 over a draft that holds v2 is 409 (no downgrade). Written to the draft in place (no new version).
+
+        **v2** (the move to the agreement of 2026-12-01): allowed when the current draft has no statement, `d1_private_review` or a
+        `v1_*` statement, whether or not the item was ever published. It ALWAYS makes a NEW draft version (`version` + 1 of the current
+        draft): the same file (sha256, type, size, dimensions) and the draft's `description`, `sourceUrl` and `attributionText`, with
+        `title` and `credit` from the submission, the agreement licence filled in automatically, and the v2 statement by the caller at
+        the database time. The private submission (full name, Instagram handle, consent) is stored on the item. Older versions are
+        never rewritten, so each keeps the statement it was made under, and published versions stay as they were. The v2 acceptance
+        covers the DRAFT's photo from that moment; the LIVE version switches to v2 only when an admin publishes the new draft (the
+        item then shows in `?pending=true`; the admin reviews the new public credit and title). Nothing is published automatically.
+        v2 over a draft that already holds v2 is 409 `rights_already_stated`. If a request is answered 409 after a lost response,
+        reload the item: the move may already have happened.
+
+        Bumps `revision`, one `media_rights` audit row. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
       requestBody:
@@ -3364,8 +3448,8 @@ paths:
         "404": { $ref: "#/components/responses/MediaNotFound" }
         "409":
           description: |
-            `version_conflict`: `revision` is stale. `rights_already_stated`: the draft already has a `v1_*` statement or was published
-            once. Nothing was written.
+            `version_conflict`: `revision` is stale. `rights_already_stated`: v1 sent for a draft that already has a `v1_*` or v2
+            statement or was published once; or v2 sent for a draft that already holds v2. Nothing was written.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -3386,7 +3470,8 @@ paths:
       description: |
         Admin only. Makes the draft version the published one (`state` `published`, `publishedVersion` = `draftVersion`); its
         licence is frozen with it. The draft's licence must name a licence and, when `creditRequired`, a credit, and the draft must carry
-        a `v1_own` or `v1_authorised` rights statement (an imported or pre-statement draft needs `PUT .../rights` first): otherwise 422
+        a `v1_own`, `v1_authorised` or `v2_agreement_2026-12-01` rights statement (an imported or pre-statement draft needs `PUT .../rights` first): otherwise 422
+        `content_invalid`. A v2 draft whose item has no `fullName` in its private submission (for instance erased) is also 422
         `content_invalid`. Publishing a draft that is already the published version is 409 `nothing_to_publish`. Fenced by `revision`
         (stale is 409 `version_conflict`). Bumps `revision`; one audit row. Answers 200, not 201. Exempt from the client version gate.
       parameters:
@@ -3422,7 +3507,7 @@ paths:
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "422":
-          description: "`content_invalid`: the draft's licence has no `licenceName` (unless the dev-demo waiver is on: see the 0.27.1 changelog), `creditRequired` is true and `credit` is empty, or the draft has no `v1_*` rights statement. Nothing was written."
+          description: "`content_invalid`: the draft's licence has no `licenceName` (unless the dev-demo waiver is on: see the 0.27.1 changelog), `creditRequired` is true and `credit` is empty, or the draft has no publishable rights statement (`v1_*` or v2), or it holds v2 and the item has no `fullName`. Nothing was written."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -4160,14 +4245,41 @@ components:
       in: header
       required: true
       description: |
-        The uploader's rights statement for this file (wording v1, shown by the website): `v1_own` ("I took this photo and hold the
-        rights to it.") or `v1_authorised` ("I'm authorised by the person or organisation that holds the rights."). Missing or any
-        other value (including `d1_private_review`, which only the D1 import command sets) is 400 `invalid_request`, decided before
-        the `Idempotency-Key` lookup. Sending it is the uploader's consent: "I confirm this is true, and I agree that Airplane Games
-        may publish this photo, after review, under the licence and credit I give for it." Stored on the new file version with the
-        caller as `statedBy` and the database time as `statedAt`. A replay of an `Idempotency-Key` must send the same statement
-        (else 422 `idempotency_key_reused`).
-      schema: { type: string, enum: [v1_own, v1_authorised] }
+        The uploader's rights statement for this file. Wording v1, shown by the website: `v1_own` ("I took this photo and hold the
+        rights to it.") or `v1_authorised` ("I'm authorised by the person or organisation that holds the rights."). Sending a v1 code is the uploader's consent: "I confirm this is true, and I agree that Airplane Games
+        may publish this photo, after review, under the licence and credit I give for it."
+
+        `v2_agreement_2026-12-01` (0.29.0): sending it IS the photographer's acceptance, at that moment, of all three confirmations
+        on the website form: (a) I am at least 18 years old; (b) I own the copyright or have the legal authority and the necessary
+        permissions to submit this photo; (c) I have read and agree to the Photo Submission Policy and Image License Agreement of
+        version 2026-12-01, including worldwide commercial and promotional use without payment or royalties. A client sends it only
+        after all three boxes are ticked. The code names the agreement version; a later agreement gets a new code. It requires
+        `X-Submission`.
+
+        Missing or any other value (including `d1_private_review`, which only the D1 import command sets) is 400 `invalid_request`, decided before
+        the `Idempotency-Key` lookup. Stored on the new file version with the caller as `statedBy` and the database time as
+        `statedAt`. A replay of an `Idempotency-Key` must send the same statement (else 422 `idempotency_key_reused`).
+      schema: { type: string, enum: [v1_own, v1_authorised, v2_agreement_2026-12-01] }
+
+    MediaSubmissionHeader:
+      name: X-Submission
+      in: header
+      required: false
+      description: |
+        The photographer's submission fields for a v2 upload. NOT `required: true` at the parameter level because it depends on the
+        statement: it is required with `X-Rights-Statement: v2_agreement_2026-12-01` (400 `invalid_request` when missing) and refused
+        with a v1 statement (400). Value: base64url (RFC 4648 section 5, alphabet `A-Z a-z 0-9 - _`, NO padding, canonical encoding)
+        of the UTF-8 JSON `{ "fullName", "title", "credit", "instagramHandle"?, "instagramDisplayConsent"? }`, written with non-ASCII
+        characters unescaped (the `JSON.stringify` default). Field rules are those of `MediaSubmission`. In JavaScript:
+        `Buffer.from(JSON.stringify(obj), "utf8").toString("base64url")`. It rides a header because the body is the raw image and a
+        query string would put names in access logs. `description` is not part of it: `PATCH` it after the upload.
+
+        Refused with 400 `invalid_request` (the message never echoes a value), all before the `Idempotency-Key` lookup: not 1 to
+        6144 characters of the base64url alphabet (a header sent twice fails this); padding or a non-canonical last character; invalid
+        UTF-8 or a byte order mark; not a JSON object; an unknown key; a field that breaks its rule; a string with a lone surrogate.
+        Duplicate JSON keys are tolerated (the last wins). A replay of an `Idempotency-Key` compares a digest of the NORMALISED fields
+        (trimmed, `@` stripped, defaults written out), so key order does not matter; another submission is 422 `idempotency_key_reused`.
+      schema: { type: string, minLength: 1, maxLength: 6144, pattern: "^[A-Za-z0-9_-]+$" }
 
     StoreProductIdPath:
       name: productId
@@ -6422,6 +6534,10 @@ components:
         until a staff member fills it in. A version can be published only with a `licenceName` and, when `creditRequired`, a `credit`
         (422 `content_invalid` otherwise). On a dev backend with the dev-demo waiver on, a published version may have
         `licenceName: null` (changelog 0.27.1); production never does.
+
+        A version that holds the v2 rights statement carries the agreement licence, filled in by the server: `licenceName` "Airplane
+        Games Photo Submission Policy and Image License Agreement (2026-12-01)", `licenceUrl` null, `creditRequired` true and `credit`
+        from the submission. Its `licenceName` and `licenceUrl` cannot be changed (PATCH is 422).
       properties:
         credit: { type: [string, "null"], minLength: 1, maxLength: 200, description: The photographer or rights holder to credit. }
         licenceName: { type: [string, "null"], minLength: 1, maxLength: 200 }
@@ -6435,7 +6551,8 @@ components:
       minProperties: 1
       description: |
         A partial licence edit. A key that is absent keeps the stored value; `null` clears it (`creditRequired` cannot be null).
-        Only an admin may change `creditRequired` (a photographer gets 403 `forbidden`; sending the stored value is fine).
+        Only an admin may change `creditRequired` (a photographer gets 403 `forbidden`; sending the stored value is fine), and never
+        on a draft that holds the v2 statement, where it stays `true` (422 `content_invalid`).
         Text is trimmed and kept verbatim otherwise; control characters are refused (400). URLs must start with `http://` or
         `https://` and are at most 2048 characters.
       properties:
@@ -6455,23 +6572,55 @@ components:
       properties:
         statement:
           type: string
-          enum: [v1_own, v1_authorised, d1_private_review]
+          enum: [v1_own, v1_authorised, v2_agreement_2026-12-01, d1_private_review]
           description: |
-            `v1_own` and `v1_authorised` are stated through the API (wording v1). `d1_private_review` marks a photo imported from the
-            old website review queue; it cannot be published until the owner states `v1_own` or `v1_authorised` (`PUT .../rights`).
+            `v1_own` and `v1_authorised` are stated through the API (wording v1). `v2_agreement_2026-12-01` is the acceptance of the
+            agreement of that version with its three confirmations (18+, copyright or legal authority, agreement incl. worldwide
+            commercial and promotional use without payment); the code names the version. A v2 version carries the agreement licence
+            (`MediaLicence`). `d1_private_review` marks a photo imported from the old website review queue; it cannot be published
+            until the owner states a v1 or v2 statement (`PUT .../rights`).
         statedAt: { type: string, format: date-time, description: Database time of the statement (for an import, the source's creation time). }
         statedBy: { type: string, minLength: 1, maxLength: 256, description: Admin callers only; absent otherwise. }
-    MediaRightsRequest:
+    MediaSubmission:
       type: object
       additionalProperties: false
-      required: [revision, statement]
+      required: [fullName, title, credit]
+      description: |
+        The photographer's submission fields: the JSON inside the `X-Submission` header and the `submission` of a v2 `PUT .../rights`.
+        Strings are trimmed, at most 200 code points, with no control characters and no lone surrogates. `fullName` and the
+        Instagram handle are private (see `MediaItem.submission`); `title` and `credit` are photo content on the file version.
       properties:
-        revision: { type: integer, minimum: 1, maximum: 2147483647 }
-        statement: { type: string, enum: [v1_own, v1_authorised] }
+        fullName: { type: string, minLength: 1, maxLength: 200 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        credit: { type: string, minLength: 1, maxLength: 200, description: The public photographer credit; becomes the version's licence `credit`. }
+        instagramHandle:
+          type: [string, "null"]
+          description: Optional. Trimmed, one leading `@` stripped, then it must match `^[A-Za-z0-9._]{1,30}$`; `null`, `""` or `@` alone means none.
+        instagramDisplayConsent:
+          type: boolean
+          default: false
+          description: Optional. The photographer authorises Airplane Games to publicly display and link the handle. `true` without a handle is 400.
+    MediaRightsRequest:
+      description: |
+        A union discriminated by `statement`. `submission` is required with v2 and refused (400) with v1.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [revision, statement]
+          properties:
+            revision: { type: integer, minimum: 1, maximum: 2147483647 }
+            statement: { type: string, enum: [v1_own, v1_authorised] }
+        - type: object
+          additionalProperties: false
+          required: [revision, statement, submission]
+          properties:
+            revision: { type: integer, minimum: 1, maximum: 2147483647 }
+            statement: { type: string, enum: [v2_agreement_2026-12-01] }
+            submission: { $ref: "#/components/schemas/MediaSubmission" }
     MediaVersion:
       type: object
       additionalProperties: false
-      required: [version, sha256, contentType, byteSize, width, height, licence, description, rights, publishedAt, createdAt]
+      required: [version, sha256, contentType, byteSize, width, height, licence, description, title, rights, publishedAt, createdAt]
       description: |
         One uploaded file of a media item, with its own licence. The storage path is never returned. Two versions may share the same
         file: a licence edit on a published item creates a new version (version + 1) with the same sha256, type, size and dimensions.
@@ -6484,6 +6633,7 @@ components:
         height: { type: integer, minimum: 1, maximum: 4096 }
         licence: { $ref: "#/components/schemas/MediaLicence" }
         description: { type: [string, "null"], minLength: 1, maxLength: 2000, description: Staff-only photo description; newlines allowed. Never in an `ImageRef`. }
+        title: { type: [string, "null"], minLength: 1, maxLength: 200, description: "Staff-only photo title (0.29.0); null for versions made without one. Never in an `ImageRef`. Always set on a version that holds the v2 statement." }
         rights:
           oneOf: [{ $ref: "#/components/schemas/MediaRights" }, { type: "null" }]
           description: The rights statement; null only for versions from before statements existed (migration 0019).
@@ -6492,7 +6642,7 @@ components:
     MediaItem:
       type: object
       additionalProperties: false
-      required: [id, state, revision, draftVersion, publishedVersion, draft, createdAt, updatedAt]
+      required: [id, state, revision, draftVersion, publishedVersion, draft, submission, createdAt, updatedAt]
       description: |
         One image. `revision` (>= 1) is the optimistic fence for EVERY write to the item (new version, licence edit, publish,
         withdraw): send the value you read, a stale one is 409 `version_conflict`. `draftVersion` is the latest version (a new
@@ -6508,6 +6658,21 @@ components:
         draftVersion: { type: integer, minimum: 1 }
         publishedVersion: { type: [integer, "null"], minimum: 1 }
         draft: { $ref: "#/components/schemas/MediaVersion" }
+        submission:
+          description: |
+            The photographer's private submission data (0.29.0), one mutable record per item, not per version (published versions are
+            frozen, this is not). Visible only to the item's owner and to admins; never in an `ImageRef`, `GET /v1/media` or
+            `GET /v1/public/media`. `null` until a v2 upload, a v2 move or an owner `PATCH` of `fullName`/`instagram` creates it. The owner may change it with `PATCH`; a
+            non-owner admin may only remove values (privacy request). Fields become null after erasure.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [fullName, instagramHandle, instagramDisplayConsent]
+              properties:
+                fullName: { type: [string, "null"], minLength: 1, maxLength: 200 }
+                instagramHandle: { type: [string, "null"], pattern: "^[A-Za-z0-9._]{1,30}$" }
+                instagramDisplayConsent: { type: boolean, description: Authorisation to display and link the handle publicly; never true without a handle. }
+            - type: "null"
         owner: { type: string, minLength: 1, maxLength: 256, description: Admin callers only; absent otherwise. }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
@@ -6589,11 +6754,15 @@ components:
       anyOf:
         - required: [licence]
         - required: [description]
+        - required: [title]
+        - required: [fullName]
+        - required: [instagram]
       description: |
-        Edits the DRAFT version's licence and/or description; the published version and its credit stay live until an admin publishes.
-        At least one of `licence` and `description` is required: `{ revision }` alone and `{ revision, note }` are 400. When the draft equals the published version the edit
+        Edits the DRAFT version's licence, description and title, and the item's private submission (`fullName`, `instagram`); the published version and its credit stay live until an admin publishes.
+        At least one of `licence`, `description`, `title`, `fullName` and `instagram` is required: `{ revision }` alone and `{ revision, note }` are 400. When the draft equals the published version the edit
         creates a new draft version (same file, version + 1); otherwise it edits the draft in place, except that a draft which was live once (an item now withdrawn) gets
-        version + 1 as well. `note` goes to the audit row only.
+        version + 1 as well. Changes to `fullName` and `instagram` alone make no version. `note` goes to the audit row only (never put a name or handle in it).
+        Permission and v2 rules are described on the route: a non-owner admin may only remove `fullName`, the handle and the consent.
       properties:
         revision: { type: integer, minimum: 1, maximum: 2147483647 }
         licence: { $ref: "#/components/schemas/MediaLicenceUpdate" }
@@ -6601,6 +6770,22 @@ components:
           type: [string, "null"]
           maxLength: 2000
           description: CRLF becomes LF; newlines are the only control characters allowed (any other, leading or trailing included, is 400); then trimmed to 1 to 2000 code points. `null` clears it.
+        title:
+          type: [string, "null"]
+          maxLength: 200
+          description: Trimmed, 1 to 200 code points, no control characters. `null` clears it, except on a v2 draft (422 `content_invalid`). Photo content on the file version; follows the new-version rule.
+        fullName:
+          type: [string, "null"]
+          maxLength: 200
+          description: The photographer's private full name, 1 to 200 code points, stored on the item in place (no version). The owner may set it; a non-owner admin may only send null (else 403 `forbidden`). `null` erases it, and then a v2 draft cannot be published (422).
+        instagram:
+          type: object
+          additionalProperties: false
+          required: [handle, displayConsent]
+          description: The private Instagram handle and the display consent, stored on the item in place (no version). The owner may set anything; a non-owner admin may only set `handle` to null and `displayConsent` to false (else 403 `forbidden`). `displayConsent` true with a null handle is 400.
+          properties:
+            handle: { type: [string, "null"], description: "Trimmed, one leading `@` stripped, then `^[A-Za-z0-9._]{1,30}$`; `\"\"` and `@` mean null." }
+            displayConsent: { type: boolean }
         note: { type: string, minLength: 1, maxLength: 500 }
     ContentItemMediaRequest:
       type: object

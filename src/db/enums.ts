@@ -55,9 +55,16 @@ export const MEDIA_UPLOAD_OPERATIONS = ["create", "version"] as const;
  * The photographer's rights statement on a file version (docs/plans/media-rights-and-public.md). Wire spelling = database
  * spelling. `d1_private_review` is set only by the D1 import command and is never accepted on the wire.
  */
-export const MEDIA_RIGHTS_STATEMENTS = ["v1_own", "v1_authorised", "d1_private_review"] as const;
+export const MEDIA_RIGHTS_STATEMENTS = ["v1_own", "v1_authorised", "v2_agreement_2026-12-01", "d1_private_review"] as const;
+/**
+ * Statement of the photo submission agreement effective 2026-12-01 (docs/plans/photo-submission-v2.md D1). Sending it is the
+ * photographer's acceptance of all three form confirmations; a later agreement is a new code, never a reinterpretation.
+ */
+export const MEDIA_V2_STATEMENT = "v2_agreement_2026-12-01" as const;
+/** The licence name a v2 version carries automatically (D4). */
+export const MEDIA_V2_LICENCE_NAME = "Airplane Games Photo Submission Policy and Image License Agreement (2026-12-01)" as const;
 /** The statements a published version may carry (the publishable CHECK). Also the only ones the API accepts. */
-export const MEDIA_PUBLISHABLE_RIGHTS = ["v1_own", "v1_authorised"] as const;
+export const MEDIA_PUBLISHABLE_RIGHTS = ["v1_own", "v1_authorised", "v2_agreement_2026-12-01"] as const;
 /** The dev-demo waiver a published version may carry instead of a licence name (docs/plans/dev-licence-waiver.md, migration 0026). */
 export const MEDIA_LICENCE_WAIVERS = ["dev-demo"] as const;
 /** Store catalog and purchases (docs/plans/purchases.md, migration 0020). */
