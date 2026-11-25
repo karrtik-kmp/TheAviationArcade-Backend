@@ -170,7 +170,9 @@ against a fixed digest. Replay needs same operation, item, bytes, statement and 
 1. Live version after a v1 → v2 move switches on the admin's publish (D5); auto-publish would be a new rule.
 2. If a newer unpublished file is ahead of the live one, the move covers the draft's file only; the live file stays under
    v1 until that draft is published. Acceptable, or should accepting v2 also cover the live file?
-3. When to stop accepting v1 on uploads (D6), and whether v2 may be accepted before 2026-12-01 (legal, client).
+3. When to stop accepting v1 on uploads (D6): still open. Whether v2 may be accepted before 2026-12-01: **answered yes**
+   (user ruling 2026-11-25, "Yes, allow it now", given in the website session and relayed here; website `b128d49`). No
+   backend change: there is no date gate, v2 is accepted as soon as 0.29.0+ is deployed.
 4. Licence name wording (D4) and a link once the site's domain is final.
 5. An admin erase route for a photographer's name and handle now, or with the account-deletion work (D9)?
 6. Deploying 0.29.0 / migration 0028 to dev: after the website and Admin vendor it, with your sign-off.
