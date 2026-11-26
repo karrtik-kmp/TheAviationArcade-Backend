@@ -64,7 +64,7 @@ error code). Errors keep `Cache-Control: no-store`. An Authorization header is i
 F8. **Roles.** Staff routes stay `admin`; the demo account never holds `admin` (test: 403 on PATCH and publish).
 
 F9. **Public rate-limit follow-up** (Backend TASKS, 2026-11-04: "revisit with the user before the public read gets a
-consumer"). Proposed, needs the user's OK, no code change: keep the per-IP public tier and no website secret (ruling
+consumer"). **Approved by the user 2026-11-26** ("Yes, keep it"), no code change: keep the per-IP public tier and no website secret (ruling
 2026-11-04). After the hosting move the website's server calls the backend from the same host, so every guest shares one
 IP budget; the website's FAQ reader caches 60 s with one request in flight and serves stale on error, so the FAQ costs
 about one request a minute. Keep `RATE_LIMIT_PUBLIC_PER_MIN` at 60 and size it at hosting together with the guest media

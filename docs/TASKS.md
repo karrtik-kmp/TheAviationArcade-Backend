@@ -258,7 +258,7 @@ cleanup on a hosted database now needs `DISABLE TRIGGER` (also sign-off).
   Workers, so they cannot identify the website. Revisit with the user before the public read gets a consumer.
   **Update 2026-11-26:** the FAQ read (`GET /v1/public/faq`) is a second consumer; position proposed in
   [plans/faq-cms.md](plans/faq-cms.md) F9 (keep the per-IP tier, no website secret, size `RATE_LIMIT_PUBLIC_PER_MIN` at hosting with
-  the guest media read), awaiting the user's OK.
+  the guest media read). **Settled: user ruling 2026-11-26 ("Yes, keep it").** No code change.
 - **Dev tunnel** (`d8mfz914`, anonymous, user-hosted) serves the local backend to the deployed dev site; delete it after
   testing. The backend runs from the E: clone's build with this folder's `.env`.
 

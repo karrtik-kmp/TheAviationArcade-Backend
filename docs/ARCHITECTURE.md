@@ -336,7 +336,7 @@ Plan `docs/plans/faq-cms.md`; client request (Josh, 2026-11-26): an FAQ he can a
   under the same lock and `draftVersion` fence (stale: 409), adds an `import` history entry and one `content_import` audit row; it
   never touches the live version. `sourceHost` is informational and never trusted. The import route alone has a 3 MB JSON body limit
   (300 entries of 2200 code points at 4 bytes fit); every other route keeps 16 KB.
-- **Public rate limit (proposed, awaiting user OK; no code change).** Keep the per-IP public tier and no website secret (ruling
+- **Public rate limit (user ruling 2026-11-26; no code change).** Keep the per-IP public tier and no website secret (ruling
   2026-11-04). After the hosting move the website's server calls from one host, so every guest shares one IP budget; the website's FAQ
   reader caches 60 s with one request in flight and serves stale on error, so the FAQ costs about one request a minute. Keep
   `RATE_LIMIT_PUBLIC_PER_MIN` at 60 and size it at hosting together with the guest media read; `TRUST_PROXY` must equal the proxy hop count.
