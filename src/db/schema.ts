@@ -673,7 +673,7 @@ export const adminAudit = pgTable(
   (t) => [
     check(
       "admin_audit_action_check",
-      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare', 'release_create', 'release_activate', 'release_restore', 'media_review')`,
+      sql`${t.action} IN ('content_import', 'content_publish', 'content_edit', 'content_retire', 'content_restore', 'role_request', 'role_approve', 'role_reject', 'role_grant', 'role_revoke', 'role_block', 'role_unblock', 'role_email_edit', 'media_upload', 'media_version', 'media_edit', 'media_publish', 'media_withdraw', 'content_media_link', 'media_rights', 'media_import', 'store_product_create', 'store_product_edit', 'store_product_retire', 'store_product_restore', 'editorial_create', 'editorial_save', 'content_prepare', 'release_create', 'release_activate', 'release_restore', 'media_review', 'role_self_activate')`,
     ),
   ],
 );
@@ -848,7 +848,7 @@ export const accountRoles = pgTable(
     // Migration 0027: the last write to the row (every transition and `clearEmails`), database clock.
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
-    // The deciding admin's principal, `operator:<os user>` for the one-time grant command, or `system:signup`. NULL while pending.
+    // The deciding admin's principal; the account's own principal for a self-activated photographer role (0.32.0); `operator:<os user>` for the operator grant command; `system:signup`; `system:self-serve-0031` for the migration backfill. NULL while pending.
     decidedBy: text("decided_by"),
     note: text("note"),
     // Optimistic fence for decisions: every transition bumps it, so a stale decision cannot overwrite a newer one.

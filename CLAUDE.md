@@ -17,7 +17,8 @@ sign-off.
   Google; the game signs in through Unity Auth's `oidc-firebase` provider, so the backend still verifies Firebase tokens.
   Never trust a client-supplied ID, role, name or email.
 - Privileges come only from the backend `account_roles` table (docs/adr/ADR-0002): `player` at signup, `photographer`
-  by request + admin approval, `admin` only by grant (or the audited `roles:grant` command). Guards read roles per
+  self-issued by the server to a verified account at `POST /v1/me/roles/photographer` (no approval; only a block stops it;
+  ruling 2026-11-26), `admin` only by grant (or the audited `roles:grant` command), never self-issued. Guards read roles per
   request; photographer/admin also need a verified email. No env allowlist grants anything (`STAFF_EMAILS` retired).
 - Cloud project `airplane-games-9fe1e` (ruling 2026-11-16; the old `airplane-games-auth-20261022` is retired and its principals
   are never re-keyed); local/tests use only `demo-airplane-games`. Unsigned

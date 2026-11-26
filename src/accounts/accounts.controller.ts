@@ -109,7 +109,7 @@ function ownView(row: RoleRow) {
   };
 }
 
-/** What an admin sees. `decidedBy` is a principal (or `operator:` / `system:signup`); `requestEmail` is the photographer requester's verified email (null for other roles or once the account is deleted). */
+/** What an admin sees. `decidedBy` is a principal (an admin's, or the account's own for a self-activated photographer role) or `operator:` / `system:signup` / `system:self-serve-0031`; `requestEmail` is the photographer account's verified email at activation (null for other roles or once the account is deleted). */
 function adminView(row: RoleRow) {
   return {
     principal: row.principal,
@@ -128,7 +128,7 @@ function adminView(row: RoleRow) {
   };
 }
 
-/** The signed-in account's own roles and its photographer request. Any signed-in caller (no @Roles). */
+/** The signed-in account's own roles, and the one route that turns its photographer role on. Any signed-in caller (no @Roles). */
 @Controller("v1/me/roles")
 export class MyRolesController {
   constructor(private readonly roles: RoleStore) {}
@@ -139,12 +139,12 @@ export class MyRolesController {
   }
 
   /**
-   * Ask for the `photographer` role. The role is fixed by the path; nothing in the body or query can name one. Needs a verified
-   * email. 201 when a request was recorded (new, or after a rejection or revoke), 200 with the current row when one is already
-   * pending or active (nothing changes). Creates no player row.
+   * Turn on the `photographer` role for the caller (0.32.0; no admin approval). The role is fixed by the path; nothing in the body
+   * or query can name one. Needs a verified email. 201 when the role became active (new row, or after a pending, rejected or revoked
+   * state), 200 with the current row when it is already active (nothing changes), 403 when the account is blocked. Creates no player row.
    */
   @Post("photographer")
-  async requestPhotographer(
+  async activatePhotographer(
     @Principal() principal: string,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
@@ -154,9 +154,9 @@ export class MyRolesController {
     // Code points, like Postgres length() in the table's CHECK (String.length counts UTF-16 units and would let a short astral email through to a 500).
     const emailLength = typeof req.email === "string" ? [...req.email].length : 0;
     if (req.emailVerified !== true || typeof req.email !== "string" || emailLength < 3 || emailLength > 320) {
-      throw new ApiError(403, "forbidden", "Requesting the photographer role needs a verified email.");
+      throw new ApiError(403, "forbidden", "Turning on the photographer role needs a verified email.");
     }
-    const outcome = await this.roles.requestPhotographer(principal, req.email);
+    const outcome = await this.roles.selfActivatePhotographer(principal, req.email);
     if (!outcome.ok) throw outcome.error;
     res.status(outcome.changed ? 201 : 200);
     return { role: ownView(outcome.row), changed: outcome.changed };
@@ -184,28 +184,6 @@ export class AdminRolesController {
     };
   }
 
-  @Post("accounts/:principal/roles/photographer/approve")
-  @HttpCode(200)
-  approve(
-    @Principal() actor: string,
-    @Param("principal", AccountPrincipalPipe) target: string,
-    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
-    @Body(new ZodValidationPipe(decisionBody, "Expected { revision: integer, note?: string } and nothing else.")) body: DecisionBody,
-  ) {
-    return this.decide(actor, target, "photographer", "approve", body);
-  }
-
-  @Post("accounts/:principal/roles/photographer/reject")
-  @HttpCode(200)
-  reject(
-    @Principal() actor: string,
-    @Param("principal", AccountPrincipalPipe) target: string,
-    @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>,
-    @Body(new ZodValidationPipe(decisionBody, "Expected { revision: integer, note?: string } and nothing else.")) body: DecisionBody,
-  ) {
-    return this.decide(actor, target, "photographer", "reject", body);
-  }
-
   /** Block a photographer row (any state but blocked) from the role. Fixed route: never the `:role` revoke route. */
   @Post("accounts/:principal/roles/photographer/block")
   @HttpCode(200)
@@ -218,7 +196,7 @@ export class AdminRolesController {
     return this.setBlocked(actor, target, "block", body);
   }
 
-  /** Lift a block: `blocked` becomes `revoked`, so the account may request again. */
+  /** Lift a block: `blocked` becomes `revoked`, so the account may self-activate again. */
   @Post("accounts/:principal/roles/photographer/unblock")
   @HttpCode(200)
   unblock(
@@ -244,7 +222,7 @@ export class AdminRolesController {
     return this.decide(actor, target, role, "revoke", body);
   }
 
-  /** Grant `admin` (a missing or revoked admin row becomes active). Photographer always goes through request and approval. */
+  /** Grant `admin` (a missing or revoked admin row becomes active). Photographer is never granted here: accounts activate it themselves. */
   @Post("accounts/:principal/roles/admin/grant")
   @HttpCode(200)
   async grant(

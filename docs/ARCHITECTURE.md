@@ -240,9 +240,12 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   `forbidden`) and reads the caller's ACTIVE roles from `account_roles` by the verified principal in one primary-key
   lookup per request, no cache, so a revoke applies to the next call. `admin` satisfies `photographer`; both need
   `email_verified === true` and an email claim in the token. The roles are on the request (`@CallerRoles()`) for
-  ownership checks. A client-chosen role, header, query or email never grants anything; no environment list exists. An
+  ownership checks. `photographer` is self-issued by the server to a verified token at `POST /v1/me/roles/photographer`
+  (ruling 2026-11-26: no approval; only a block stops it; at most 20 photos waiting for review per non-admin account, 429
+  `submission_limit`); `admin` is never self-issued. Any other client-chosen role, header, query or email never grants
+  anything; no environment list exists. An
   admin needs no player row. No email is stored anywhere: rows carry the principal only. The table's CHECKs tie the fields to the
-  state: pending exactly while `decided_at` and `decided_by` are both NULL, only a photographer request can be pending, and
+  state: pending exactly while `decided_at` and `decided_by` are both NULL, only a photographer row can be pending (none new since 0031), and
   `revision >= 1` is the optimistic fence for decisions (R-b bumps it on every transition). The configured shared demo account
   (`DEMO_ACCOUNT_UID`) can never hold `photographer` or `admin`: the guard ignores such rows and the role store, `roles:grant`
   and `media:import` refuse it (incident 2026-11-04).

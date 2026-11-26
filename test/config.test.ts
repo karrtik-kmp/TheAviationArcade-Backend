@@ -55,6 +55,7 @@ describe("loadConfig", () => {
       bunny: undefined,
       apiDocs: true,
       dealFromItems: [],
+      mediaPendingCapPerAccount: 20,
     });
   });
 
@@ -180,6 +181,24 @@ describe("loadConfig", () => {
         const text = message(real("airplane_games_dev", { DEV_DEMO_WAIVER: bad }));
         expect(text, bad).toContain("DEV_DEMO_WAIVER");
         expect(text, bad).not.toContain(`"${bad}"`);
+      }
+    });
+  });
+
+  describe("MEDIA_PENDING_CAP_PER_ACCOUNT (docs/plans/self-serve-photographer.md S7)", () => {
+    it("defaults to 20, also when blank", () => {
+      expect(loadConfig(local).mediaPendingCapPerAccount).toBe(20);
+      expect(loadConfig({ ...local, MEDIA_PENDING_CAP_PER_ACCOUNT: "  " }).mediaPendingCapPerAccount).toBe(20);
+    });
+
+    it("accepts an integer from 1 to 1000", () => {
+      expect(loadConfig({ ...local, MEDIA_PENDING_CAP_PER_ACCOUNT: "1" }).mediaPendingCapPerAccount).toBe(1);
+      expect(loadConfig({ ...local, MEDIA_PENDING_CAP_PER_ACCOUNT: "1000" }).mediaPendingCapPerAccount).toBe(1000);
+    });
+
+    it("refuses zero, a negative, a fraction, text and too large, naming the variable", () => {
+      for (const bad of ["0", "-1", "2.5", "many", "1001"]) {
+        expect(message({ ...local, MEDIA_PENDING_CAP_PER_ACCOUNT: bad }), bad).toContain("MEDIA_PENDING_CAP_PER_ACCOUNT");
       }
     });
   });

@@ -165,13 +165,14 @@ describe("block: POST .../roles/photographer/block", () => {
     expect((await block(boss, both.principal, 1)).status).toBe(200);
   });
 
-  it("revoke, approve and reject of a blocked row are 409", async () => {
+  it("revoke of a blocked row is 409; the removed approve and reject routes are 404", async () => {
     const boss = await admin();
     const w = await who([["photographer", "blocked"]]);
-    for (const tail of ["photographer/approve", "photographer/reject", "photographer/revoke"]) {
-      const res = await post(boss, rolePath(w.principal, tail), { revision: 1 });
-      expect(res.status, tail).toBe(409);
-      expect(res.body.error.code).toBe("version_conflict");
+    const revoke = await post(boss, rolePath(w.principal, "photographer/revoke"), { revision: 1 });
+    expect(revoke.status).toBe(409);
+    expect(revoke.body.error.code).toBe("version_conflict");
+    for (const tail of ["photographer/approve", "photographer/reject"]) {
+      expect((await post(boss, rolePath(w.principal, tail), { revision: 1 })).status, tail).toBe(404);
     }
     expect(await row(w.principal, "photographer")).toMatchObject({ state: "blocked", revision: 1 });
   });
@@ -194,11 +195,11 @@ describe("block: POST .../roles/photographer/block", () => {
     expect(await row(w.principal, "admin")).toMatchObject({ state: "revoked", revision: 1, grant_email: null });
   });
 
-  it("a note with a control character is 400 on block, unblock, approve and grant, and writes nothing", async () => {
+  it("a note with a control character is 400 on block, unblock, revoke and grant, and writes nothing", async () => {
     const boss = await admin();
     const w = await who([["photographer", "pending"]]);
     for (const note of ["bad\u0000note", "tab\tnote", "line\nbreak"]) {
-      for (const tail of ["photographer/block", "photographer/unblock", "photographer/approve"]) {
+      for (const tail of ["photographer/block", "photographer/unblock", "photographer/revoke"]) {
         const res = await post(boss, rolePath(w.principal, tail), { revision: 1, note });
         expect(res.status, `${tail} ${JSON.stringify(note)}`).toBe(400);
         expect(res.body.error.code).toBe("invalid_request");
@@ -236,7 +237,7 @@ describe("unblock: POST .../roles/photographer/unblock", () => {
     expect((await unblock(boss, (await who()).principal, 1)).status).toBe(404);
   });
 
-  it("end to end: block, refused request, unblock, request again, approve; GET /v1/me/roles shows blocked", async () => {
+  it("end to end: activate, block, refused activation, unblock, activate again; GET /v1/me/roles shows blocked", async () => {
     const boss = await admin();
     const w = await who([], { email: "Flyer@Example.test" });
     expect((await post(w, "/v1/me/roles/photographer")).status).toBe(201);
@@ -253,15 +254,13 @@ describe("unblock: POST .../roles/photographer/unblock", () => {
     expect((await unblock(boss, w.principal, 2)).status).toBe(200);
     const again = await post(w, "/v1/me/roles/photographer");
     expect(again.status).toBe(201);
-    expect(again.body.role).toMatchObject({ state: "pending", revision: 4 });
-    const approved = await post(boss, rolePath(w.principal, "photographer/approve"), { revision: 4 });
-    expect(approved.status).toBe(200);
-    expect(approved.body.role).toMatchObject({ state: "active", revision: 5 });
+    expect(again.body.role).toMatchObject({ state: "active", revision: 4 });
+    expect((await auditRows(w.principal)).map((r) => r.action)).toEqual(["role_self_activate", "role_block", "role_unblock", "role_self_activate"]);
   });
 });
 
 describe("a blocked account", () => {
-  it("a request while blocked is 403 and changes nothing: request_email, revision and the audit count stay", async () => {
+  it("a self-activation while blocked is 403 and changes nothing: request_email, revision and the audit count stay", async () => {
     const w = await who([["photographer", "blocked"]], { email: "new@example.test" });
     await sql.query("UPDATE account_roles SET request_email = 'old@example.test' WHERE principal = $1 AND role = 'photographer'", [w.principal]);
     const audits = (await auditRows(w.principal)).length;
@@ -272,7 +271,7 @@ describe("a blocked account", () => {
     expect(await auditRows(w.principal)).toHaveLength(audits);
   });
 
-  it("a block landing between the request's unlocked read and the lock still refuses it (403, nothing written)", async () => {
+  it("a block landing between the call's unlocked read and the lock still refuses it (403, nothing written)", async () => {
     const w = await who([["photographer", "revoked"]], { email: "race@example.test" });
     const res = await withLockHeld(async (holder) => {
       const pending = fire(post(w, "/v1/me/roles/photographer"));
@@ -285,7 +284,7 @@ describe("a blocked account", () => {
     });
     expect(res.status).toBe(403);
     expect(await row(w.principal, "photographer")).toMatchObject({ state: "blocked", revision: 2, request_email: null });
-    expect(await auditRows(w.principal, "role_request")).toHaveLength(0);
+    expect(await auditRows(w.principal, "role_self_activate")).toHaveLength(0);
   });
 
   it("a blocked photographer is refused on POST /v1/admin/media (403) before the body is read", async () => {
@@ -339,43 +338,49 @@ describe("a blocked account", () => {
 });
 
 describe("races", () => {
-  it("block vs request on a revoked row, both orders: the lock serialises them and the loser changes nothing", async () => {
+  it("block vs self-activation from pending and from revoked, both orders: the lock serialises them, the loser changes nothing, one audit row for the winner", async () => {
     const boss = await admin();
-    // Block first: the request then finds `blocked`.
-    const a = await who([["photographer", "revoked"]], { email: "a@example.test" });
-    const blockFirst = await withLockHeld(async () => {
-      const blocking = fire(block(boss, a.principal, 1));
-      await waitQueued(1);
-      const requesting = fire(post(a, "/v1/me/roles/photographer"));
-      await waitQueued(2);
-      return () => Promise.all([blocking, requesting]);
-    });
-    expect(blockFirst.map((r) => r.status)).toEqual([200, 403]);
-    expect(await row(a.principal, "photographer")).toMatchObject({ state: "blocked", revision: 2 });
+    for (const from of ["pending", "revoked"] as const) {
+      // Block first: the self-activation then finds `blocked`.
+      const a = await who([["photographer", from]], { email: `a-${from}@example.test` });
+      const blockFirst = await withLockHeld(async () => {
+        const blocking = fire(block(boss, a.principal, 1));
+        await waitQueued(1);
+        const activating = fire(post(a, "/v1/me/roles/photographer"));
+        await waitQueued(2);
+        return () => Promise.all([blocking, activating]);
+      });
+      expect(blockFirst.map((r) => r.status), from).toEqual([200, 403]);
+      expect(await row(a.principal, "photographer"), from).toMatchObject({ state: "blocked", revision: 2 });
+      expect(await auditRows(a.principal, "role_block")).toHaveLength(1);
+      expect(await auditRows(a.principal, "role_self_activate")).toHaveLength(0);
 
-    // Request first: the block (at the revision it read) is then stale.
-    const b = await who([["photographer", "revoked"]], { email: "b@example.test" });
-    const requestFirst = await withLockHeld(async () => {
-      const requesting = fire(post(b, "/v1/me/roles/photographer"));
-      await waitQueued(1);
-      const blocking = fire(block(boss, b.principal, 1));
-      await waitQueued(2);
-      return () => Promise.all([requesting, blocking]);
-    });
-    expect(requestFirst.map((r) => r.status)).toEqual([201, 409]);
-    expect(await row(b.principal, "photographer")).toMatchObject({ state: "pending", revision: 2 });
+      // Self-activation first: the block (at the revision it read) is then stale.
+      const b = await who([["photographer", from]], { email: `b-${from}@example.test` });
+      const activateFirst = await withLockHeld(async () => {
+        const activating = fire(post(b, "/v1/me/roles/photographer"));
+        await waitQueued(1);
+        const blocking = fire(block(boss, b.principal, 1));
+        await waitQueued(2);
+        return () => Promise.all([activating, blocking]);
+      });
+      expect(activateFirst.map((r) => r.status), from).toEqual([201, 409]);
+      expect(await row(b.principal, "photographer"), from).toMatchObject({ state: "active", revision: 2 });
+      expect(await auditRows(b.principal, "role_self_activate")).toHaveLength(1);
+      expect(await auditRows(b.principal, "role_block")).toHaveLength(0);
+    }
   });
 
-  it("block vs approve at one revision: exactly one wins, the other is 409", async () => {
+  it("block vs revoke at one revision: exactly one wins, the other is 409", async () => {
     const boss = await admin();
     const second = await admin();
-    const w = await who([["photographer", "pending"]]);
-    const [x, y] = await Promise.all([block(boss, w.principal, 1), post(second, rolePath(w.principal, "photographer/approve"), { revision: 1 })]);
+    const w = await who([["photographer", "active"]]);
+    const [x, y] = await Promise.all([block(boss, w.principal, 1), post(second, rolePath(w.principal, "photographer/revoke"), { revision: 1 })]);
     expect([x.status, y.status].sort()).toEqual([200, 409]);
     const stored = await row(w.principal, "photographer");
     expect(stored.revision).toBe(2);
-    expect(["blocked", "active"]).toContain(stored.state);
-    expect((await auditRows(w.principal)).filter((r) => r.action === "role_block" || r.action === "role_approve")).toHaveLength(1);
+    expect(["blocked", "revoked"]).toContain(stored.state);
+    expect((await auditRows(w.principal)).filter((r) => r.action === "role_block" || r.action === "role_revoke")).toHaveLength(1);
   });
 
   it("two admins racing to block, and racing to unblock, the same row at one revision: one 200, one 409", async () => {
@@ -427,7 +432,7 @@ describe("typed admin email: grant", () => {
     expect(res.body.role).toMatchObject({ grantEmail: null, email: null, emailSource: null });
     const p = await who([], { email: "Photo@Example.test" });
     await post(p, "/v1/me/roles/photographer");
-    const approved = await post(boss, rolePath(p.principal, "photographer/approve"), { revision: 1 });
+    const approved = await post(boss, rolePath(p.principal, "photographer/revoke"), { revision: 1 });
     expect(approved.body.role).toMatchObject({ requestEmail: "Photo@Example.test", grantEmail: null, email: "Photo@Example.test", emailSource: "verified_at_request" });
   });
 
@@ -553,7 +558,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
     expect((await row(t.principal, "admin")).grant_email).toBe("keep@example.test");
   });
 
-  it("no audit row ever carries an email: grant, edit, request, block and unblock rows of these accounts", async () => {
+  it("no audit row ever carries an email: grant, edit, self-activation, block and unblock rows of these accounts", async () => {
     const boss = await admin();
     const t = await who([], { email: "Token.Email@Example.test" });
     await setFirebaseEmail(t.uid, "typed.one@example.test");
@@ -565,7 +570,7 @@ describe("typed admin email: PUT .../roles/admin/email", () => {
     await block(boss, t.principal, 1, "note");
     await unblock(boss, t.principal, 2);
     const all = await auditRows(t.principal);
-    expect(all.map((r) => r.action).sort()).toEqual(["role_block", "role_email_edit", "role_email_edit", "role_grant", "role_request", "role_revoke", "role_unblock"]);
+    expect(all.map((r) => r.action).sort()).toEqual(["role_block", "role_email_edit", "role_email_edit", "role_grant", "role_revoke", "role_self_activate", "role_unblock"]);
     for (const r of all) {
       const text = JSON.stringify(r).toLowerCase();
       expect(text, r.action).not.toContain("example.test");
@@ -587,7 +592,7 @@ describe("DELETE /v1/me clears both emails", () => {
     const audits = (await auditRows(t.principal)).length;
 
     expect((await request(server).delete("/v1/me").set(t.headers)).status).toBe(204);
-    expect(await row(t.principal, "photographer")).toMatchObject({ state: "pending", revision: 2, request_email: null, grant_email: null });
+    expect(await row(t.principal, "photographer")).toMatchObject({ state: "active", revision: 2, request_email: null, grant_email: null });
     expect(await row(t.principal, "admin")).toMatchObject({ state: "active", revision: 2, request_email: null, grant_email: null });
     expect(await auditRows(t.principal)).toHaveLength(audits);
     expect((await request(server).delete("/v1/me").set(t.headers)).status).toBe(204); // idempotent: nothing left to clear, so no second bump

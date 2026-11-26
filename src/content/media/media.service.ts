@@ -100,6 +100,13 @@ const mediaDeclined = () =>
 /** A concurrent request with the same (principal, Idempotency-Key) won the unique insert: roll this one back and replay. */
 class KeyAlreadyClaimed extends ExpectedRollback {}
 
+/** The cap refused inside the transaction: an expected rollback, so the pooled connection is kept (see withTransaction). */
+class CapRefused extends ExpectedRollback {
+  constructor(readonly error: ApiError) {
+    super(error.message);
+  }
+}
+
 export type MediaListView = { items: MediaItemView[]; nextCursor: string | null };
 export type MediaDetailView = { item: MediaItemView; versions: MediaVersionView[]; preview: ImageRefView };
 
@@ -282,12 +289,27 @@ export class MediaService {
     const claimed = await this.findClaim(this.database.db, principal, key);
     if (claimed) return this.replay(claimed, "create", null, sha256, includeOwner, statement, digest);
 
+    // S7: a cheap unlocked pre-check refuses an over-cap account before any blob write; the locked check below is authoritative.
+    if (!includeOwner) {
+      const refused = await this.overCap(this.database.db, principal);
+      if (refused) throw refused;
+    }
+
     const image = this.inspect(bytes, declaredType);
     await this.store(`content/photos/${sha256}.${EXTENSION[image.contentType]}`, bytes, image.contentType, sha256);
     const { contentType, width, height } = image;
 
     try {
       const created = await this.database.withTransaction(async (tx) => {
+        if (!includeOwner) {
+          // One lock per principal, held to commit, so two parallel uploads cannot both pass the count. A twin with this key that
+          // waited on the lock replays instead of being counted. A refusal here leaves at most the content-addressed blob already put
+          // (the same as any failed transaction after `store`); it is never referenced.
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`media-cap:${principal}`}, 0))`);
+          if (await this.findClaim(tx, principal, key)) throw new KeyAlreadyClaimed();
+          const refused = await this.overCap(tx, principal);
+          if (refused) throw new CapRefused(refused);
+        }
         const now = await databaseNow(tx);
         const [item] = await tx
           .insert(mediaItems)
@@ -335,6 +357,7 @@ export class MediaService {
       });
       return { item: created, replayed: false };
     } catch (error) {
+      if (error instanceof CapRefused) throw error.error;
       if (!(error instanceof KeyAlreadyClaimed)) throw error;
       // Lost the race: the winner's transaction has committed, so its key is visible now.
       const winner = await this.findClaim(this.database.db, principal, key);
@@ -922,6 +945,22 @@ export class MediaService {
       throw new ApiError(422, "media_invalid", `The bytes are a ${sniffed.contentType} image, not ${declaredType}.`);
     }
     return sniffed;
+  }
+
+  /** S7: 429 `submission_limit` when the owner already has the configured number of items that are unverified and not declined. */
+  /** The 429 `submission_limit` refusal when the owner already has the cap of items waiting for review, else null. */
+  private async overCap(db: Pick<Database, "select">, principal: string): Promise<ApiError | null> {
+    const cap = this.config.mediaPendingCapPerAccount;
+    const [row] = await db
+      .select({ waiting: sql<number>`count(*)::int` })
+      .from(mediaItems)
+      .where(and(eq(mediaItems.owner, principal), eq(mediaItems.state, "unverified"), sql`${mediaItems.reviewDecision} IS DISTINCT FROM 'declined'`));
+    if ((row?.waiting ?? 0) < cap) return null;
+    return new ApiError(
+      429,
+      "submission_limit",
+      `You have ${cap} photos waiting for review, which is the limit. Wait for some to be reviewed, then upload more. Nothing was uploaded.`,
+    );
   }
 
   private retryShortly() {

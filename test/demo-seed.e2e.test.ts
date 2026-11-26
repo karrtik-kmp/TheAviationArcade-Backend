@@ -413,6 +413,7 @@ describe("apply on synthetic folders", () => {
     const inputs = await loaded(await syntheticFolders());
     const report = await seed(inputs, "apply", OWNER, [...PHOTOGRAPHERS, P_REVOKED]);
     expect(line(report, P_REVOKED)).toMatchObject({ section: "role", status: "refused", detail: expect.stringContaining("an admin decided this") });
+    expect(line(report, P_REVOKED).detail).toContain("activate the role itself");
     expect((await sql.query("SELECT state FROM account_roles WHERE principal = $1 AND role = 'photographer'", [P_REVOKED])).rows[0].state).toBe("revoked");
     expect(await count("admin_audit", "WHERE action = 'role_grant' AND target = $1", [P_REVOKED])).toBe(0);
     expect(exitCodeOf(report)).toBe(4); // the rest was done

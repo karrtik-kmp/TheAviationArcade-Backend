@@ -83,25 +83,24 @@ describe("C4: account_roles.updated_at", () => {
     expect(row.updated_at).toBeInstanceOf(Date);
   });
 
-  it("every photographer transition moves it: request, reject, re-request, approve, revoke, block, unblock", async () => {
+  it("every photographer transition moves it: self-activate, revoke, self-activate again, block, unblock, self-activate", async () => {
     const p = freshRole();
     const email = "t@example.test";
-    expect((await store.requestPhotographer(p, email)).ok).toBe(true);
-    const requested = await roleRow(p, "photographer");
-    expect(requested.updated_at).toBeInstanceOf(Date);
+    const activated = await store.selfActivatePhotographer(p, email);
+    expect(activated.ok).toBe(true);
+    const first = await roleRow(p, "photographer");
+    expect(first.updated_at).toBeInstanceOf(Date);
 
-    let rev = requested.revision as number;
-    await movesUpdatedAt(p, "photographer", async () => expect((await store.decide(adminActor, p, "photographer", "reject", rev, null)).ok).toBe(true));
-    rev += 1;
-    await movesUpdatedAt(p, "photographer", async () => expect((await store.requestPhotographer(p, email)).ok).toBe(true));
-    rev += 1;
-    await movesUpdatedAt(p, "photographer", async () => expect((await store.decide(adminActor, p, "photographer", "approve", rev, null)).ok).toBe(true));
-    rev += 1;
+    let rev = first.revision as number;
     await movesUpdatedAt(p, "photographer", async () => expect((await store.decide(adminActor, p, "photographer", "revoke", rev, null)).ok).toBe(true));
+    rev += 1;
+    await movesUpdatedAt(p, "photographer", async () => expect((await store.selfActivatePhotographer(p, email)).ok).toBe(true));
     rev += 1;
     await movesUpdatedAt(p, "photographer", async () => expect((await store.setBlocked(adminActor, p, "block", rev, null)).ok).toBe(true));
     rev += 1;
     await movesUpdatedAt(p, "photographer", async () => expect((await store.setBlocked(adminActor, p, "unblock", rev, null)).ok).toBe(true));
+    rev += 1;
+    await movesUpdatedAt(p, "photographer", async () => expect((await store.selfActivatePhotographer(p, email)).ok).toBe(true));
   });
 
   it("an operator photographer grant moves it", async () => {
@@ -135,7 +134,7 @@ describe("C4: account_roles.updated_at", () => {
 
   it("clearEmails clears both emails, bumps revision and sets updated_at on each row that held one; a second call writes nothing", async () => {
     const p = freshRole();
-    await store.requestPhotographer(p, "req@example.test");
+    await store.selfActivatePhotographer(p, "req@example.test");
     await store.issuePlayer(p);
     expect((await store.grantAdmin(adminActor, p, null)).ok).toBe(true);
     const admin = await roleRow(p, "admin");

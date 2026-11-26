@@ -38,7 +38,7 @@ for (let i = 0; i < args.length; i += 1) {
   else if (arg.startsWith("--")) refuse(`Unknown option ${arg}. ${usage}.`);
   else positionals.push(arg);
 }
-if (role !== "admin") refuse(`Only the admin role can be granted here (got "${role}"); photographers go through request and approval.`);
+if (role !== "admin") refuse(`Only the admin role can be granted here (got "${role}"); photographers activate themselves through POST /v1/me/roles/photographer.`);
 if (positionals.length !== 1) refuse(`Give exactly one uid. ${usage}.`);
 
 // The server's own loader: same validation as the API (TLS rules, demo project in production, DATABASE_URL ssl params, CA cert).

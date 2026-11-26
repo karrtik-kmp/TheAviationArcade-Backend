@@ -83,6 +83,11 @@ export type AppConfig = {
    * only (releases cannot deliver yet); only `code-search` exists. Empty = off, the default everywhere, production included.
    */
   dealFromItems: readonly DealFromItemsModule[];
+  /**
+   * MEDIA_PENDING_CAP_PER_ACCOUNT (docs/plans/self-serve-photographer.md S7): the most items a non-admin owner may have that are
+   * `unverified` and not `declined`; a new upload over it is 429 `submission_limit`. Admins and media:import are exempt.
+   */
+  mediaPendingCapPerAccount: number;
 };
 
 export type DealFromItemsModule = "code-search";
@@ -293,6 +298,11 @@ const envSchema = z.object({
   DEMO_ACCOUNT_UID: optionalText,
   /** Dev database only: waive the photo licence name and the Plane of the Day factual source. Empty = unset; the only value is dev-demo. */
   DEV_DEMO_WAIVER: z.preprocess((value) => (typeof value === "string" && value.trim() === "" ? undefined : value), z.literal("dev-demo").optional()),
+  /** Most photos one non-admin account may have waiting for review (unverified, not declined). Blank = default 20. */
+  MEDIA_PENDING_CAP_PER_ACCOUNT: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.coerce.number().int().min(1).max(1000).default(20),
+  ),
 });
 
 /** Parse the environment once. Fails fast, naming the bad variables but never their values. */
@@ -335,6 +345,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     UGS_MIRROR_MIN_INTERVAL_SEC,
     DEMO_ACCOUNT_UID,
     DEV_DEMO_WAIVER,
+    MEDIA_PENDING_CAP_PER_ACCOUNT,
     DEAL_FROM_ITEMS,
     API_DOCS,
     FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE,
@@ -517,6 +528,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     devDemoWaiver: DEV_DEMO_WAIVER,
     apiDocs,
     dealFromItems,
+    mediaPendingCapPerAccount: MEDIA_PENDING_CAP_PER_ACCOUNT,
   };
 }
 

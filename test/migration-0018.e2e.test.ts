@@ -62,7 +62,8 @@ describe("migration 0018", () => {
         await pool.query(
           `INSERT INTO account_roles (principal, role, state, requested_at, decided_at, decided_by, request_email, revision)
            VALUES ($1, $2, $3, now(), $4, $5, $6, 3)`,
-          [principal, role, state, decided ? new Date() : null, decided ? "seed" : null, role === "photographer" ? `${state}@x.test` : null],
+          // The pending row carries no request_email, so 0031 (which activates pending rows WITH an email) leaves it as it is.
+          [principal, role, state, decided ? new Date() : null, decided ? "seed" : null, role === "photographer" && decided ? `${state}@x.test` : null],
         );
       }
       await pool.query(

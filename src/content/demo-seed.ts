@@ -347,11 +347,11 @@ async function steps(
           push({ section: "role", subject: principal, status: "would", detail: "would grant photographer" });
         } else if (row.state === "pending") {
           grantedInRun.add(principal);
-          push({ section: "role", subject: principal, status: "would", detail: "would approve the pending photographer request" });
+          push({ section: "role", subject: principal, status: "would", detail: "would activate the pending photographer request" });
         } else if (row.state === "active") {
           push({ section: "role", subject: principal, status: "unchanged", detail: "photographer already active" });
         } else {
-          push({ section: "role", subject: principal, status: "refused", detail: `photographer is ${row.state}: an admin decided this; decide again in the Admin` });
+          push({ section: "role", subject: principal, status: "refused", detail: `photographer is ${row.state}: an admin decided this; the account can activate the role itself again (after an unblock in the Admin if it is blocked)` });
         }
         continue;
       }

@@ -1,10 +1,21 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.31.0
+  version: 0.32.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.32.0 (self-serve photographer role, user ruling 2026-11-26; docs/plans/self-serve-photographer.md; BREAKING for the
+    website/Admin role desk only, no change for the game; migration 0031).** Any signed-in account with a verified email may submit
+    photos with no admin approval. `POST /v1/me/roles/photographer` now makes the role `active` at once (201 `changed: true`; 200
+    `changed: false` when already active); a `pending`, `rejected` or `revoked` row becomes `active` too. A `blocked` account, an
+    unverified email or the demo account is still 403 `forbidden`. **Removed:** `POST /v1/admin/accounts/{principal}/roles/photographer/approve`
+    and `.../reject` (now 404); revoke, block, unblock and `GET /v1/admin/role-requests` are unchanged (the pending queue stays empty).
+    New audit action `role_self_activate` (actor = the account; `system:self-serve-0031` for the migration, which activated every
+    pending request that still had its verified email). New error code `submission_limit`: `POST /v1/admin/media` (a new item) is 429
+    `submission_limit` when a non-admin owner already has `MEDIA_PENDING_CAP_PER_ACCOUNT` (default 20) items `unverified` and not
+    declined; nothing is written. Replays, new versions, edits and rights statements are not capped.
 
     **Changelog 0.31.0 (Code Search on the server; docs/plans/code-search.md; ADDITIVE for every client, no existing field changes; migration 0030).**
     `POST /v1/trips` (201 opened, 200 replayed) gains the OPTIONAL root field `codeSearchBoards`: ten boards in Unity's `CodeSearchBoardWire`
@@ -531,17 +542,17 @@ paths:
     post:
       tags: [roles]
       operationId: requestPhotographerRole
-      summary: Ask for the photographer role
+      summary: Turn on photo submission (the photographer role)
       description: |
         Any signed-in caller whose token has a verified email (otherwise 403). The role is fixed by the path: a body or query naming
-        a role, state or anything else is 400. No body. Creates no player row. A missing, `rejected` or `revoked` row becomes
-        `pending` (a rejected or revoked one at `revision` + 1); a `pending` or `active` row is never touched (200,
-        `changed: false`). An admin approves or rejects it. Audit action `role_request`, only when a row changed. An account
-        whose `photographer` row is `blocked` gets 403 `forbidden` and nothing is written (a block is per principal, never
-        matched by email).
+        a role, state or anything else is 400. No body. Creates no player row. Self-issued, no admin approval (Backend ADR-0002
+        follow-up 2026-11-26): a missing, `pending`, `rejected` or `revoked` row becomes `active` at `revision` + 1 (201,
+        `changed: true`, audit action `role_self_activate`, `decidedBy` = the caller); an `active` row is never touched (200,
+        `changed: false`). An account whose `photographer` row is `blocked` gets 403 `forbidden` and nothing is written (a block is
+        per principal, never matched by email); so does the shared demo account.
       responses:
         "200":
-          description: Already `pending` or `active`; nothing changed.
+          description: Already `active`; nothing changed.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -549,7 +560,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PhotographerRequestResult" }
         "201":
-          description: "The request was recorded (`state: pending`)."
+          description: "The role was turned on (`state: active`)."
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
@@ -1960,9 +1971,9 @@ paths:
       operationId: listRoleRequests
       summary: Role queue
       description: |
-        Admin only. `photographer` and `admin` rows in one `state` (default `pending`), oldest request first (then principal,
+        Admin only. `photographer` and `admin` rows in one `state` (default `pending`), oldest `requestedAt` first (the last request or self-activation; then principal,
         role). `limit` is 1 to 100 (default 50). `nextCursor` is opaque; pass it back as `cursor` for the next page, `null` on the
-        last. `?state=blocked` lists blocked photographer rows (by their original request time). Shows `requestEmail` for
+        last. `?state=blocked` lists blocked photographer rows. Shows `requestEmail` for
         photographer rows and `grantEmail` for admin rows (`email` and `emailSource` say which one an admin screen shows).
         Exempt from the client version gate.
       parameters:
@@ -1994,80 +2005,6 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /v1/admin/accounts/{principal}/roles/photographer/approve:
-    post:
-      tags: [roles, admin]
-      operationId: approvePhotographer
-      summary: Approve a photographer request
-      description: |
-        `pending` to `active`. Audit action `role_approve`.
-        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
-        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
-        is 409 `version_conflict` naming the current state and revision. Every change bumps `revision` and writes one audit row
-        (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the client version gate.
-      parameters:
-        - $ref: "#/components/parameters/AccountPrincipal"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
-      responses:
-        "200":
-          description: The row as it is now.
-          headers:
-            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
-            Cache-Control: { $ref: "#/components/headers/NoStore" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
-        "400": { $ref: "#/components/responses/InvalidRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/RoleRowNotFound" }
-        "409": { $ref: "#/components/responses/RoleVersionConflict" }
-        "413": { $ref: "#/components/responses/BodyRejected" }
-        "415": { $ref: "#/components/responses/BodyRejected" }
-        "429": { $ref: "#/components/responses/RateLimited" }
-        "503": { $ref: "#/components/responses/ServiceUnavailable" }
-
-  /v1/admin/accounts/{principal}/roles/photographer/reject:
-    post:
-      tags: [roles, admin]
-      operationId: rejectPhotographer
-      summary: Reject a photographer request
-      description: |
-        `pending` to `rejected`; the account may ask again. Audit action `role_reject`.
-        Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
-        written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
-        is 409 `version_conflict` naming the current state and revision. Every change bumps `revision` and writes one audit row
-        (`detail`: role, from and to state and revision, note). Answers 200, not 201. Exempt from the client version gate.
-      parameters:
-        - $ref: "#/components/parameters/AccountPrincipal"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RoleDecisionRequest" }
-      responses:
-        "200":
-          description: The row as it is now.
-          headers:
-            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
-            Cache-Control: { $ref: "#/components/headers/NoStore" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AdminRoleEnvelope" }
-        "400": { $ref: "#/components/responses/InvalidRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/RoleRowNotFound" }
-        "409": { $ref: "#/components/responses/RoleVersionConflict" }
-        "413": { $ref: "#/components/responses/BodyRejected" }
-        "415": { $ref: "#/components/responses/BodyRejected" }
-        "429": { $ref: "#/components/responses/RateLimited" }
-        "503": { $ref: "#/components/responses/ServiceUnavailable" }
-
   /v1/admin/accounts/{principal}/roles/photographer/block:
     post:
       tags: [roles, admin]
@@ -2075,9 +2012,9 @@ paths:
       summary: Block an account from the photographer role
       description: |
         A `pending`, `active`, `rejected` or `revoked` photographer row becomes `blocked`: a real, lasting state. A blocked
-        account cannot request the role again (403) and, if it was active, loses photographer access on the next request. Audit
+        account cannot turn the role on again (403) and, if it was active, loses photographer access on the next request. Audit
         action `role_block`. An account with an `active` admin row cannot be blocked (409; revoke admin first). Blocking a
-        `blocked` row is 409. Revoke, approve and reject of a `blocked` row are 409 too.
+        `blocked` row is 409. Revoke of a `blocked` row is 409 too.
         Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
         written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
         is 409 `version_conflict` naming the current state and revision; no photographer row is 404. Every change bumps `revision`
@@ -2115,8 +2052,8 @@ paths:
       operationId: unblockPhotographer
       summary: Lift a photographer block
       description: |
-        `blocked` becomes `revoked`: the account may request the role again. A `revoked` row after an unblock does not mean the
-        account was ever approved. Audit action `role_unblock`. Unblocking a row that is not `blocked` is 409.
+        `blocked` becomes `revoked`: the account may turn the role on again itself (`POST /v1/me/roles/photographer`). Audit
+        action `role_unblock`. Unblocking a row that is not `blocked` is 409.
         Admin only. The acting admin is re-checked under the role lock, so an admin revoked a moment ago gets 403 and nothing is
         written. Fenced by `revision` (the value the caller read): a different `revision`, or a state the move does not start from,
         is 409 `version_conflict` naming the current state and revision; no photographer row is 404. Every change bumps `revision`
@@ -3148,7 +3085,10 @@ paths:
       operationId: uploadMedia
       summary: Upload a new image
       description: |
-        Needs an ACTIVE `photographer` role (an `admin` also qualifies) and a verified email; 403 `forbidden` otherwise. The
+        Needs an ACTIVE `photographer` role (an `admin` also qualifies) and a verified email; 403 `forbidden` otherwise (any verified
+        account can turn the role on with `POST /v1/me/roles/photographer`). A non-admin owner may have at most
+        `MEDIA_PENDING_CAP_PER_ACCOUNT` (default 20) items `unverified` and not declined; a new upload over it is 429
+        `submission_limit` (checked after the `Idempotency-Key` replay and before anything is stored). The
         body is the raw image (Content-Type `image/jpeg` or `image/png`, at most 5 MB), not JSON. The 5 MB limit applies only after the
         token and the role are verified; another Content-Type is 415, a larger body 413 (both `invalid_request`).
 
@@ -3204,7 +3144,19 @@ paths:
         "413": { $ref: "#/components/responses/MediaBodyTooLarge" }
         "415": { $ref: "#/components/responses/MediaUnsupportedType" }
         "422": { $ref: "#/components/responses/MediaUploadRefused" }
-        "429": { $ref: "#/components/responses/RateLimited" }
+        "429":
+          description: |
+            `rate_limited`: over the request limit (wait `Retry-After` seconds). `submission_limit`: the caller (not an admin) already
+            has `MEDIA_PENDING_CAP_PER_ACCOUNT` (default 20) photos waiting for review (`unverified` and not declined); nothing was
+            stored. Upload again once an admin has reviewed some.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+          x-error-codes: [rate_limited, submission_limit]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/MediaStorageUnavailable" }
     get:
       tags: [media, admin]
@@ -4855,6 +4807,7 @@ components:
                 - purchase_invalid
                 - purchase_revoked
                 - purchase_owned_by_other
+                - submission_limit
             message:
               type: string
               description: For logs, not for display or logic.
@@ -4883,8 +4836,8 @@ components:
         action:
           type: string
           description: One of the audit actions; the list is pinned to `ADMIN_AUDIT_ACTIONS` by a test.
-          enum: [content_import, content_publish, content_edit, content_retire, content_restore, role_request, role_approve, role_reject, role_grant, role_revoke, role_block, role_unblock, role_email_edit, media_upload, media_version, media_edit, media_publish, media_withdraw, content_media_link, media_rights, media_import, store_product_create, store_product_edit, store_product_retire, store_product_restore, editorial_create, editorial_save, content_prepare, release_create, release_activate, release_restore, media_review]
-        actor: { type: string, description: "The stored actor string as-is: `firebase:<project>:<uid>`, `operator:<os user>` or `system:signup`. Never an email or a name." }
+          enum: [content_import, content_publish, content_edit, content_retire, content_restore, role_request, role_approve, role_reject, role_grant, role_revoke, role_block, role_unblock, role_email_edit, media_upload, media_version, media_edit, media_publish, media_withdraw, content_media_link, media_rights, media_import, store_product_create, store_product_edit, store_product_retire, store_product_restore, editorial_create, editorial_save, content_prepare, release_create, release_activate, release_restore, media_review, role_self_activate]
+        actor: { type: string, description: "The stored actor string as-is: `firebase:<project>:<uid>`, `operator:<os user>`, `system:signup` or `system:self-serve-0031`. Never an email or a name." }
         detail:
           type: object
           additionalProperties: true
@@ -4933,7 +4886,7 @@ components:
       required: [role, changed]
       properties:
         role: { $ref: "#/components/schemas/OwnRole" }
-        changed: { type: boolean, description: "False when the row was already pending or active and nothing was written." }
+        changed: { type: boolean, description: "False when the row was already active and nothing was written." }
     RoleDecisionRequest:
       type: object
       additionalProperties: false
@@ -4965,7 +4918,7 @@ components:
         revision: { type: integer, minimum: 1 }
         requestedAt: { type: string, format: date-time }
         decidedAt: { type: [string, "null"], format: date-time }
-        decidedBy: { type: [string, "null"], description: "The deciding admin's principal, `operator:<os user>` or `system:signup`. Null while pending." }
+        decidedBy: { type: [string, "null"], description: "The deciding admin's principal, the account itself for a self-activation, `operator:<os user>`, `system:signup` or `system:self-serve-0031`. Null while pending." }
         note: { type: [string, "null"], description: "The note of the latest decision (the audit rows keep the history)." }
         requestEmail: { type: [string, "null"], description: "The verified email the account had when it asked for `photographer`; admins only, never used for authorisation. Null for other roles, and cleared by `DELETE /v1/me`." }
         grantEmail: { type: [string, "null"], description: "The email TYPED by the admin who granted `admin` (or by the operator command), or later corrected: unverified, display only, never used for authorisation. Null for other roles and when none was given; cleared by `DELETE /v1/me`." }

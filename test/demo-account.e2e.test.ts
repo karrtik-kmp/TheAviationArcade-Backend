@@ -141,7 +141,7 @@ describe("the role store refuses the demo account and writes nothing", () => {
     expect(await auditCount(demo)).toBe(0);
   });
 
-  it("photographer request by the demo account: 403, no row; a pending row seeded behind the API cannot be approved", async () => {
+  it("photographer self-activation by the demo account: 403, no row; a pending row seeded behind the API is not activated either", async () => {
     await resetDemo();
     const req = await request(server).post("/v1/me/roles/photographer").set(bearer(demoUid));
     expect(req.status).toBe(403);
@@ -151,23 +151,22 @@ describe("the role store refuses the demo account and writes nothing", () => {
     expect(await auditCount(demo)).toBe(0);
 
     await seedRole(sql, demo, "photographer", "pending");
-    const a = await admin();
-    const approve = await request(server).post(`/v1/admin/accounts/${enc(demo)}/roles/photographer/approve`).set(bearer(a.uid)).send({ revision: 1 });
-    expect(approve.status).toBe(403);
-    expect(approve.body.error.code).toBe("forbidden");
+    const again = await request(server).post("/v1/me/roles/photographer").set(bearer(demoUid));
+    expect(again.status).toBe(403);
+    expect(again.body.error.code).toBe("forbidden");
     expect(await roleRows(demo)).toEqual([{ role: "photographer", state: "pending", revision: 1 }]);
     expect(await auditCount(demo)).toBe(0);
   });
 
-  it("cleanup stays possible: reject, revoke and block of demo rows work", async () => {
+  it("cleanup stays possible: block and revoke of demo rows work", async () => {
     await resetDemo();
     const a = await admin();
     const h = bearer(a.uid);
     const base = `/v1/admin/accounts/${enc(demo)}/roles`;
 
     await seedRole(sql, demo, "photographer", "pending");
-    expect((await request(server).post(`${base}/photographer/reject`).set(h).send({ revision: 1 })).status).toBe(200);
-    expect(await roleRows(demo)).toEqual([{ role: "photographer", state: "rejected", revision: 2 }]);
+    expect((await request(server).post(`${base}/photographer/block`).set(h).send({ revision: 1 })).status).toBe(200);
+    expect(await roleRows(demo)).toEqual([{ role: "photographer", state: "blocked", revision: 2 }]);
 
     await seedRole(sql, demo, "admin", "active"); // a stray row, as in the incident
     const revoked = await request(server).post(`${base}/admin/revoke`).set(h).send({ revision: 1 });

@@ -500,8 +500,11 @@ describe("POST /v1/admin/media: losing the key race", () => {
       const bytes = png(80 + n, 80, 1);
       expect((await race(photographer, newKey(), bytes, bytes)).res.status).toBe(200);
     }
-    for (let n = 0; n < 12; n += 1) expect((await upload(photographer.auth, png(100 + n, 90, 1))).status).toBe(201);
-    expect(await itemsOf(photographer.principal)).toBe(24);
+    // A second account for the plain uploads: one account may hold at most 20 unverified items (S7 cap), and 12 + 12 would pass it.
+    const other = await actor("photographer");
+    for (let n = 0; n < 12; n += 1) expect((await upload(other.auth, png(100 + n, 90, 1))).status).toBe(201);
+    expect(await itemsOf(photographer.principal)).toBe(12);
+    expect(await itemsOf(other.principal)).toBe(12);
   });
 });
 

@@ -218,6 +218,13 @@
       "when": 1795598828603,
       "tag": "0030_code_search_decks",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1795667032998,
+      "tag": "0031_self_serve_photographer",
+      "breakpoints": true
     }
   ]
 }

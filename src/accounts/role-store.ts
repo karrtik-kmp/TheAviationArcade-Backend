@@ -15,7 +15,7 @@ import { accountRoles, adminAudit } from "../db/schema.js";
 
 /**
  * The role store (Backend ADR-0002, plan R-b): every write to `account_roles`. One transaction-scoped advisory lock is taken
- * by EVERY role change (request, approve, reject, grant, revoke, signup `player`, the operator command), so the "at least one
+ * by EVERY role change (self-activation, grant, revoke, block, signup `player`, the operator command), so the "at least one
  * active admin" rule and the acting admin's own standing are checked against the same state the write then changes. Each
  * transition is a conditional UPDATE fenced by state AND revision, bumps `revision`, stamps `decided_at` from the database
  * clock, and writes one `admin_audit` row in the same transaction. A refusal or a no-op writes nothing.
@@ -32,21 +32,17 @@ const actorName = (actor: RoleActor): string => (actor.kind === "admin" ? actor.
 /** The signup actor of the `player` role. */
 export const SIGNUP_ACTOR = "system:signup";
 
-/** The decisions an admin can make about a photographer request or an active role. */
-export type Decision = "approve" | "reject" | "revoke";
+/** The decisions an admin can make about an active role. Photographer is self-activated (0.32.0), so there is no approve or reject. */
+export type Decision = "revoke";
 
 type Transition = { from: RoleState; to: RoleState; action: AdminAuditAction };
 
 const TRANSITIONS: Record<Decision, Transition> = {
-  approve: { from: "pending", to: "active", action: "role_approve" },
-  reject: { from: "pending", to: "rejected", action: "role_reject" },
   revoke: { from: "active", to: "revoked", action: "role_revoke" },
 };
 
-/** Roles each decision may name: photographer for all three, `admin` for revoke only; `player` is never decided (user, 2026-11-03). */
+/** Roles a revoke may name: `photographer` and `admin`; `player` is never decided (user, 2026-11-03). */
 const DECIDABLE: Record<Decision, readonly AccountRole[]> = {
-  approve: ["photographer"],
-  reject: ["photographer"],
   revoke: ["photographer", "admin"],
 };
 
@@ -247,51 +243,48 @@ export class RoleStore {
   }
 
   /**
-   * The account asks for `photographer`, storing its verified token `email` for admins (never for authorisation). Only a missing, `rejected` or `revoked` row becomes `pending` (a new row, or the
-   * same row at revision + 1 with the previous decision cleared); a pending or active row is never touched: that is a no-op
-   * returning the current row. Audit `role_request` (actor = the account) only when a row changed.
+   * The account turns on `photographer` for itself (ADR-0002 follow-up 2026-11-26), storing its verified token `email` for admins
+   * (never for authorisation). From no row, `pending`, `rejected` or `revoked` the row becomes `active` (a new row, or the same row at
+   * revision + 1, `decided_by` = the account itself, note cleared). An `active` row is a no-op returning it (`changed: false`, nothing
+   * written, no global lock); a `blocked` row is refused 403 whatever else happens. Audit `role_self_activate` (actor = the account)
+   * only when a row changed.
    */
-  async requestPhotographer(principal: string, email: string): Promise<RequestOutcome> {
+  async selfActivatePhotographer(principal: string, email: string): Promise<RequestOutcome> {
     // The shared demo account never holds a staff role: refused before any read or write.
     if (isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
-    // Unlocked pre-read, as in issuePlayer: pending and active rows only leave under an admin decision, so a stale read of
-    // either is harmless and a repeat request never takes the global lock.
-    // A `blocked` row is deliberately NOT short-circuited: it is refused under the lock, where a block landing between this
-    // read and the lock is seen too.
+    // Unlocked pre-read, as in issuePlayer: an active row only leaves under an admin decision, so a stale read of it is harmless and
+    // a repeat call never takes the global lock. A stale `blocked` read is refused too (a block is only lifted by an admin).
     const existing = await readRow(this.database.db, principal, "photographer");
-    if (existing && (existing.state === "pending" || existing.state === "active")) return { ok: true, row: existing, changed: false };
+    if (existing?.state === "active") return { ok: true, row: existing, changed: false };
+    if (existing?.state === "blocked") return { ok: false, error: blockedError() };
     return this.database.withTransaction(async (tx): Promise<RequestOutcome> => {
       await lockAccountRoles(tx);
       const at = await databaseNow(tx);
       const before = await readRow(tx, principal, "photographer");
       if (before?.state === "blocked") return { ok: false, error: blockedError() };
+      if (before?.state === "active") return { ok: true, row: before, changed: false };
       const [row] = await tx
         .insert(accountRoles)
-        .values({ principal, role: "photographer", state: "pending", requestedAt: at, requestEmail: email, updatedAt: at })
+        .values({ principal, role: "photographer", state: "active", requestedAt: at, decidedAt: at, decidedBy: principal, requestEmail: email, updatedAt: at })
         .onConflictDoUpdate({
           target: [accountRoles.principal, accountRoles.role],
           set: {
-            state: "pending",
+            state: "active",
             requestedAt: at,
             requestEmail: email,
             updatedAt: at,
-            decidedAt: null,
-            decidedBy: null,
+            decidedAt: at,
+            decidedBy: principal,
             note: null,
             revision: sql`${accountRoles.revision} + 1`,
           },
-          setWhere: inArray(accountRoles.state, ["rejected", "revoked"]),
+          setWhere: inArray(accountRoles.state, ["pending", "rejected", "revoked"]),
         })
         .returning();
-      if (!row) {
-        const current = await readRow(tx, principal, "photographer");
-        if (!current) throw new Error("Role row missing after a no-op request.");
-        if (current.state === "blocked") return { ok: false, error: blockedError() }; // defensive: the lock makes this unreachable
-        return { ok: true, row: current, changed: false };
-      }
+      if (!row) throw new Error("Photographer self-activation was not stored."); // the lock and the state checks above make this unreachable
       await audit(tx, {
         actor: principal,
-        action: "role_request",
+        action: "role_self_activate",
         principal,
         role: "photographer",
         from: before ? snapshot(before) : null,
@@ -304,7 +297,7 @@ export class RoleStore {
   }
 
   /**
-   * Approve, reject or revoke `role` of `principal` at `revision`. The legal transitions only (see TRANSITIONS); anything else,
+   * Revoke `role` of `principal` at `revision`. The legal transitions only (see TRANSITIONS); anything else,
    * a stale revision included, is 409 `version_conflict` naming the current state and revision; no row is 404. Revoking the
    * last active admin is refused. The acting admin is re-checked under the lock (403 `forbidden`, nothing written).
    */
@@ -313,8 +306,6 @@ export class RoleStore {
     if (!DECIDABLE[decision].includes(role)) {
       return { ok: false, error: new ApiError(404, "not_found", "No such endpoint.") };
     }
-    // Approving would make the shared demo account a photographer. Reject, revoke and (via setBlocked) block stay allowed for cleanup.
-    if (decision === "approve" && isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
     return this.database.withTransaction(async (tx): Promise<DecisionOutcome> => {
       await lockAccountRoles(tx);
       if (!(await actorStillAdmin(tx, actor))) {
@@ -323,7 +314,7 @@ export class RoleStore {
       const at = await databaseNow(tx);
       const current = await readRow(tx, principal, role);
       if (!current) return { ok: false, error: notFound(role) };
-      const wanted = `it cannot be ${decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "revoked"} (needs ${transition.from} at revision ${revision})`;
+      const wanted = `it cannot be revoked (needs ${transition.from} at revision ${revision})`;
       if (current.state !== transition.from || current.revision !== revision) {
         return { ok: false, error: conflict(role, current, wanted) };
       }
@@ -445,14 +436,15 @@ export class RoleStore {
 
   /**
    * Operator-only grant of `photographer` by Firebase UID (user ruling 2026-11-16, ADR-0002 follow-up; the dev demo seed). An
-   * `admin` actor is refused 403: the API keeps request + approve. Only from NO row (inserted `active`) or `pending` (becomes
-   * `active`, revision + 1, `requestEmail` kept). `active` is a no-op (`changed: false`, nothing written). `rejected`, `revoked`
-   * and `blocked` mean an admin decided this: 409, nothing written, so a re-run never overturns a staff decision. The demo
+   * `admin` actor is refused 403: accounts activate themselves through the API (0.32.0). Only from NO row (inserted `active`) or
+   * `pending` (becomes `active`, revision + 1, `requestEmail` kept). `active` is a no-op (`changed: false`, nothing written).
+   * `rejected`, `revoked` and `blocked` mean an admin decided this: 409, nothing written, so a re-run never overturns a staff
+   * decision (the account itself can self-activate again, after an unblock if it is blocked). The demo
    * principal is refused before any read. One `role_grant` audit row per change, actor `operator:<id>`.
    */
   async grantPhotographer(actor: RoleActor, principal: string, note: string | null): Promise<GrantOutcome> {
     if (actor.kind !== "operator") {
-      return { ok: false, error: new ApiError(403, "forbidden", "Only the operator command grants photographer directly; admins approve a request. Nothing was changed.") };
+      return { ok: false, error: new ApiError(403, "forbidden", "Only the operator command grants photographer directly; an account activates the role itself. Nothing was changed.") };
     }
     if (isDemoPrincipal(this.config, principal)) return { ok: false, error: demoAccountError() };
     return this.database.withTransaction(async (tx): Promise<GrantOutcome> => {
@@ -467,7 +459,7 @@ export class RoleStore {
           error: new ApiError(
             409,
             "version_conflict",
-            `The photographer role is ${before.state} at revision ${before.revision}: an admin decided this, so it must be decided again in the Admin. Nothing was changed.`,
+            `The photographer role is ${before.state} at revision ${before.revision}: an admin decided this, so the operator command leaves it alone; the account can activate the role itself again (after an unblock in the Admin if it is blocked). Nothing was changed.`,
           ),
         };
       }
@@ -499,7 +491,7 @@ export class RoleStore {
 
   /**
    * Block (a `pending`, `active`, `rejected` or `revoked` photographer row becomes `blocked`) or unblock (`blocked` becomes
-   * `revoked`, so the account may request again; it was not necessarily ever approved). Photographer only and never through
+   * `revoked`, so the account may self-activate again). Photographer only and never through
    * `decide`, so the last-admin invariant cannot be touched. An account with an ACTIVE admin row cannot be blocked (409:
    * revoke admin first). Same lock, actor re-check, state-and-revision fence, 404/409 rules and audit shape as `decide`.
    */

@@ -32,7 +32,7 @@ Fixed constraints:
 2. **Roles and how each is issued:**
    - `player`: issued at signup (`PUT /v1/me`).
    - `photographer`: the account **requests** it through its own registration route and gets a `pending` row, which an
-     admin approves or rejects.
+     admin approves or rejects. *(Amended 2026-11-26: self-issued, no approval; see the last follow-up.)*
    - `admin`: never self-registered. It is granted by another admin, or, for the very first admin, by a one-time
      operator command (`npm run roles:grant -- <uid> admin`). The command is audited like every grant.
 3. **Admin includes every photographer permission.**
@@ -41,7 +41,7 @@ Fixed constraints:
    `email_verified === true` in the token.
 5. **`STAFF_EMAILS` is retired.** The routes that used `@StaffOnly` now require the `admin` role. No environment list
    grants anything.
-6. **Every role change is audited**, with who, what, when and the before and after state: request, approve, reject,
+6. **Every role change is audited**, with who, what, when and the before and after state: request, approve, reject (and, from 2026-11-26, `role_self_activate`),
    grant and revoke.
 7. **Photographers only see and change their own uploads.** Publishing, withdrawing, attaching images to content items
    and deciding roles are admin-only.
@@ -105,7 +105,7 @@ Fixed constraints:
 ## Consequences
 
 - **Easier:**
-  - Onboarding a photographer is an approval click, not a deploy.
+  - Onboarding a photographer is an approval click, not a deploy. *(Superseded 2026-11-26: no approval click; see the last follow-up.)*
   - Revocation is immediate.
   - The audit trail is complete.
 - **Harder:**
@@ -140,7 +140,7 @@ Source: `../website/docs/intent/hosting-dev-demo.md` and the brief `../website/d
 
 The operator seed (`npm run demo:seed-content`, being built) may make the staff photographer that owns the demo photos, by
 Firebase UID, through `RoleStore.grantPhotographer`. Like `roles:grant`, it is an operator path (audited `role_grant`, actor
-`operator:<id>`), not an API route: an `admin` actor is refused, and admins keep request + approve.
+`operator:<id>`), not an API route: an `admin` actor is refused, and admins keep request + approve (since 2026-11-26: the account self-activates; see the last follow-up).
 
 - Only from no row (inserted `active`) or `pending` (becomes `active`). An `active` row is a no-op, with no audit row.
 - It never overturns a decision: `rejected`, `revoked` and `blocked` rows are refused (409) and must be decided again in the Admin.
@@ -185,3 +185,30 @@ handle to null, consent to false), acting on a privacy or agreement section 8 re
 decided on actual changes against the stored value, so sending stored values back is a no-op. It extends the owner-only rulings
 above (file uploads and rights statements, 2026-11-04): an admin still edits licences, descriptions and titles, publishes and
 withdraws, but never writes another person's name. `PUT .../rights` (the v2 move) stays owner only. Roles are unchanged.
+
+## Follow-up ruling (user, 2026-11-26, photo submission needs no approval)
+
+The user: "for the photo submission section can we make it so they just have to register on the site, no special
+request/approval process to submit photos". Plan [self-serve-photographer](../plans/self-serve-photographer.md), migration 0031,
+API 0.32.0. Brief to the website and Admin: `../docs/briefs/self-serve-photographer.md`.
+
+- **Decision 2 amended: `photographer` is self-issued.** `POST /v1/me/roles/photographer` makes the role `active` at once for a
+  token with a verified email (from no row, `pending`, `rejected` or `revoked`); already active is a no-op. No admin approves it;
+  the approve and reject routes are removed. `pending` stays a legal state for old rows, but nothing new creates it.
+- **"A role the client chooses never grants privileges" is narrowed in so many words.** `photographer` is issued by the server,
+  to a verified token, at that one fixed route with no body, and never to the demo account. `admin` is never self-issued (decision
+  2 unchanged for admin). A role the client names anywhere else (the website's sign-in role picker included) still grants nothing.
+- **Only a block stops an account.** Revoke removes the role, but the account may turn it back on itself. Block (R-d) is the
+  ban: a blocked account's self-activation is 403 and writes nothing; unblock goes to `revoked`, after which the account may
+  self-activate. Blocks stay per principal; a new Firebase account can submit (accepted by the user for now).
+- **Decision 6:** the audited actions gain `role_self_activate` (actor and target = the account). `role_request`,
+  `role_approve` and `role_reject` stay for historical rows. Migration 0031 activated every pending request that still had its
+  verified email, audited with actor `system:self-serve-0031`.
+- **Upload cap.** A non-admin account may have at most 20 photos waiting for review (`unverified` and not declined); a new upload
+  over the cap is 429 `submission_limit` (`MEDIA_PENDING_CAP_PER_ACCOUNT`, default 20).
+- **Verified email stays required** (decision 4 unchanged), so Google sign-ins can submit at once and email/password accounts
+  after clicking Firebase's verification link.
+- **The 2026-11-16 operator grant** keeps its refusals of `rejected`, `revoked` and `blocked` rows. "Decided again in the Admin"
+  now means: the account self-activates (after an admin unblock, if blocked).
+- **Consequences, revised:** onboarding a photographer is no longer an approval click; it is the account's own verified sign-in.
+  Admin publishing (decision 7) remains the gate on anything becoming public.

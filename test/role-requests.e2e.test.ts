@@ -15,7 +15,8 @@ import { frozenDelete } from "./frozen-cleanup.js";
 import { clearRoles, demoPrincipal, seedRole } from "./roles-helpers.js";
 import { emulatorToken } from "./tokens.js";
 
-// Backend ADR-0002 / plan R-b: role registration and admin decisions against the real Nest app and the real test database.
+// Backend ADR-0002 / plan R-b (amended 2026-11-26, docs/plans/self-serve-photographer.md): photographer self-activation and admin decisions
+// against the real Nest app and the real test database.
 // Every test uses fresh uids. Tests of the "at least one admin" rule isolate the shared admin rows (see onlyAdmins).
 
 const spec: any = parse(readFileSync(new URL("../docs/openapi.yaml", import.meta.url), "utf8"));
@@ -25,6 +26,18 @@ const check = (schema: string, value: unknown) => {
   const validate = ajv.compile({ $ref: `spec#/components/schemas/${schema}` });
   expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
 };
+
+/** A minimal valid 64x48 PNG (signature, IHDR, IEND); the server checks the signature and dimensions only. */
+function tinyPng(): Buffer {
+  const be32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const unique = [...randomUUID().replace(/-/g, "")].map((c) => c.charCodeAt(0));
+  return Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ...be32(13), 0x49, 0x48, 0x44, 0x52, ...be32(64), ...be32(48), 8, 2, 0, 0, 0, 0, 0, 0, 0,
+    ...be32(unique.length), 0x74, 0x45, 0x58, 0x74, ...unique, 0, 0, 0, 0,
+    ...be32(0), 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ]);
+}
 
 let app: NestExpressApplication;
 let server: ReturnType<NestExpressApplication["getHttpServer"]>;
@@ -80,7 +93,7 @@ async function auditRows(target: string, action?: string) {
   ).rows as any[];
 }
 
-/** Request the photographer role as `w`; returns the row's revision. */
+/** Turn on the photographer role as `w`; returns the row's revision. */
 async function requestRole(w: Who): Promise<number> {
   const res = await post(w, "/v1/me/roles/photographer");
   expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
@@ -100,25 +113,29 @@ async function onlyAdmins(keep: string[], fn: () => Promise<void>): Promise<void
   }
 }
 
-describe("request: POST /v1/me/roles/photographer", () => {
-  it("records a pending request with the token email, no player row, one audit row; asking again is a 200 no-op", async () => {
+describe("self-activation: POST /v1/me/roles/photographer", () => {
+  it("activates at once with the token email, no player row, one audit row; asking again is a 200 no-op", async () => {
     const w = await who([], { email: "Pilot@Example.test" });
     const first = await post(w, "/v1/me/roles/photographer");
     expect(first.status).toBe(201);
     check("PhotographerRequestResult", first.body);
-    expect(first.body).toMatchObject({ changed: true, role: { role: "photographer", state: "pending", revision: 1, decidedAt: null } });
+    expect(first.body).toMatchObject({ changed: true, role: { role: "photographer", state: "active", revision: 1 } });
+    expect(typeof first.body.role.decidedAt).toBe("string");
     const stored = await row(w.principal, "photographer");
-    expect(stored).toMatchObject({ state: "pending", decided_by: null, request_email: "Pilot@Example.test" });
+    expect(stored).toMatchObject({ state: "active", decided_by: w.principal, note: null, request_email: "Pilot@Example.test" });
+    expect(stored.decided_at).not.toBeNull();
     expect((await sql.query("SELECT 1 FROM players WHERE id = $1", [w.principal])).rowCount).toBe(0);
-    const audits = await auditRows(w.principal, "role_request");
+    const audits = await auditRows(w.principal, "role_self_activate");
     expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ actor: w.principal });
-    expect(audits[0].detail).toEqual({ role: "photographer", from: null, to: { state: "pending", revision: 1 }, note: null });
+    expect(audits[0]).toMatchObject({ actor: w.principal, target: w.principal });
+    expect(audits[0].detail).toEqual({ role: "photographer", from: null, to: { state: "active", revision: 1 }, note: null });
+    expect(JSON.stringify(audits[0]).toLowerCase()).not.toContain("example.test");
 
     const again = await post(w, "/v1/me/roles/photographer");
     expect(again.status).toBe(200);
-    expect(again.body).toMatchObject({ changed: false, role: { state: "pending", revision: 1 } });
-    expect(await auditRows(w.principal, "role_request")).toHaveLength(1);
+    expect(again.body).toMatchObject({ changed: false, role: { state: "active", revision: 1 } });
+    expect(await auditRows(w.principal, "role_self_activate")).toHaveLength(1);
+    expect(await row(w.principal, "photographer")).toMatchObject({ revision: 1, updated_at: stored.updated_at });
   });
 
   it("needs a verified email: unverified or no email claim is 403 and writes nothing", async () => {
@@ -128,6 +145,7 @@ describe("request: POST /v1/me/roles/photographer", () => {
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe("forbidden");
       expect(await row(w.principal, "photographer")).toBeUndefined();
+      expect(await auditRows(w.principal)).toHaveLength(0);
     }
   });
 
@@ -147,51 +165,78 @@ describe("request: POST /v1/me/roles/photographer", () => {
     expect((await post(w, "/v1/me/roles/photographer", {})).status).toBe(201);
   });
 
-  it("a request never touches an active or pending row", async () => {
+  it("an active row is never touched: 200, same revision, decided_by and updated_at, no audit row", async () => {
     const w = await who([["photographer", "active"]]);
     const before = await row(w.principal, "photographer");
     const res = await post(w, "/v1/me/roles/photographer");
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ changed: false, role: { state: "active", revision: before.revision } });
-    expect(await row(w.principal, "photographer")).toMatchObject({ state: "active", revision: before.revision, decided_by: before.decided_by });
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "active", revision: before.revision, decided_by: before.decided_by, updated_at: before.updated_at });
     expect(await auditRows(w.principal)).toHaveLength(0);
   });
 
-  it("a rejected or revoked row can be requested again: pending at revision + 1, decision cleared, new email", async () => {
-    for (const state of ["rejected", "revoked"] as const) {
+  it("a pending, rejected or revoked row becomes active at revision + 1: decision replaced, note cleared, new email, updated_at moved", async () => {
+    for (const state of ["pending", "rejected", "revoked"] as const) {
       const w = await who([["photographer", state]], { email: "new@example.test" });
+      await sql.query("UPDATE account_roles SET note = 'old note', request_email = 'old@example.test' WHERE principal = $1 AND role = 'photographer'", [w.principal]);
+      const before = await row(w.principal, "photographer");
+      await new Promise((done) => setTimeout(done, 5));
       const res = await post(w, "/v1/me/roles/photographer");
-      expect(res.status).toBe(201);
-      expect(res.body.role).toMatchObject({ state: "pending", revision: 2, decidedAt: null });
-      expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", decided_at: null, decided_by: null, note: null, request_email: "new@example.test" });
-      expect((await auditRows(w.principal, "role_request"))[0].detail).toEqual({
-        role: "photographer", from: { state, revision: 1 }, to: { state: "pending", revision: 2 }, note: null,
-      });
+      expect(res.status, state).toBe(201);
+      expect(res.body.role).toMatchObject({ state: "active", revision: 2 });
+      expect(res.body.role.decidedAt).not.toBeNull();
+      const stored = await row(w.principal, "photographer");
+      expect(stored).toMatchObject({ state: "active", decided_by: w.principal, note: null, request_email: "new@example.test", revision: 2 });
+      expect(stored.decided_at).not.toBeNull();
+      expect(stored.updated_at.getTime()).toBeGreaterThan(before.updated_at.getTime());
+      const audits = await auditRows(w.principal, "role_self_activate");
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ actor: w.principal, target: w.principal });
+      expect(audits[0].detail).toEqual({ role: "photographer", from: { state, revision: 1 }, to: { state: "active", revision: 2 }, note: null });
     }
   });
 
-  it("a repeat request for a pending or active row does not wait on the role lock; a first request does", async () => {
-    const pendingW = await who([["photographer", "pending"]]);
+  it("a blocked account is refused 403 and nothing is written", async () => {
+    const w = await who([["photographer", "blocked"]], { email: "b@example.test" });
+    const before = await row(w.principal, "photographer");
+    const res = await post(w, "/v1/me/roles/photographer");
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("forbidden");
+    expect(await row(w.principal, "photographer")).toEqual(before);
+    expect(await auditRows(w.principal)).toHaveLength(0);
+  });
+
+  it("a repeat call for an active or blocked row does not wait on the role lock; a first call and a pending row do", async () => {
     const activeW = await who([["photographer", "active"]]);
+    const blockedW = await who([["photographer", "blocked"]]);
+    const pendingW = await who([["photographer", "pending"]]);
     const first = await who();
     const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await holder.connect();
     try {
       await holder.query("SELECT pg_advisory_lock(hashtextextended('account-roles', 0))");
-      for (const w of [pendingW, activeW]) {
+      for (const [w, status] of [[activeW, 200], [blockedW, 403]] as const) {
         const res = await Promise.race([post(w, "/v1/me/roles/photographer").then((r) => r), new Promise<null>((done) => setTimeout(() => done(null), 3000))]);
-        expect(res, "the no-op request waited on the lock").not.toBeNull();
-        expect(res!.status).toBe(200);
-        expect(res!.body.changed).toBe(false);
+        expect(res, "the no-op call waited on the lock").not.toBeNull();
+        expect(res!.status).toBe(status);
       }
-      const waiting = post(first, "/v1/me/roles/photographer").then((r) => r);
-      const early = await Promise.race([waiting, new Promise<null>((done) => setTimeout(() => done(null), 500))]);
-      expect(early, "a first request must wait for the lock").toBeNull();
+      const waiting = [first, pendingW].map((w) => post(w, "/v1/me/roles/photographer").then((r) => r));
+      const early = await Promise.race([Promise.all(waiting), new Promise<null>((done) => setTimeout(() => done(null), 500))]);
+      expect(early, "a first call and a pending row must wait for the lock").toBeNull();
       await holder.query("SELECT pg_advisory_unlock(hashtextextended('account-roles', 0))");
-      expect((await waiting).status).toBe(201);
+      expect((await Promise.all(waiting)).map((r) => r.status)).toEqual([201, 201]);
     } finally {
       await holder.end();
     }
+  });
+
+  it("two parallel self-activations from revoked: one 201, one 200, one audit row, revision + 1 once", async () => {
+    const w = await who([["photographer", "revoked"]]);
+    const results = await Promise.all([post(w, "/v1/me/roles/photographer").then((r) => r), post(w, "/v1/me/roles/photographer").then((r) => r)]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 201]);
+    expect(results.map((r) => r.body.changed).sort()).toEqual([false, true]);
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "active", revision: 2 });
+    expect(await auditRows(w.principal, "role_self_activate")).toHaveLength(1);
   });
 
   it("an astral-plane email of 2 code points (4 UTF-16 units) is 403, not a 500", async () => {
@@ -217,71 +262,86 @@ describe("request: POST /v1/me/roles/photographer", () => {
     expect((await request(server).get("/v1/me/roles").set(other.headers)).body).toEqual({ roles: [] });
   });
 
-  it("a pending photographer row grants nothing", async () => {
+  it("a pending photographer row grants nothing until the account activates it", async () => {
     const w = await who([["photographer", "pending"]]);
     expect((await request(server).get("/v1/admin/me").set(w.headers)).status).toBe(403);
     expect((await request(server).get("/v1/admin/role-requests").set(w.headers)).status).toBe(403);
-    expect((await post(w, rolePath(w.principal, "photographer/approve"), { revision: 1 })).status).toBe(403);
     expect((await row(w.principal, "photographer")).state).toBe("pending");
+  });
+
+  it("a fresh verified account activates the role and then uploads, with no admin step", async () => {
+    const w = await who([], { email: "fresh@example.test" });
+    expect((await post(w, "/v1/me/roles/photographer")).status).toBe(201);
+    const res = await request(server)
+      .post("/v1/admin/media")
+      .set(w.headers)
+      .set("Content-Type", "image/png")
+      .set("Idempotency-Key", randomUUID())
+      .set("X-Rights-Statement", "v1_own")
+      .send(tinyPng());
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ state: "unverified" });
+    const owned = "(SELECT id FROM media_items WHERE owner = $1)";
+    await sql.query(`DELETE FROM media_upload_keys WHERE media_id IN ${owned}`, [w.principal]);
+    await frozenDelete(sql, "media_versions", `media_id IN ${owned}`, [w.principal]);
+    await sql.query("DELETE FROM media_items WHERE owner = $1", [w.principal]);
   });
 });
 
-describe("decisions: approve, reject, revoke", () => {
-  it("approve: pending to active, fenced by revision, audited with the before and after", async () => {
+describe("decisions: revoke, and the removed approve and reject routes", () => {
+  it("approve and reject are gone: 404 for an admin whatever the body, and nothing changes", async () => {
     const boss = await admin();
-    const w = await who();
-    const revision = await requestRole(w);
-    const res = await post(boss, rolePath(w.principal, "photographer/approve"), { revision, note: "portfolio ok" });
-    expect(res.status).toBe(200);
-    check("AdminRoleEnvelope", res.body);
-    expect(res.body.role).toMatchObject({ principal: w.principal, role: "photographer", state: "active", revision: 2, decidedBy: boss.principal, note: "portfolio ok" });
-    const audits = await auditRows(w.principal, "role_approve");
-    expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ actor: boss.principal, target: w.principal });
-    expect(audits[0].detail).toEqual({ role: "photographer", from: { state: "pending", revision: 1 }, to: { state: "active", revision: 2 }, note: "portfolio ok" });
-    // The decision timestamp is a database instant, not before the request.
-    expect(new Date(res.body.role.decidedAt).getTime()).toBeGreaterThanOrEqual(new Date(res.body.role.requestedAt).getTime());
-    // An approved photographer is not an admin.
-    expect((await request(server).get("/v1/admin/me").set(w.headers)).status).toBe(403);
-    expect((await request(server).get("/v1/me/roles").set(w.headers)).body.roles[0]).toMatchObject({ role: "photographer", state: "active", revision: 2 });
+    const w = await who([["photographer", "pending"]]);
+    for (const tail of ["photographer/approve", "photographer/reject"]) {
+      for (const body of [{ revision: 1 }, {}, { revision: 1, note: "x" }]) {
+        const res = await post(boss, rolePath(w.principal, tail), body);
+        expect(res.status, `${tail} ${JSON.stringify(body)}`).toBe(404);
+      }
+    }
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", revision: 1 });
+    expect(await auditRows(w.principal)).toHaveLength(0);
   });
 
-  it("reject: pending to rejected; a stale-revision approve after reject and re-request is 409 and writes nothing", async () => {
+  it("revoke then self-activate works; block then self-activate is 403; unblock then self-activate works", async () => {
     const boss = await admin();
-    const w = await who();
-    const first = await requestRole(w);
-    expect((await post(boss, rolePath(w.principal, "photographer/reject"), { revision: first })).body.role).toMatchObject({ state: "rejected", revision: 2 });
-    const second = await requestRole(w); // pending again at revision 3
-    expect(second).toBe(3);
-    const auditsBefore = (await auditRows(w.principal)).length;
-    const stale = await post(boss, rolePath(w.principal, "photographer/approve"), { revision: first });
-    expect(stale.status).toBe(409);
-    expect(stale.body.error.code).toBe("version_conflict");
-    expect(stale.body.error.message).toContain("pending at revision 3");
-    expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", revision: 3 });
-    expect(await auditRows(w.principal)).toHaveLength(auditsBefore);
-    expect((await post(boss, rolePath(w.principal, "photographer/approve"), { revision: second })).status).toBe(200);
+    const w = await who([], { email: "cycle@example.test" });
+    expect(await requestRole(w)).toBe(1);
+    const revoked = await post(boss, rolePath(w.principal, "photographer/revoke"), { revision: 1 });
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.role).toMatchObject({ state: "revoked", revision: 2 });
+    const back = await post(w, "/v1/me/roles/photographer");
+    expect(back.status).toBe(201);
+    expect(back.body.role).toMatchObject({ state: "active", revision: 3 });
+
+    expect((await post(boss, rolePath(w.principal, "photographer/block"), { revision: 3 })).status).toBe(200);
+    const refused = await post(w, "/v1/me/roles/photographer");
+    expect(refused.status).toBe(403);
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "blocked", revision: 4 });
+
+    expect((await post(boss, rolePath(w.principal, "photographer/unblock"), { revision: 4 })).status).toBe(200);
+    const again = await post(w, "/v1/me/roles/photographer");
+    expect(again.status).toBe(201);
+    expect(again.body.role).toMatchObject({ state: "active", revision: 6 });
+    expect((await auditRows(w.principal)).map((r) => r.action)).toEqual([
+      "role_self_activate", "role_revoke", "role_self_activate", "role_block", "role_unblock", "role_self_activate",
+    ]);
   });
 
-  it("only the legal transitions exist: everything else is 409, a missing row is 404", async () => {
+  it("only revoke exists: anything but an active row is 409, a missing row is 404", async () => {
     const boss = await admin();
     const active = await who([["photographer", "active"]]);
     const pending = await who([["photographer", "pending"]]);
     const rejected = await who([["photographer", "rejected"]]);
     const none = await who();
-    const approve = (t: Who, revision = 1) => post(boss, rolePath(t.principal, "photographer/approve"), { revision });
-    const reject = (t: Who, revision = 1) => post(boss, rolePath(t.principal, "photographer/reject"), { revision });
     const revoke = (t: Who, role = "photographer", revision = 1) => post(boss, rolePath(t.principal, `${role}/revoke`), { revision });
-    for (const res of [await approve(active), await reject(active), await revoke(pending), await approve(rejected), await revoke(rejected)]) {
+    for (const res of [await revoke(pending), await revoke(rejected), await revoke(active, "photographer", 2)]) {
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expect(res.body.error.code).toBe("version_conflict");
     }
-    for (const res of [await approve(none), await reject(none), await revoke(none), await revoke(none, "admin")]) {
+    for (const res of [await revoke(none), await revoke(none, "admin")]) {
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("not_found");
     }
-    // A wrong revision on a legal move is 409 too.
-    expect((await approve(pending, 2)).status).toBe(409);
     // `player` is never decided; unknown roles are not routes.
     const player = await who([["player", "active"]]);
     for (const role of ["player", "root"]) expect((await revoke(player, role)).status).toBe(404);
@@ -308,8 +368,8 @@ describe("decisions: approve, reject, revoke", () => {
 
   it("bodies are strict: extra fields, a missing or bad revision, a long note are 400; query parameters too", async () => {
     const boss = await admin();
-    const w = await who([["photographer", "pending"]]);
-    const path = rolePath(w.principal, "photographer/approve");
+    const w = await who([["photographer", "active"]]);
+    const path = rolePath(w.principal, "photographer/revoke");
     for (const body of [{}, { revision: 1, role: "admin" }, { revision: 1, state: "active" }, { revision: 0 }, { revision: 1.5 }, { revision: "1" }, { revision: 1, note: "x".repeat(501) }, { revision: 1, note: "" }]) {
       const res = await post(boss, path, body);
       expect(res.status, JSON.stringify(body).slice(0, 60)).toBe(400);
@@ -317,7 +377,7 @@ describe("decisions: approve, reject, revoke", () => {
     }
     expect((await post(boss, `${path}?role=admin`, { revision: 1 })).status).toBe(400);
     expect((await post(boss, rolePath(w.principal, "admin/grant"), { revision: 1 })).status).toBe(400);
-    expect((await row(w.principal, "photographer")).state).toBe("pending");
+    expect((await row(w.principal, "photographer")).state).toBe("active");
   });
 
   it("a caller without an active admin (verified, photographer, unverified admin) is 403 on every route", async () => {
@@ -328,9 +388,8 @@ describe("decisions: approve, reject, revoke", () => {
     for (const caller of [plain, phot, unverified]) {
       const calls = [
         request(server).get("/v1/admin/role-requests").set(caller.headers),
-        post(caller, rolePath(w.principal, "photographer/approve"), { revision: 1 }),
-        post(caller, rolePath(w.principal, "photographer/reject"), { revision: 1 }),
         post(caller, rolePath(w.principal, "photographer/revoke"), { revision: 1 }),
+        post(caller, rolePath(w.principal, "photographer/block"), { revision: 1 }),
         post(caller, rolePath(w.principal, "admin/grant"), {}),
       ];
       for (const res of await Promise.all(calls)) expect(res.status).toBe(403);
@@ -353,7 +412,7 @@ describe("decisions: approve, reject, revoke", () => {
       `firebase:demo-airplane-games:${"x".repeat(129)}`,
     ];
     for (const target of bad) {
-      for (const tail of ["photographer/approve", "photographer/revoke", "admin/grant"]) {
+      for (const tail of ["photographer/block", "photographer/revoke", "admin/grant"]) {
         const res = await post(boss, rolePath(target, tail), tail === "admin/grant" ? {} : { revision: 1 });
         expect(res.status, `${JSON.stringify(target)} ${tail}`).toBe(400);
         expect(res.body.error.code).toBe("invalid_request");
@@ -440,13 +499,13 @@ describe("at least one active admin, always", () => {
 
   it("an admin revoked while their decision waits for the lock cannot commit it: 403, nothing written", async () => {
     const a = await admin();
-    const w = await who([["photographer", "pending"]]);
+    const w = await who([["photographer", "active"]]);
     const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await holder.connect();
     try {
       await holder.query("BEGIN");
       await holder.query("SELECT pg_advisory_xact_lock(hashtextextended('account-roles', 0))");
-      const pending = post(a, rolePath(w.principal, "photographer/approve"), { revision: 1 }).then((r) => r);
+      const pending = post(a, rolePath(w.principal, "photographer/revoke"), { revision: 1 }).then((r) => r);
       await new Promise((done) => setTimeout(done, 400)); // the request has passed the guard and waits on the lock
       await holder.query("UPDATE account_roles SET state = 'revoked' WHERE principal = $1 AND role = 'admin'", [a.principal]);
       await holder.query("COMMIT");
@@ -456,18 +515,19 @@ describe("at least one active admin, always", () => {
     } finally {
       await holder.end();
     }
-    expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", revision: 1 });
-    expect(await auditRows(w.principal, "role_approve")).toHaveLength(0);
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "active", revision: 1 });
+    expect(await auditRows(w.principal, "role_revoke")).toHaveLength(0);
   });
 });
 
 describe("queue: GET /v1/admin/role-requests", () => {
-  it("lists pending requests oldest first with the requester email, pages with an opaque cursor, and rejects bad input", async () => {
+  it("lists pending rows oldest first with the requester email, pages with an opaque cursor, and rejects bad input", async () => {
     const boss = await admin();
     const mine: Who[] = [];
+    // Nothing creates a pending row any more (0.32.0); these are old rows, seeded directly.
     for (let i = 0; i < 3; i += 1) {
-      const w = await who([], { email: `queue-${i}@example.test` });
-      await requestRole(w);
+      const w = await who([["photographer", "pending"]], { email: `queue-${i}@example.test` });
+      await sql.query("UPDATE account_roles SET request_email = $2 WHERE principal = $1 AND role = 'photographer'", [w.principal, `queue-${i}@example.test`]);
       mine.push(w);
       await new Promise((done) => setTimeout(done, 5));
     }
@@ -507,10 +567,12 @@ describe("queue: GET /v1/admin/role-requests", () => {
       expect(res.status, query).toBe(400);
       expect(res.body.error.code).toBe("invalid_request");
     }
-    // A decided request leaves the pending queue and shows under its new state.
-    await post(boss, rolePath(mine[0]!.principal, "photographer/approve"), { revision: 1 });
+    // A pending row the account then activates leaves the pending queue and shows under active.
+    expect((await post(mine[0]!, "/v1/me/roles/photographer")).status).toBe(201);
     const active = await request(server).get("/v1/admin/role-requests?state=active&limit=100").set(boss.headers);
     expect(active.body.requests.some((r: any) => r.principal === mine[0]!.principal)).toBe(true);
+    const pending = await request(server).get("/v1/admin/role-requests?limit=100").set(boss.headers);
+    expect(pending.body.requests.some((r: any) => r.principal === mine[0]!.principal)).toBe(false);
   });
 });
 
@@ -542,7 +604,7 @@ describe("player role at sign-in: PUT /v1/me", () => {
     expect(await auditRows(w.principal, "role_grant")).toHaveLength(grants);
   });
 
-  it("DELETE /v1/me clears the requester email and keeps role rows and audit rows", async () => {
+  it("DELETE /v1/me clears the account's email and keeps role rows and audit rows", async () => {
     const w = await who([], { email: "gone@example.test" });
     await request(server).put("/v1/me").set(w.headers);
     await requestRole(w);
@@ -552,7 +614,7 @@ describe("player role at sign-in: PUT /v1/me", () => {
     const before = await row(w.principal, "photographer");
     expect((await request(server).delete("/v1/me").set(w.headers)).status).toBe(204);
     expect((await sql.query("SELECT 1 FROM players WHERE id = $1", [w.principal])).rowCount).toBe(0);
-    expect(await row(w.principal, "photographer")).toMatchObject({ state: "pending", revision: 2, request_email: null });
+    expect(await row(w.principal, "photographer")).toMatchObject({ state: "active", revision: 2, request_email: null });
     // Changed by design (0027, C4): clearing an email bumps the revision and updated_at, so an editor holding the old row is fenced.
     expect((await row(w.principal, "photographer")).updated_at.getTime()).toBeGreaterThan(before.updated_at.getTime());
     expect(await row(w.principal, "player")).toMatchObject({ state: "active" });

@@ -41,6 +41,7 @@ export const ADMIN_AUDIT_ACTIONS = [
   "release_activate",
   "release_restore",
   "media_review",
+  "role_self_activate",
 ] as const;
 export const TRIP_STATUSES = ["open", "completed", "abandoned"] as const;
 /** Formats of a stored Trip deck (`trip_decks.format`, migration 0030). Only Code Search deals one: `grid.v1` (docs/plans/code-search.md section G). */

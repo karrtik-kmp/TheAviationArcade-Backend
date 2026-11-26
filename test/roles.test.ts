@@ -19,7 +19,7 @@ describe("role enums", () => {
   });
 
   it("audits every role change", () => {
-    for (const action of ["role_request", "role_approve", "role_reject", "role_grant", "role_revoke", "role_block", "role_unblock", "role_email_edit"]) {
+    for (const action of ["role_request", "role_approve", "role_reject", "role_self_activate", "role_grant", "role_revoke", "role_block", "role_unblock", "role_email_edit"]) {
       expect(ADMIN_AUDIT_ACTIONS).toContain(action);
     }
   });
