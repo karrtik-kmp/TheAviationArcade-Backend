@@ -695,7 +695,8 @@ when Google sign-in is offered; the project rule currently allows only email/pas
   - `PUT /v1/me` with no token, and with an unsigned token: 401;
   - `GET /v1/public/plane-of-the-day` 200.
 
-  The server started with guests on, so the `TRUST_PROXY` start-up rule passed. **Not yet recorded:**
+  Whether the flag is on is not visible without a guest token, so that is unverified; if it is on, the healthy start shows the
+  `TRUST_PROXY` start-up rule passed. **Not yet recorded:**
   - the server-side numbers of runbook steps 1 and 5 (migrations 33 → 34, the backup file);
   - the Firebase console Anonymous provider;
   - a real guest token's `PUT /v1/me` (201, `profile.guest: true`) and the claims before and after a link (step 8, plan G1
