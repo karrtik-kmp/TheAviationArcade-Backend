@@ -470,8 +470,12 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
 ## Design rules
 
 - **Identity.** The principal is `firebase:<projectId>:<uid>`, taken only from a verified token. Email
-  and password and Google are the only accepted providers. No email, display name or Callsign is
-  stored here; the Callsign/game-identity contract is a later, separate decision.
+  and password and Google are the accounts; Firebase Anonymous guests are players too when
+  `FIREBASE_ANONYMOUS_PLAYERS=true` (local and hosted dev; 0.34.0, [plans/guest-callsign.md](docs/plans/guest-callsign.md)).
+  A guest links an account in the app and keeps its uid, so nothing moves; guests cannot buy or submit photos
+  (403 `account_required`), and new guests are limited per IP (`GUEST_CREATE_PER_IP_PER_HOUR`, default 20; needs
+  `TRUST_PROXY` behind a proxy). No email or display name is stored here. The Callsign (a public name tag, not a
+  credential) is stored on the player: unique ignoring case, freed when the player is deleted.
 - **The server is authoritative for the economy.** The client reports only what happened in a Round.
   Perfect Streak, First Class Pass and Pleasure Cruise are decided server-side, and request bodies are
   strict, so extra fields are rejected.

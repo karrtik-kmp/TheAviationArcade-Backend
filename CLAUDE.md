@@ -14,7 +14,8 @@ sign-off.
 ## Rules that must not be broken
 
 - Principal = `firebase:<projectId>:<uid>` from a verified token only. Providers: email/password and
-  Google; the game signs in through Unity Auth's `oidc-firebase` provider, so the backend still verifies Firebase tokens.
+  Google, plus Firebase Anonymous guests behind `FIREBASE_ANONYMOUS_PLAYERS` (user ruling 2026-11-26; guests cannot buy:
+  `@AccountRequired()`); the game signs in through Unity Auth's `oidc-firebase` provider, so the backend still verifies Firebase tokens.
   Never trust a client-supplied ID, role, name or email.
 - Privileges come only from the backend `account_roles` table (docs/adr/ADR-0002): `player` at signup, `photographer`
   self-issued by the server to a verified account at `POST /v1/me/roles/photographer` (no approval; only a block stops it;

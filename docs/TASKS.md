@@ -247,6 +247,12 @@ cleanup on a hosted database now needs `DISABLE TRIGGER` (also sign-off).
 |---|---|---|---|
 | 6.9 | FAQ as a site content document: `faq` (`faq.v1`) in `content_documents`/`content_drafts` outside the game manifest, staff PATCH by operations (1 to 25, all or nothing), publish needs one entry, public `GET /v1/public/faq` (ETag, 304, 404 before the first publish), dev to live copy by `GET .../faq/export` and `POST .../faq/import` (own 3 MB body limit, plan F10), migration 0032 widens the name CHECKs (API 0.33.0) [WB-FAQ-01, -02, -04, -05] | **Done (local)** 2026-11-26; on hosted dev (0.33.0 deploy, 2026-11-26), not prod; nothing published yet | Client request (Josh, 2026-11-26). Plan [plans/faq-cms.md](plans/faq-cms.md) (approved; cross-repo plan `../website/docs/briefs/faq-cms-plan.md`). Slice A code and tests; Slice B contract, docs and brief [../docs/briefs/website-faq-contract.md](../../docs/briefs/website-faq-contract.md) (website + Admin). Additive for the game. Open for the user: who edits (Admin only for now) and the public rate-limit position (plan F9). Independent review: ship after fixes (no-op PATCH and import 400/422 wording, export 404 headers, `anyDocument` counted faq rows, position bounds, U+2028/U+2029 and bidi controls, demo-account and parser-scope tests, openapi FAQ coverage), all fixed. Verification 2026-11-26, PowerShell in `H:\Work\TheAviationArcade\Backend`, Postgres up: `npm run typecheck` clean; `npm test` 57 files / 1390 passed; `npm run test:e2e` 67 files / 1498 passed (incl. faq, migration-0032 on a seeded 0031 database, openapi and schema parity); `npm run build` OK; `npm run db:generate` no changes; `npm run contracts:write` no diff. Local only; not deployed. |
 
+### Guests and Callsigns wave (2026-11-26)
+
+| # | Job | State | Notes |
+|---|---|---|---|
+| 6.10 | Firebase Anonymous guests as players (`FIREBASE_ANONYMOUS_PLAYERS`; a token naming `anonymous` with an `email`/`google.com` identity is a linked account whatever the flag), `players.anonymous_since` cleared on the first account `PUT /v1/me`, per-IP guest creation limit (`GUEST_CREATE_PER_IP_PER_HOUR`, IPv6 /64, needs `TRUST_PROXY` in production), 403 `account_required` on purchases, the Miles shop and the photographer role; server-stored Callsigns (`GET /v1/callsigns/{value}/availability`, `POST /v1/callsigns/claim`, `profile` on `PUT /v1/me`), migration 0033 (API 0.34.0) [MG-PRF-02, OI-07, OI-16 in part] | **Done (local)** 2026-11-26, branch `claude/determined-murdock-2cfda7`; not deployed | User rulings 2026-11-26 (Unity ADR-0006 amendment). Brief from the Unity S4/S5 orchestrator. Plan [plans/guest-callsign.md](plans/guest-callsign.md) (plan gate: senior-lead and backend-expert, approve with changes, folded in). ASSUMPTIONs (tests named so): 20 new guests per IP per hour; the Miles hint pack counts as buying; reserved Callsigns (staff names, PILOT, GUEST); first claim and first change free, then 30 days. UGS (`PUT /v1/me/ugs-link`) unchanged: the external id is the Firebase uid, which the link keeps (inferred from the UGS OIDC docs, not tested live). Verification in the verification log. |
+
 ### Follow-ups (2026-11-04)
 
 - **`not_owner` error code** (website request): 403 for a non-owner admin on owner-only media routes, apart from
@@ -276,7 +282,7 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 | SRS ID | Requirement (server side) | State | Evidence / next |
 |---|---|---|---|
 | MG-PRF-01 | Profile after sign-in | Done | `PUT /v1/me` handshake (201 first call, then 200), principal from a verified token; Phase 2. App sign-in is G |
-| MG-PRF-02 | Guest users | Out of scope (OI-07 decided) | No anonymous auth (Unity ADR-0006 D1); nothing to build |
+| MG-PRF-02 | Guest users | Done (local), API 0.34.0 | User rulings 2026-11-26 reverse OI-07 / Unity ADR-0006 D1: Firebase Anonymous guests are players behind `FIREBASE_ANONYMOUS_PLAYERS` (6.10) |
 | MG-PRF-03 | Avatar and profile customization | Backlog, blocked by OI-15 | No avatar catalog supplied; no profile field in `players` |
 | MG-PRF-04 | Statistics and career overview | Done (route) | `GET /v1/me/logbook` (5.K, API 0.10.0). SRS says planned; the app only has to call it |
 | MG-PRF-05 | Rank, SP, progress to next rank | Done | `GET /v1/me/progress` (`nextRank`, `src/players/progress-view.ts:43`) |
@@ -388,7 +394,7 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 | SRS ID | Requirement | State | Evidence / next |
 |---|---|---|---|
 | MG-THM-03 | Premium themes by Pass or Miles | Backlog, open under OI-12 (payment) and OI-15 (price) | A catalog kind and an unlock ledger; nothing built |
-| MG-LDB-01, 02, 05 | Global and rank leaderboards, showcase | Blocked by OI-16 | Deferred (Phase 7) until the Callsign / identity contract and the metric are decided |
+| MG-LDB-01, 02, 05 | Global and rank leaderboards, showcase | Blocked by OI-16 (metric) | Callsigns are stored from 0.34.0 (6.10); the metric and the showcase are still undecided |
 | MG-LDB-03, 04 | Player statistics, career progress | Done (routes) | `GET /v1/me/logbook`, `GET /v1/me/progress` |
 | SH-12 | Leaderboard storage and reads | Blocked by OI-16 | Phase 7 |
 
@@ -679,6 +685,26 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-11-26 (local, guests and Callsigns wave 6.10, API 0.34.0, branch `claude/determined-murdock-2cfda7` in a worktree as the
+  Unity orchestrator's brief asked). Run in PowerShell in the worktree, Postgres up (docker compose, port 5433), the worktree's
+  `node_modules` a junction to the main checkout's:
+  - `npm run typecheck` clean.
+  - `npm test`: 58 files, 1401 passed.
+  - `npm run test:e2e`: 69 of 70 files, 1489 passed. The 70th, `field-awards-import`, cannot find the client sheet from the
+    worktree's depth; it passed on its own (23 tests) with the sheet copied to `docs/` for the run and removed afterwards. The
+    e2e run covers `guests`, `callsigns`, `migration-0033` (over a database seeded at 0032), `openapi` parity, `api`
+    (route count 75) and schema parity.
+  - `npm run build` OK. `npm run db:generate`: no changes. `npm run contracts:write`: no diff.
+  - Plan gate: senior-lead and backend-expert, approve with changes. Independent review: ship after fixes, all fixed:
+    - typecheck errors in two e2e tests;
+    - a taken Callsign used to destroy the pooled connection, and is now read first and rolled back as an ExpectedRollback;
+    - a unit test of the conflict mapping;
+    - the `identities.email` ASSUMPTION is in the deploy note.
+  - Not verified:
+    - real Firebase Anonymous or linked tokens (only emulator-shaped tokens);
+    - UGS with an anonymous token;
+    - hosted dev.
 
 - 2026-11-26 (hosted dev, deploy to API 0.33.0, user sign-off; run by the user as root on the server, plan
   [dev-deploy-0.32](plans/dev-deploy-0.32.md) taken with its "plain deploy" option, so `main` incl. 0.33.0 / migration 0032):

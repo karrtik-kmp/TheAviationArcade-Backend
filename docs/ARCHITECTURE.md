@@ -585,3 +585,23 @@ The database refuses change on these (trigger pattern of migration 0024: a BEFOR
 Unity native SIWA with nonce → Firebase `apple.com` credential → normal Firebase ID token. Backend
 change: add `apple.com` to the allowed providers + tests. Never merge accounts by email server-side.
 Account deletion must revoke the Apple token.
+
+## Guests and Callsigns (0.34.0, docs/plans/guest-callsign.md)
+
+User rulings 2026-11-26: every launch starts as a Firebase Anonymous guest, which is a real player; linking keeps the uid, so the
+principal never changes and nothing is merged or moved (a link clash is refused in the app). The guest test lives in
+`src/auth/firebase.ts` (`guestFor`): `anonymous` with no `email`/`google.com` identity = guest (needs `FIREBASE_ANONYMOUS_PLAYERS`);
+`anonymous` WITH one of them = linked account, whatever the flag, because Firebase documents no promise that `sign_in_provider`
+changes on `linkWithCredential`. Guests cannot buy or submit photos (`@AccountRequired()`, 403 `account_required`); new guests are
+limited per client IP in the shared rate-limit store. `players.anonymous_since` and the Callsign columns are profile fields written
+only by PlayerBalance (invariants 13, 14) with no `version` bump, so neither Progress nor the UGS copy carries them.
+
+**UGS (G5):** `PUT /v1/me/ugs-link` is unchanged. UGS's OIDC provider (`oidc-firebase`) verifies the Firebase ID token's signature,
+issuer and audience; the backend then requires the UGS player's external identity for that provider to equal the Firebase uid.
+A guest's token is an ordinary securetoken JWT, and the uid survives the link, so a guest's UGS link survives it too. Not tested
+live: the UGS docs say nothing about required claims, and nothing documents that the external id is the token `sub` (it is
+what A3 observed for password accounts).
+
+**Not built:** clean-up of abandoned guests and the Callsigns they hold (squatting risk accepted for now; Firebase's own
+auto-delete of anonymous users after 30 days needs Identity Platform and does not touch this database, so a guest deleted there
+would leave an orphan player row and Callsign here).
