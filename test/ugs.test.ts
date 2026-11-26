@@ -290,6 +290,11 @@ describe("mirror policy", () => {
       logbookVersion: 1,
       createdAt: new Date("2026-10-01T00:00:00.000Z"),
       updatedAt: new Date("2026-10-28T12:00:00.000Z"),
+      // Profile fields (0.34.0) never reach the UGS copy.
+      anonymousSince: new Date("2026-10-01T00:00:00.000Z"),
+      callsign: "SKYWARD42",
+      callsignClaimedAt: new Date("2026-10-01T00:00:00.000Z"),
+      callsignChangedAt: null,
     };
     const snapshot = mirrorSnapshot({ ...player, evaluatedAt: new Date("2026-10-28T13:00:00.000Z") });
     expect(Object.keys(snapshot)).toEqual([

@@ -10,6 +10,8 @@ declare module "express-serve-static-core" {
     /** The verified token's email claim (if any) and whether Firebase verified it. For the role check's verified-email rule only; never stored or logged. */
     email?: string;
     emailVerified?: boolean;
+    /** Set by FirebaseAuthGuard: the verified token is a Firebase Anonymous guest (docs/plans/guest-callsign.md G1). */
+    anonymous?: boolean;
     /** The caller's ACTIVE roles, set by RolesGuard on @Roles() routes only (read from account_roles for this request). */
     roles?: readonly AccountRole[];
   }

@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Inject, Injectable, Param, Post, Put, 
 import type { PipeTransform } from "@nestjs/common";
 import type { Request, Response } from "express";
 import { z } from "zod";
+import { AccountRequired } from "../auth/account-required.js";
 import { Principal } from "../auth/firebase-auth.guard.js";
 import { Roles } from "../auth/roles.js";
 import { ApiError } from "../common/errors.js";
@@ -143,6 +144,8 @@ export class MyRolesController {
    * or query can name one. Needs a verified email. 201 when the role became active (new row, or after a pending, rejected or revoked
    * state), 200 with the current row when it is already active (nothing changes), 403 when the account is blocked. Creates no player row.
    */
+  // A guest has no verified email: 403 account_required (0.34.0) says why, instead of `forbidden`.
+  @AccountRequired()
   @Post("photographer")
   async activatePhotographer(
     @Principal() principal: string,

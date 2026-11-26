@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post } from "@nestjs/common";
 import { z } from "zod";
+import { AccountRequired } from "../auth/account-required.js";
 import { Principal } from "../auth/firebase-auth.guard.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
@@ -41,6 +42,8 @@ export class PurchasesController {
   }
 
   /** Verify a store purchase with the store and grant it once. The store reference is the idempotency key; Idempotency-Key is ignored. */
+  // Guests cannot buy (ruling 2026-11-26): 403 account_required before the body is read or the store is asked.
+  @AccountRequired()
   @Post("purchases")
   @HttpCode(200)
   async submit(

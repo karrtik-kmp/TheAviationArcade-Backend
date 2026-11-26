@@ -3,6 +3,7 @@ import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { AccountsModule } from "./accounts/accounts.module.js";
 import { AdminModule } from "./admin/admin.module.js";
+import { AccountRequiredGuard } from "./auth/account-required.js";
 import { FirebaseAuthGuard } from "./auth/firebase-auth.guard.js";
 import { RolesGuard, RolesService } from "./auth/roles.js";
 import { ApiExceptionFilter } from "./common/api-exception.filter.js";
@@ -62,6 +63,8 @@ import { UgsModule } from "./ugs/ugs.module.js";
     // Every route requires a verified token unless it is marked @Public() (health and the guest media read only).
     { provide: APP_GUARD, useClass: FirebaseAuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
+    // Refuses Firebase Anonymous guests on @AccountRequired() routes (403 account_required); a no-op everywhere else.
+    { provide: APP_GUARD, useClass: AccountRequiredGuard },
     // Enforces @Roles() routes (Backend ADR-0002) from account_roles; a no-op everywhere else.
     RolesService,
     { provide: APP_GUARD, useClass: RolesGuard },

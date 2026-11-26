@@ -119,7 +119,7 @@ describe("RolesGuard", () => {
     const roles = new StubRoles({ [admin]: ["admin"], [photographer]: ["photographer"] });
     return { roles, guard: new RolesGuard(roles, new Reflector()) };
   };
-  const verified = (principal: string) => ({ principal, email: "x@sites.test", emailVerified: true });
+  const verified = (principal: string) => ({ principal, email: "x@sites.test", emailVerified: true, anonymous: false });
 
   it("lets routes without @Roles() through without reading the database", async () => {
     const { roles, guard } = make();
@@ -149,6 +149,13 @@ describe("RolesGuard", () => {
     await forbidden(guard.canActivate(context(AdminOnly, { email: "x@sites.test", emailVerified: true })));
   });
 
+  it("a Firebase Anonymous guest, or a request whose guest flag was never set, is 403 without reading the roles (plan G4)", async () => {
+    const { roles, guard } = make();
+    await forbidden(guard.canActivate(context(AdminOnly, { ...verified(admin), anonymous: true })));
+    await forbidden(guard.canActivate(context(AdminOnly, { principal: admin, email: "x@sites.test", emailVerified: true })));
+    expect(roles.lookups).toEqual([]);
+  });
+
   it("never trusts a role named by the client: only the database read counts", async () => {
     const { guard } = make();
     const req = { ...verified("firebase:demo-airplane-games:nobody"), roles: ["admin"], headers: { "x-role": "admin" } };
@@ -160,7 +167,7 @@ describe("RolesGuard", () => {
     const demo = "firebase:demo-airplane-games:demo-shared";
     const table = { [demo]: ["player", "photographer", "admin"] as AccountRole[], [admin]: ["admin"] as AccountRole[] };
     const guard = new RolesGuard(new StubRoles(table, demo), new Reflector());
-    const req: Record<string, unknown> = { principal: demo, email: "x@sites.test", emailVerified: true };
+    const req: Record<string, unknown> = { principal: demo, email: "x@sites.test", emailVerified: true, anonymous: false };
     await forbidden(guard.canActivate(context(AdminOnly, req)));
     await forbidden(guard.canActivate(context(MethodLevel, { ...req })));
     expect(req["roles"]).toEqual(["player"]);

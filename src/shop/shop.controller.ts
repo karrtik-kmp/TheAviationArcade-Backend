@@ -1,5 +1,6 @@
 import { Body, Controller, Headers, HttpCode, Post } from "@nestjs/common";
 import { z } from "zod";
+import { AccountRequired } from "../auth/account-required.js";
 import { Principal } from "../auth/firebase-auth.guard.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
@@ -28,6 +29,8 @@ export class ShopController {
   constructor(private readonly shop: ShopService) {}
 
   /** Buy the Co-Pilot hint pack with Miles. Idempotent per Idempotency-Key: a repeat is a 200 replay. */
+  // ASSUMPTION (docs/plans/guest-callsign.md G4): spending Miles counts as buying, so guests get 403 account_required.
+  @AccountRequired()
   @Post("miles-hint-pack")
   @HttpCode(200)
   async buyHintPack(

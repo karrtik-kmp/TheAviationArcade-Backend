@@ -1,10 +1,11 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { APP_CONFIG } from "../config/config.module.js";
 import type { AppConfig } from "../config/config.module.js";
 import { DatabaseService, ExpectedRollback } from "../database/database.module.js";
 import type { Tx } from "../database/database.module.js";
 import { databaseNow } from "../database/clock.js";
+import { rootCause } from "../database/database-errors.js";
 import { hintLedger, milesLedger, players, ugsLinkEvents, ugsLinks } from "../db/schema.js";
 import type { PlayerRow } from "../db/schema.js";
 import type { Rank } from "../rules/ranks.js";
@@ -89,6 +90,28 @@ class InsufficientBalance extends ExpectedRollback {
   }
 }
 
+/** The Callsign's unique index (migration 0033). */
+const CALLSIGN_UNIQUE = "players_callsign_unique";
+
+/**
+ * Pure: a database error that means "another player holds this Callsign": a unique violation on players_callsign_unique, or a
+ * deadlock (40P01; two players swapping values, where one must lose). Any other error, other unique constraints included, is not.
+ */
+export function isCallsignConflict(error: unknown): boolean {
+  const root = rootCause(error) as { code?: unknown; constraint?: unknown } | null;
+  return (root?.code === "23505" && root.constraint === CALLSIGN_UNIQUE) || root?.code === "40P01";
+}
+
+class CallsignTaken extends ExpectedRollback {}
+
+/** setCallsign() outcome (invariant 14). */
+export type CallsignWrite =
+  | { kind: "no_player" }
+  | { kind: "taken" }
+  | { kind: "unchanged"; callsign: string; claimedAt: Date }
+  | { kind: "too_soon"; changeableAt: Date }
+  | { kind: "set"; callsign: string; claimedAt: Date };
+
 /**
  * Every write to a player's balance goes through `update`. Invariants, all held inside this module:
  *
@@ -122,6 +145,13 @@ class InsufficientBalance extends ExpectedRollback {
  *    step carries `logbook` (in a lone UPDATE when it carries nothing else), and never otherwise. It is the Logbook ETag's
  *    freshness; `version` keeps its D-1/U2 meaning. Nothing outside this module writes it (the guard forbids any direct
  *    write to `players`).
+ * 13. Guests (docs/plans/guest-callsign.md G2): open() stamps `anonymous_since` (database clock) on a NEW row only, when asked;
+ *    clearGuest() sets it back to NULL in one conditional UPDATE. Neither bumps `version` or `logbook_version`, touches
+ *    `updated_at` or enqueues a mirror: it is not progress, and the UGS copy does not carry it.
+ * 14. Callsigns (plan C1): setCallsign() locks the player row first, like `update`, and writes only `callsign`,
+ *    `callsign_claimed_at` and `callsign_changed_at` (database clock), in one UPDATE: no version or logbook bump, no mirror (a
+ *    Callsign is a profile field, never in Progress or the UGS copy). A value another player holds is `taken`: found by a read
+ *    first, and a race (unique violation) or swap deadlock is rolled back as an ExpectedRollback and also answered `taken`.
  *
  * DB errors propagate unchanged (lock_timeout 55P03 is a 503 via database-errors.ts). One adapter (Postgres) on
  * purpose: callers share the transaction for their own tables, so this is a deep module, not a seam.
@@ -236,9 +266,10 @@ export class PlayerBalance {
   /**
    * Create the player on first sign-in. Idempotent and race-safe: ON CONFLICT DO NOTHING means exactly one concurrent
    * caller sees created = true, writes the starter postings and enqueues; an existing player is returned unchanged.
-   * The one write that does not lock first, because there is no row to lock yet.
+   * The one write that does not lock first, because there is no row to lock yet. `anonymous` stamps `anonymous_since` on a NEW
+   * row only (a Firebase Anonymous guest, docs/plans/guest-callsign.md G2); an existing row is never touched here.
    */
-  async open(principal: string, starter: BalanceChange): Promise<OpenResult> {
+  async open(principal: string, starter: BalanceChange, options: { anonymous?: boolean } = {}): Promise<OpenResult> {
     const postings = (starter.postings ?? []).filter((posting) => {
       if (!Number.isInteger(posting.delta)) throw new Error("Ledger delta must be an integer.");
       return posting.delta !== 0;
@@ -252,7 +283,7 @@ export class PlayerBalance {
       const now = await databaseNow(tx);
       const inserted = await tx
         .insert(players)
-        .values({ id: principal, miles, hints, createdAt: now, updatedAt: now })
+        .values({ id: principal, miles, hints, createdAt: now, updatedAt: now, anonymousSince: options.anonymous === true ? now : null })
         .onConflictDoNothing()
         .returning({ id: players.id, version: players.version });
       const created = inserted.length === 1;
@@ -270,6 +301,56 @@ export class PlayerBalance {
       const [player] = await tx.select().from(players).where(eq(players.id, principal));
       if (!player) throw new Error("Player row missing after insert.");
       return { player, created };
+    });
+  }
+
+  /** Invariant 13: the guest linked (same uid), so the row is no longer a guest's. True when a stamp was cleared. */
+  async clearGuest(principal: string): Promise<boolean> {
+    const cleared = await this.database.db
+      .update(players)
+      .set({ anonymousSince: null })
+      .where(and(eq(players.id, principal), isNotNull(players.anonymousSince)))
+      .returning({ id: players.id });
+    return cleared.length === 1;
+  }
+
+  /**
+   * Invariant 14: claim or change the player's Callsign (already normalized and validated by the caller). Claiming the value the
+   * player holds is `unchanged` (nothing written). A first claim is free; changing an existing value is free once (while
+   * `callsign_changed_at` is NULL) and afterwards needs `cooldownMs` since the last change, else `too_soon` with the instant it
+   * becomes allowed. `taken` when another player holds the value (see isCallsignConflict).
+   */
+  async setCallsign(principal: string, callsign: string, cooldownMs: number): Promise<CallsignWrite> {
+    return this.database.withTransaction(async (tx): Promise<CallsignWrite> => {
+      const [player] = await tx.select().from(players).where(eq(players.id, principal)).for("update");
+      if (!player) return { kind: "no_player" };
+      if (player.callsign === callsign && player.callsignClaimedAt) {
+        return { kind: "unchanged", callsign, claimedAt: player.callsignClaimedAt };
+      }
+      const now = await databaseNow(tx);
+      const change = player.callsign !== null;
+      if (change && player.callsignChangedAt) {
+        const changeableAt = new Date(player.callsignChangedAt.getTime() + cooldownMs);
+        if (now < changeableAt) return { kind: "too_soon", changeableAt };
+      }
+      // The common refusal, answered without an error (a plain read; the unique index still decides a race below).
+      const [holder] = await tx.select({ id: players.id }).from(players).where(and(eq(players.callsign, callsign), ne(players.id, principal)));
+      if (holder) return { kind: "taken" };
+      try {
+        await tx
+          .update(players)
+          .set({ callsign, callsignClaimedAt: now, callsignChangedAt: change ? now : player.callsignChangedAt })
+          .where(eq(players.id, principal));
+      } catch (error) {
+        // A racing claim committed the value first, or two players swapped values and this one lost the deadlock: an expected
+        // refusal, so the transaction rolls back and the pooled connection is kept (ExpectedRollback), not destroyed.
+        if (isCallsignConflict(error)) throw new CallsignTaken();
+        throw error;
+      }
+      return { kind: "set", callsign, claimedAt: now };
+    }).catch((error: unknown) => {
+      if (error instanceof CallsignTaken) return { kind: "taken" } as const;
+      throw error;
     });
   }
 

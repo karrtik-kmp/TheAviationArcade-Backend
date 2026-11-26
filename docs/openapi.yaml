@@ -1,10 +1,30 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.33.0
+  version: 0.34.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.34.0 (server-backed guests and Callsigns, user rulings 2026-11-26; docs/plans/guest-callsign.md; requests ADDITIVE,
+    RESPONSES BREAKING for strict `PUT /v1/me` readers and strict error parsers; migration 0033).** **Guests:** with
+    `FIREBASE_ANONYMOUS_PLAYERS=true` (local and hosted dev) a Firebase Anonymous token (`sign_in_provider: anonymous`, no `email` /
+    `google.com` entry in `firebase.identities`) is a player like any other; with it off (the default) such a token is 401 as before.
+    An `anonymous` token whose identities DO hold `email` or `google.com` is a linked account whatever the flag says (the uid is kept on
+    link, so the principal and all progress stay). A guest's first `PUT /v1/me` counts against a per-IP limit of new guests (default 20
+    per hour; IPv6 per /64): over it the answer is 429 `rate_limited` with `Retry-After` and nothing is written. Guests get the new code
+    **403 `account_required`** on `POST /v1/purchases`, `POST /v1/shop/miles-hint-pack` and `POST /v1/me/roles/photographer` (link the
+    account first; nothing is written). **`PUT /v1/me`** (200 and 201) now returns the new schema `SignInEnvelope` = `{ progress,
+    profile }`; `profile` is `PlayerProfile` `{ callsign, guest }` (`callsign` null until claimed: show the Callsign screen). Progress,
+    `ProgressEnvelope` (progress, active-rank) and the UGS copy are unchanged. **Callsigns:** new routes `GET
+    /v1/callsigns/{value}/availability` (200 `CallsignAvailability` `{ value, normalized, available, status }`, `status` one of
+    `available | yours | taken | reserved | invalid`; an invalid value is 200, never an error) and `POST /v1/callsigns/claim` (body
+    `CallsignClaimRequest` `{ callsign }`; 200 `CallsignClaim` `{ callsign, claimedAt, changed }`). The retired Worker's paths and
+    availability fields are kept; its `deviceId` body field is gone (identity comes from the token: a body naming it is 400). Rules:
+    trim, then 3-16 ASCII letters or digits, stored upper case, unique across players ignoring case; a few names are reserved; the
+    first claim and the first change are free, later changes need 30 days since the last change. New error codes `account_required`
+    (403), `callsign_invalid` (422), `callsign_taken` (409, held by another player or reserved) and `callsign_change_too_soon` (409,
+    body `CallsignChangeTooSoon` with root `changeableAt`). Deleting the player frees the Callsign.
 
     **Changelog 0.33.0 (FAQ managed in the CMS, client request 2026-11-26; docs/plans/faq-cms.md; ADDITIVE for the game and for every
     request; migration 0032).** The website FAQ becomes a SITE document named `faq` (format `faq.v1`: categories of question and answer
@@ -486,9 +506,13 @@ paths:
       operationId: signIn
       summary: Sign-in handshake
       description: |
-        Call after every Firebase sign-in. Creates the player on first call (201), otherwise 200.
-        Idempotent. No request body. Every call also makes sure the account holds the informational `player` role (inserted
-        once, audited once; a revoked row is left as it is).
+        Call after every Firebase sign-in, and again right after a guest links an account. Creates the player on first call (201),
+        otherwise 200. Idempotent. No request body. Every call also makes sure the account holds the informational `player` role
+        (inserted once, audited once; a revoked row is left as it is). Firebase Anonymous guests are players too when the server runs
+        with `FIREBASE_ANONYMOUS_PLAYERS=true` (0.34.0): a guest's FIRST call counts against the per-IP limit of new guests (429
+        `rate_limited` with `Retry-After`, nothing written); later calls, and every account's calls, are never counted. A call with
+        an account token clears the server's guest mark on a row a guest created (the link kept the uid). The response carries the
+        `profile` (Callsign and guest flag) beside the progress.
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
       responses:
@@ -499,15 +523,15 @@ paths:
             Cache-Control: { $ref: "#/components/headers/NoStore" }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ProgressEnvelope" }
+              schema: { $ref: "#/components/schemas/SignInEnvelope" }
         "201":
-          description: Player created at zero, with the 5 starter hints.
+          description: Player created at zero, with the 5 starter hints and no Callsign.
           headers:
             X-Request-Id: { $ref: "#/components/headers/XRequestId" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ProgressEnvelope" }
+              schema: { $ref: "#/components/schemas/SignInEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
@@ -533,6 +557,96 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/callsigns/{value}/availability:
+    get:
+      tags: [player]
+      operationId: checkCallsignAvailability
+      summary: Is this Callsign free?
+      description: |
+        0.34.0. Any signed-in caller, guest or account; needs no player row. The usual per-principal rate limit applies (the app
+        debounces typing by 500 ms). Never an error for the value itself: a value that breaks the format is 200 with `status: invalid`.
+        `yours` means the caller already holds it. Matching ignores case.
+      parameters:
+        - name: value
+          in: path
+          required: true
+          description: The typed value, URL-encoded. Longer than 64 characters is `invalid` (and echoed cut to 64).
+          schema: { type: string }
+        - $ref: "#/components/parameters/XClientVersion"
+      responses:
+        "200":
+          description: The verdict.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallsignAvailability" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/callsigns/claim:
+    post:
+      tags: [player]
+      operationId: claimCallsign
+      summary: Claim or change my Callsign
+      description: |
+        0.34.0. Any signed-in player, guest or account (call `PUT /v1/me` first). The value is trimmed, checked (3 to 16 ASCII letters
+        or digits) and stored upper case, unique across players ignoring case. Claiming the value the caller already holds is 200
+        `changed: false` and writes nothing (safe to retry). The first claim is free, and so is the first change; after that a change
+        needs 30 days since the last change (409 `callsign_change_too_soon` with `changeableAt`). A Callsign is a profile field: no
+        progress `version` bump, not in Progress or the UGS copy. It survives a guest's link (same uid) and is freed when the player is
+        deleted. Idempotency-Key is not used.
+      parameters:
+        - $ref: "#/components/parameters/XClientVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CallsignClaimRequest" }
+      responses:
+        "200":
+          description: "Claimed or changed (`changed: true`), or already held (`changed: false`)."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CallsignClaim" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/PlayerNotFound" }
+        "409":
+          description: |
+            `callsign_taken`: another player holds it (any case), or it is reserved. `callsign_change_too_soon`: the Callsign changed less
+            than 30 days ago; the body is `CallsignChangeTooSoon`. Nothing is written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [callsign_taken, callsign_change_too_soon]
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/Error" }
+                  - { $ref: "#/components/schemas/CallsignChangeTooSoon" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422":
+          description: The value breaks the format (3 to 16 ASCII letters or digits after trimming).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [callsign_invalid]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "426": { $ref: "#/components/responses/ClientUpdateRequired" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
@@ -590,7 +704,17 @@ paths:
               schema: { $ref: "#/components/schemas/PhotographerRequestResult" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403":
+          description: |
+            `account_required`: the caller is a Firebase Anonymous guest (0.34.0; link the account first). `forbidden`: the token's email
+            is not verified, the account is blocked, or it is the shared demo account. Nothing is written.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [forbidden, account_required]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/BodyRejected" }
         "415": { $ref: "#/components/responses/BodyRejected" }
         "426": { $ref: "#/components/responses/ClientUpdateRequired" }
@@ -1391,6 +1515,7 @@ paths:
               schema: { $ref: "#/components/schemas/PurchaseResponse" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/AccountRequired" }
         "404": { $ref: "#/components/responses/PlayerNotFound" }
         "409":
           description: Fewer than 5,000 Miles.
@@ -1473,6 +1598,7 @@ paths:
               schema: { $ref: "#/components/schemas/StorePurchaseResponse" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/AccountRequired" }
         "404": { $ref: "#/components/responses/PlayerNotFound" }
         "409":
           description: |
@@ -4663,6 +4789,17 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    AccountRequired:
+      description: |
+        The caller is a Firebase Anonymous guest (0.34.0). Guests cannot buy or submit photos: link the account (email/password or
+        Google; the uid is kept) and retry. Nothing was written.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Cache-Control: { $ref: "#/components/headers/NoStore" }
+      x-error-codes: [account_required]
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     VersionConflict:
       description: |
         `version_conflict`: `draftVersion` is not the current draft revision (another editor edited, discarded or published since you
@@ -4981,6 +5118,10 @@ components:
                 - purchase_revoked
                 - purchase_owned_by_other
                 - submission_limit
+                - account_required
+                - callsign_invalid
+                - callsign_taken
+                - callsign_change_too_soon
             message:
               type: string
               description: For logs, not for display or logic.
@@ -5815,6 +5956,62 @@ components:
       required: [progress]
       properties:
         progress: { $ref: "#/components/schemas/Progress" }
+    SignInEnvelope:
+      type: object
+      additionalProperties: false
+      required: [progress, profile]
+      description: The `PUT /v1/me` answer (0.34.0). Other progress routes keep `ProgressEnvelope`.
+      properties:
+        progress: { $ref: "#/components/schemas/Progress" }
+        profile: { $ref: "#/components/schemas/PlayerProfile" }
+    PlayerProfile:
+      type: object
+      additionalProperties: false
+      required: [callsign, guest]
+      properties:
+        callsign:
+          description: The player's Callsign (upper case), or null until claimed; the app shows the Callsign screen when null.
+          oneOf:
+            - { type: string, pattern: "^[A-Z0-9]{3,16}$" }
+            - { type: "null" }
+        guest:
+          type: boolean
+          description: This request's token is a Firebase Anonymous guest (cannot buy or submit photos until linked).
+    CallsignAvailability:
+      type: object
+      additionalProperties: false
+      required: [value, normalized, available, status]
+      properties:
+        value: { type: string, maxLength: 64, description: The value as sent (cut to 64 characters). }
+        normalized:
+          type: string
+          description: Trimmed and upper case; empty when `status` is `invalid`.
+          pattern: "^([A-Z0-9]{3,16})?$"
+        available: { type: boolean, description: "True for `available` and `yours`." }
+        status:
+          type: string
+          enum: [available, yours, taken, reserved, invalid]
+    CallsignClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [callsign]
+      properties:
+        callsign: { type: string, maxLength: 64, description: "Any case; trimmed. 3 to 16 ASCII letters or digits." }
+    CallsignClaim:
+      type: object
+      additionalProperties: false
+      required: [callsign, claimedAt, changed]
+      properties:
+        callsign: { type: string, pattern: "^[A-Z0-9]{3,16}$" }
+        claimedAt: { type: string, format: date-time, description: When the current Callsign was claimed (database clock). }
+        changed: { type: boolean, description: False when the caller already held this Callsign (nothing written). }
+    CallsignChangeTooSoon:
+      type: object
+      additionalProperties: false
+      required: [error, changeableAt]
+      properties:
+        error: { $ref: "#/components/schemas/Error/properties/error" }
+        changeableAt: { type: string, format: date-time, description: The first instant a change is allowed. }
     UgsLinkRequest:
       type: object
       additionalProperties: false

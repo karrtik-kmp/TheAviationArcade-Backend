@@ -20,6 +20,13 @@ export type AppConfig = {
   firebaseProjectId: string;
   /** Unsigned Auth Emulator tokens accepted. True only for exactly demo-airplane-games. */
   emulatorTokens: boolean;
+  /**
+   * FIREBASE_ANONYMOUS_PLAYERS (docs/plans/guest-callsign.md G1): Firebase Anonymous guests are accepted as players. Off (the
+   * default) = an anonymous token is 401. On for local and hosted dev (the only Firebase project is dev only, ruling 2026-11-26).
+   */
+  anonymousPlayers: boolean;
+  /** GUEST_CREATE_PER_IP_PER_HOUR (G3): new guest players `PUT /v1/me` may create per client IP (IPv6: per /64) per hour. */
+  guestCreatePerIpPerHour: number;
   port: number;
   /** Interface to listen on. Loopback by default; a deployment must opt in to anything wider. */
   host: string;
@@ -235,6 +242,16 @@ const envSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().trim().min(1),
   /** "true" accepts unsigned Auth Emulator tokens, and only for demo-airplane-games. Local only. */
   ALLOW_EMULATOR_TOKENS: z.string().optional(),
+  /** "true" accepts Firebase Anonymous guests as players (G1). Unset, empty or "false" = off. Allowed in every APP_ENV. */
+  FIREBASE_ANONYMOUS_PLAYERS: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : typeof value === "string" ? value.trim() : value),
+    z.enum(["true", "false"]).optional(),
+  ),
+  /** New guests per client IP per hour (G3). Blank = default 20 (ASSUMPTION, docs/plans/guest-callsign.md). */
+  GUEST_CREATE_PER_IP_PER_HOUR: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.coerce.number().int().min(1).max(100_000).default(20),
+  ),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   HOST: z.string().trim().min(1).default("127.0.0.1"),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
@@ -317,6 +334,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     DATABASE_URL,
     FIREBASE_PROJECT_ID,
     ALLOW_EMULATOR_TOKENS,
+    FIREBASE_ANONYMOUS_PLAYERS,
+    GUEST_CREATE_PER_IP_PER_HOUR,
     PORT,
     HOST,
     DB_POOL_MAX,
@@ -380,6 +399,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     if (FIREBASE_PROJECT_ID.startsWith("demo-")) {
       throw new Error("Invalid environment configuration: FIREBASE_PROJECT_ID must not be a demo- project when APP_ENV=production");
     }
+  }
+  // Guests are limited per client IP (plan G3). Behind the reverse proxy without TRUST_PROXY every guest would share the proxy's address,
+  // so one bucket would cap guest sign-ups for the whole world. Deployments (APP_ENV=production) must say how many hops to trust.
+  if (APP_ENV === "production" && FIREBASE_ANONYMOUS_PLAYERS === "true" && TRUST_PROXY === false) {
+    throw new Error("Invalid environment configuration: FIREBASE_ANONYMOUS_PLAYERS=true with APP_ENV=production needs TRUST_PROXY");
   }
   // The fake verifier accepts any reference that names an "ok" outcome, so it must not run where real money or real accounts exist:
   // never in production, and in every APP_ENV only against a demo- project (same shape as the emulator-token rule). Names only.
@@ -503,6 +527,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     databaseUrl: DATABASE_URL,
     firebaseProjectId: FIREBASE_PROJECT_ID,
     emulatorTokens: emulatorTokensAllowed(FIREBASE_PROJECT_ID, ALLOW_EMULATOR_TOKENS),
+    anonymousPlayers: FIREBASE_ANONYMOUS_PLAYERS === "true",
+    guestCreatePerIpPerHour: GUEST_CREATE_PER_IP_PER_HOUR,
     port: PORT,
     host: HOST,
     dbPoolMax: DB_POOL_MAX,

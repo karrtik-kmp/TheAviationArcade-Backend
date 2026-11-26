@@ -82,6 +82,9 @@ export class RolesService {
   async authorize(req: Request, required: readonly AccountRole[]): Promise<readonly AccountRole[]> {
     // A role route behind @Public() has no verified principal: refuse rather than guess.
     if (!req.principal) throw forbidden(required);
+    // A Firebase Anonymous guest holds no privileged role whatever the table says (plan G4, defence in depth). Fails closed when the
+    // guest flag was never set on the request.
+    if (req.anonymous !== false) throw forbidden(required);
     const rows = await this.activeRoles(req.principal);
     // The shared demo account holds no privileged role whatever the table says (ADR-0002 follow-up, incident 2026-11-04).
     const active = isDemoPrincipal(this.config, req.principal) ? rows.filter((role) => !VERIFIED_EMAIL_ROLES.has(role)) : rows;

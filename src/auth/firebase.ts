@@ -9,8 +9,9 @@ const FIREBASE_JWKS = new URL(
   "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
 );
 
-/** Product login is Firebase email/password and Google only (project rule). */
+/** Product login is Firebase email/password and Google (project rule); `anonymous` guests only when the caller enables them. */
 const ALLOWED_PROVIDERS = new Set(["password", "google.com"]);
+const ANONYMOUS_PROVIDER = "anonymous";
 
 export type FirebaseIdentity = {
   /** Server principal: firebase:<project>:<uid>. The only identifier stored against progress. */
@@ -19,12 +20,19 @@ export type FirebaseIdentity = {
   emailVerified: boolean;
   /** The token's email claim, only when it is a string of at most 320 chars. Only the role check's verified-email rule reads it; never stored. */
   email: string | undefined;
+  /**
+   * A Firebase Anonymous guest (docs/plans/guest-callsign.md G1): `sign_in_provider` is `anonymous` and `firebase.identities` holds
+   * no `email` / `google.com` login. A token that still names `anonymous` after `linkWithCredential` is an account (see guestFor).
+   */
+  anonymous: boolean;
 };
 
 export type FirebaseTokenOptions = {
   projectId: string;
   /** Accept unsigned Auth Emulator tokens. Set only via emulatorTokensAllowed(). */
   emulator: boolean;
+  /** Accept guests (FIREBASE_ANONYMOUS_PLAYERS). Off = a guest token is invalid (401); a linked `anonymous` token is still accepted. */
+  anonymousPlayers?: boolean;
 };
 
 /** Firebase iat/auth_time may run slightly ahead of this server's clock. exp stays strict. */
@@ -78,15 +86,51 @@ function invalidToken(): never {
   throw new InvalidTokenError();
 }
 
-function validateIdentity(claims: JWTPayload, projectId: string): FirebaseIdentity {
+/** The identity keys that make an `anonymous`-provider token a linked account: the two product logins (project rule). */
+const LINKED_IDENTITY_KEYS = ["email", "google.com"] as const;
+
+/**
+ * Whether `firebase.identities` shows a linked product login: `email` or `google.com` as a non-empty array of strings. Other keys
+ * (phone, ...) do not count. `malformed` when the map, or one of those two keys, has the wrong shape.
+ */
+function linkedIdentity(identities: unknown): boolean | "malformed" {
+  if (identities === undefined) return false;
+  if (identities === null || typeof identities !== "object" || Array.isArray(identities)) return "malformed";
+  let linked = false;
+  for (const key of LINKED_IDENTITY_KEYS) {
+    const ids = (identities as Record<string, unknown>)[key];
+    if (ids === undefined) continue;
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && id.length > 0)) return "malformed";
+    if (ids.length > 0) linked = true;
+  }
+  return linked;
+}
+
+/**
+ * The guest test (docs/plans/guest-callsign.md G1). `password` and `google.com` tokens are accounts, as before. An `anonymous` token
+ * whose identities hold `email` or `google.com` is a LINKED account (whatever FIREBASE_ANONYMOUS_PLAYERS says: Firebase documents no
+ * promise that `sign_in_provider` changes on `linkWithCredential`, and a rollback of the flag must not lock linked players out). Any
+ * other `anonymous` token is a guest, accepted only with the flag. Undefined = refuse the token.
+ */
+function guestFor(provider: unknown, identities: unknown, anonymousPlayers: boolean): boolean | undefined {
+  if (typeof provider !== "string") return undefined;
+  if (ALLOWED_PROVIDERS.has(provider)) return false;
+  if (provider !== ANONYMOUS_PROVIDER) return undefined;
+  const linked = linkedIdentity(identities);
+  if (linked === "malformed") return undefined;
+  if (linked) return false;
+  return anonymousPlayers ? true : undefined;
+}
+
+function validateIdentity(claims: JWTPayload, projectId: string, anonymousPlayers: boolean): FirebaseIdentity {
   const now = Math.floor(Date.now() / 1000);
   const { sub, exp, iat } = claims;
   const authTime = claims.auth_time;
-  const firebase = claims.firebase;
-  const provider =
-    firebase !== null && typeof firebase === "object" && !Array.isArray(firebase)
-      ? (firebase as Record<string, unknown>).sign_in_provider
+  const firebase =
+    claims.firebase !== null && typeof claims.firebase === "object" && !Array.isArray(claims.firebase)
+      ? (claims.firebase as Record<string, unknown>)
       : undefined;
+  const anonymous = guestFor(firebase?.sign_in_provider, firebase?.identities, anonymousPlayers);
 
   if (
     claims.aud !== projectId ||
@@ -104,8 +148,7 @@ function validateIdentity(claims: JWTPayload, projectId: string): FirebaseIdenti
     typeof authTime !== "number" ||
     !Number.isFinite(authTime) ||
     authTime > now + CLOCK_SKEW_SECONDS ||
-    typeof provider !== "string" ||
-    !ALLOWED_PROVIDERS.has(provider)
+    anonymous === undefined
   ) {
     return invalidToken();
   }
@@ -115,6 +158,7 @@ function validateIdentity(claims: JWTPayload, projectId: string): FirebaseIdenti
     uid: sub,
     emailVerified: claims.email_verified === true,
     email: typeof claims.email === "string" && claims.email.length <= 320 ? claims.email : undefined,
+    anonymous,
   };
 }
 
@@ -151,7 +195,7 @@ export async function verifyFirebaseToken(
     } catch {
       return invalidToken();
     }
-    return validateIdentity(claims, options.projectId);
+    return validateIdentity(claims, options.projectId, options.anonymousPlayers === true);
   }
 
   if (header.alg !== "RS256") return invalidToken();
@@ -163,7 +207,7 @@ export async function verifyFirebaseToken(
       requiredClaims: ["sub", "iat", "exp", "auth_time"],
       clockTolerance: 0,
     });
-    return validateIdentity(payload, options.projectId);
+    return validateIdentity(payload, options.projectId, options.anonymousPlayers === true);
   } catch (error) {
     if (error instanceof InvalidTokenError || error instanceof AuthUnavailableError) throw error;
     // Key-fetch trouble is infrastructure, not a bad token. A missing kid (JWKSNoMatchingKey) and

@@ -1,3 +1,4 @@
+import type { PlayerRow } from "../db/schema.js";
 import type { LivePlayer } from "../trips/trip-store.js";
 import { hasFirstClassPass } from "../rules/first-class.js";
 import { activeRankFor, certifiedRankFor, isPleasureCruise, nextRankFor, rankIndex, RANKS } from "../rules/ranks.js";
@@ -24,6 +25,18 @@ export type ProgressView = {
   perfectStreak: number;
   firstClassPass: boolean;
 };
+
+/** The player's profile on PUT /v1/me (0.34.0, plan C1): not progress, so not in Progress or the UGS copy. */
+export type PlayerProfile = {
+  /** Null until the player claims one: the app shows the Callsign screen then. */
+  callsign: string | null;
+  /** This request's token is a Firebase Anonymous guest. */
+  guest: boolean;
+};
+
+export function profileView(player: Pick<PlayerRow, "callsign">, guest: boolean): PlayerProfile {
+  return { callsign: player.callsign, guest };
+}
 
 /** Pure: the instant is the player's own `evaluatedAt`, stamped from the database clock by withLiveStreak. */
 export function progressView(player: LivePlayer): ProgressView {

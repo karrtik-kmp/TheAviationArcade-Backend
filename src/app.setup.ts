@@ -52,10 +52,19 @@ function roleBodyReader(
     const token = /^bearer (\S+)$/i.exec(req.header("authorization") ?? "")?.[1];
     if (req.method !== "POST" || !token) return next();
     const config = app.get<AppConfig>(APP_CONFIG);
-    verifyFirebaseToken(token, { projectId: config.firebaseProjectId, emulator: config.emulatorTokens }).then(
+    verifyFirebaseToken(token, {
+      projectId: config.firebaseProjectId,
+      emulator: config.emulatorTokens,
+      anonymousPlayers: config.anonymousPlayers,
+    }).then(
       (identity) => {
         // A throwaway view of the request: the guards set the real identity later from the same token.
-        const probe = { principal: identity.principal, email: identity.email, emailVerified: identity.emailVerified } as Request;
+        const probe = {
+          principal: identity.principal,
+          email: identity.email,
+          emailVerified: identity.emailVerified,
+          anonymous: identity.anonymous,
+        } as Request;
         // Count the request against the rate limit first, exactly as RateLimitGuard would (it then skips this request), so a
         // caller refused below is still counted and a flood of refusals cannot run unlimited role queries.
         countAuthenticatedRequest(app.get<ThrottlerStorage>(ThrottlerStorage), config, identity.principal, req)

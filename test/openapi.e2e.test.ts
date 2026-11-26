@@ -164,6 +164,7 @@ describe("openapi contract parity", () => {
     const player = {
       id: "firebase:demo-airplane-games:u1", statusPoints: 1200, miles: 30, hints: 5, perfectStreak: 2, activeRank: null,
       firstClassUntil: null, version: 4, logbookVersion: 1, createdAt: new Date(), updatedAt: new Date(),
+      anonymousSince: null, callsign: null, callsignClaimedAt: null, callsignChangedAt: null,
     };
     const value = mirrorSnapshot({ ...player, evaluatedAt: new Date() });
     expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
@@ -225,7 +226,9 @@ describe("openapi contract: real responses validate against the spec", () => {
 
     const created = await request(server).put("/v1/me").set(auth);
     expect(created.status).toBe(201);
-    check("ProgressEnvelope", created.body);
+    check("SignInEnvelope", created.body);
+    rejects("ProgressEnvelope", created.body);
+    check("SignInEnvelope", (await request(server).put("/v1/me").set(auth)).body);
     const progress = await request(server).get("/v1/me/progress").set(auth);
     check("ProgressEnvelope", progress.body);
 
@@ -342,6 +345,40 @@ describe("openapi contract: real responses validate against the spec", () => {
     check("Error", unknown.body);
 
     expect((await request(server).delete("/v1/me").set(auth)).status).toBe(204);
+  });
+
+  it("callsigns (0.34.0): availability for each status, claim, replay, taken, invalid, too soon validate against the spec", async () => {
+    const holder = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    const other = { Authorization: `Bearer ${emulatorToken(`uid-${randomUUID()}`)}` };
+    expect((await request(server).put("/v1/me").set(holder)).status).toBe(201);
+    const value = `O${randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
+    const second = `P${value.slice(1)}`;
+    const third = `Q${value.slice(1)}`;
+    for (const typed of [value.toLowerCase(), "pilot", "a-b", "x".repeat(80)]) {
+      const res = await request(server).get(`/v1/callsigns/${typed}/availability`).set(other);
+      expect(res.status).toBe(200);
+      check("CallsignAvailability", res.body);
+    }
+    const claimed = await request(server).post("/v1/callsigns/claim").set(holder).send({ callsign: value });
+    expect(claimed.status).toBe(200);
+    check("CallsignClaim", claimed.body);
+    check("CallsignClaim", (await request(server).post("/v1/callsigns/claim").set(holder).send({ callsign: value })).body);
+    check("CallsignAvailability", (await request(server).get(`/v1/callsigns/${value}/availability`).set(holder)).body);
+    check("SignInEnvelope", (await request(server).put("/v1/me").set(holder)).body);
+    expect((await request(server).put("/v1/me").set(other)).status).toBe(201);
+    const taken = await request(server).post("/v1/callsigns/claim").set(other).send({ callsign: value });
+    expect(taken.status).toBe(409);
+    check("Error", taken.body);
+    const invalid = await request(server).post("/v1/callsigns/claim").set(other).send({ callsign: "a b" });
+    expect(invalid.status).toBe(422);
+    check("Error", invalid.body);
+    expect((await request(server).post("/v1/callsigns/claim").set(holder).send({ callsign: second })).status).toBe(200);
+    const soon = await request(server).post("/v1/callsigns/claim").set(holder).send({ callsign: third });
+    expect(soon.status).toBe(409);
+    check("CallsignChangeTooSoon", soon.body);
+    rejects("Error", soon.body);
+    rejects("CallsignClaimRequest", { deviceId: "d", callsign: value });
+    for (const auth of [holder, other]) expect((await request(server).delete("/v1/me").set(auth)).status).toBe(204);
   });
 
   it("complete: the completion, its replay and trip_incomplete validate against the spec", async () => {

@@ -36,10 +36,12 @@ export class FirebaseAuthGuard implements CanActivate {
       const identity = await verifyFirebaseToken(match[1], {
         projectId: this.config.firebaseProjectId,
         emulator: this.config.emulatorTokens,
+        anonymousPlayers: this.config.anonymousPlayers,
       });
       req.principal = identity.principal;
       req.email = identity.email;
       req.emailVerified = identity.emailVerified;
+      req.anonymous = identity.anonymous;
     } catch (error) {
       // Google's keys being unreachable is our outage, not a bad token: tell the client to retry.
       if (error instanceof AuthUnavailableError) {

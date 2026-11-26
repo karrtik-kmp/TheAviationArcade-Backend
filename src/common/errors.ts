@@ -44,6 +44,10 @@ export const ERROR_CODES = [
   "account_disabled",
   "service_unavailable",
   "internal_error",
+  "account_required",
+  "callsign_invalid",
+  "callsign_taken",
+  "callsign_change_too_soon",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

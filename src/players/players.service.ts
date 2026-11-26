@@ -38,11 +38,20 @@ export class PlayersService {
     return withLiveStreak(this.database.db, player);
   }
 
-  /** Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. Also issues the `player` role. */
-  async ensurePlayer(principal: string): Promise<{ player: PlayerRow; created: boolean }> {
-    const opened = await this.balance.open(principal, {
-      postings: [{ account: "hints", delta: STARTER_HINTS, kind: "starter", ref: "starter" }],
-    });
+  /**
+   * Create the player on first sign-in (idempotent and race-safe; see PlayerBalance.open). Starter hints are ledgered. Also issues the
+   * `player` role. A guest's new row is stamped `anonymous_since`; an account token clears a stamp left from before the guest linked
+   * (plan G2). A guest token never stamps an existing row.
+   */
+  async ensurePlayer(principal: string, anonymous = false): Promise<{ player: PlayerRow; created: boolean }> {
+    const opened = await this.balance.open(
+      principal,
+      { postings: [{ account: "hints", delta: STARTER_HINTS, kind: "starter", ref: "starter" }] },
+      { anonymous },
+    );
+    if (!anonymous && opened.player.anonymousSince !== null && (await this.balance.clearGuest(principal))) {
+      opened.player = { ...opened.player, anonymousSince: null };
+    }
     // Every sign-in issues the informational `player` role (Backend ADR-0002), in its own short transaction after the player
     // exists. Existing players get it on their next sign-in; a revoked one is never reactivated. Nothing requires it yet.
     await this.roles.issuePlayer(principal);

@@ -53,7 +53,8 @@ import type {
 
 /**
  * Player progress. One row per server principal: firebase:<project>:<uid>.
- * No email, display name or Callsign is stored here (see README.md).
+ * No email or display name is stored here (see README.md). The Callsign (a public name tag, not a credential) is, from migration
+ * 0033 (docs/plans/guest-callsign.md C1); it is a profile field: writing it bumps neither `version` nor `logbook_version`.
  * Timestamps are timestamptz; the API converts to ISO strings at the edge.
  */
 
@@ -85,8 +86,23 @@ export const players = pgTable(
     logbookVersion: integer("logbook_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    // Set (database clock) when a Firebase Anonymous guest's PUT /v1/me created the row; cleared by the first PUT /v1/me with an
+    // account token after the guest linked (same uid). No version bump either way (plan G2). For operations only.
+    anonymousSince: timestamp("anonymous_since", { withTimezone: true }),
+    // Upper-case A-Z/0-9, 3-16 (Unity CallsignRules), so the unique index is case-insensitive by construction. Freed when the
+    // player is deleted; kept across a guest link (same principal). Written only by CallsignService.
+    callsign: text("callsign"),
+    // When the current Callsign was claimed (database clock). NULL exactly when callsign is.
+    callsignClaimedAt: timestamp("callsign_claimed_at", { withTimezone: true }),
+    // When the player last CHANGED an existing Callsign (database clock); NULL until the first change. The first change is free, later
+    // ones need 30 days since this instant (ASSUMPTION, plan C1). A first claim is not a change; deleting the player resets it all.
+    callsignChangedAt: timestamp("callsign_changed_at", { withTimezone: true }),
   },
   (t) => [
+    uniqueIndex("players_callsign_unique").on(t.callsign),
+    check("players_callsign_check", sql`${t.callsign} IS NULL OR ${t.callsign} ~ '^[A-Z0-9]{3,16}$'`),
+    check("players_callsign_claimed_at_check", sql`(${t.callsign} IS NULL) = (${t.callsignClaimedAt} IS NULL)`),
+    check("players_callsign_changed_at_check", sql`${t.callsignChangedAt} IS NULL OR ${t.callsign} IS NOT NULL`),
     check("players_status_points_check", sql`${t.statusPoints} >= 0`),
     check("players_logbook_version_check", sql`${t.logbookVersion} >= 1`),
     check("players_miles_check", sql`${t.miles} >= 0`),

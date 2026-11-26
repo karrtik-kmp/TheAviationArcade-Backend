@@ -37,6 +37,8 @@ describe("loadConfig", () => {
       databaseUrl: local.DATABASE_URL,
       firebaseProjectId: "demo-airplane-games",
       emulatorTokens: true,
+      anonymousPlayers: false,
+      guestCreatePerIpPerHour: 20,
       port: 3000,
       host: "127.0.0.1",
       dbPoolMax: 10,
