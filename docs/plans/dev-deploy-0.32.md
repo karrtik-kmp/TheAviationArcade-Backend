@@ -1,7 +1,8 @@
 # Plan: deploy Backend 0.32.0 to hosted dev (`dev.api.playairplanegames.com`)
 
-Status: **draft, 2026-11-26, waiting for the user's sign-off.** Asked by the user ("Plan the dev deploy"). Nothing here has
-been run on the server. Every server step is run by the user (root on the server, from the `server/` scripts folder); this
+Status: **run, 2026-11-26, by the user, as the plain deploy (dev now on 0.33.0, migration 0032).** The step 2 backup was
+taken first. Public checks passed; see `docs/TASKS.md` verification log 2026-11-26 for what is and isn't recorded.
+Originally asked by the user ("Plan the dev deploy"). Every server step is run by the user (root on the server, from the `server/` scripts folder); this
 session has no server access and runs only the read-only public checks marked **(me)**.
 
 ## Where dev is now (read-only checks, 2026-11-26)
