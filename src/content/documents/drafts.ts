@@ -1,10 +1,12 @@
 import { z } from "zod";
-import type { ContentDocumentName } from "../../db/enums.js";
+import type { ContentDocumentName, StoredDocumentName } from "../../db/enums.js";
 import { AIRCRAFT_TAGS } from "../../rules/aircraft-tags.js";
 import type { AircraftTag } from "../../rules/aircraft-tags.js";
 import { FIELD_AWARD_IDS } from "../../rules/field-awards.js";
 import { canonicalJson } from "./canonical.js";
 import { MAX_TARGET } from "./documents.js";
+import { faqEditRequest, faqWorkingSchema } from "./faq.js";
+import type { FaqWorking } from "./faq.js";
 
 /**
  * Staff edits to the published documents (slice T6, design 8). Pure: request and stored-overlay schemas, merging, applying an
@@ -15,6 +17,7 @@ import { MAX_TARGET } from "./documents.js";
  *   field-awards:   edits.awards[id] = { title?, criteria?, target?, hidden? }   (never id, metric, sheet text or rulings)
  *   clipper-cards:  edits.names[cardKey] = name                                   (membership is derived from the content)
  *   aircraft-tags:  edits.tags[cardKey] = tag list (the whole list)
+ *   faq (site document): edits.faq = the WHOLE working body without its version (free structure, docs/plans/faq-cms.md F4)
  */
 
 /** A request carries at most this many edits (the global JSON limit is 16 KB). */
@@ -83,6 +86,7 @@ export const EDIT_REQUESTS = {
   "field-awards": fieldAwardsEditRequest,
   "clipper-cards": clipperCardsEditRequest,
   "aircraft-tags": aircraftTagsEditRequest,
+  faq: faqEditRequest,
 } as const;
 
 export const versionOnlyRequest = z.strictObject({ draftVersion });
@@ -96,7 +100,10 @@ const historyEntry = z.strictObject({
   action: z.enum(["edit", "discard", "import"]),
   at: z.string().max(40),
   draftVersion: z.number().int().min(1),
-  /** action "import" only: sha256 of the uploaded sheet (the file is kept in the BlobStore under that digest). */
+  /**
+   * action "import" only. Sheet imports: sha256 of the uploaded sheet (the file is kept in the BlobStore under that digest).
+   * FAQ imports: the content digest of { format, categories } from the export file; no file is stored.
+   */
   fileSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 const history = z.array(historyEntry).max(MAX_HISTORY).optional();
@@ -115,6 +122,7 @@ export const STORED_EDITS = {
   "field-awards": z.strictObject({ awards: z.partialRecord(z.enum(FIELD_AWARD_IDS), STORED_AWARD).optional(), history }),
   "clipper-cards": z.strictObject({ names: z.record(cardKey, text(500)).optional(), history }),
   "aircraft-tags": z.strictObject({ tags: z.record(cardKey, z.array(z.enum(AIRCRAFT_TAGS)).refine(distinct)).optional(), ackClientTagRemoval: z.record(cardKey, z.literal(true)).optional(), history }),
+  faq: z.strictObject({ faq: faqWorkingSchema.optional(), history }),
 } as const;
 
 export type DraftEdits = {
@@ -123,6 +131,8 @@ export type DraftEdits = {
   tags?: Record<string, AircraftTag[]>;
   /** aircraft-tags: Card keys whose edit was acknowledged to remove a client-supplied tag. */
   ackClientTagRemoval?: Record<string, true>;
+  /** faq: the working body (no version). Absent = the draft equals the document in force (or the empty base). */
+  faq?: FaqWorking;
   history?: HistoryEntry[];
 };
 
@@ -167,7 +177,7 @@ function removedClientTags(entry: Body | undefined, wanted: readonly string[]): 
   return ((entry?.["tags"] as Body[] | undefined) ?? []).filter((t) => t["source"] !== "provisional" && !wanted.includes(t["tag"])).map((t) => t["tag"] as string);
 }
 
-export function parseStoredEdits(name: ContentDocumentName, value: unknown): DraftEdits {
+export function parseStoredEdits(name: StoredDocumentName, value: unknown): DraftEdits {
   return STORED_EDITS[name].parse(value) as DraftEdits;
 }
 

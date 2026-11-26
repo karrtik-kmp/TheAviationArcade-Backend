@@ -10,6 +10,7 @@ import type { AppConfig } from "./config/config.module.js";
 import { requestContext } from "./common/request-context.js";
 import { MAX_UPLOAD_BYTES, XLSX_MIME } from "./content/xlsx.js";
 import { MAX_MEDIA_BYTES } from "./content/media/media.service.js";
+import { FAQ_IMPORT_LIMIT } from "./content/documents/faq.js";
 import { mountApiDocs } from "./platform/api-docs.js";
 import { DrainState } from "./platform/drain-state.js";
 import { countAuthenticatedRequest } from "./platform/rate-limit.js";
@@ -28,11 +29,14 @@ const UNAUTHORIZED =() => new ApiError(401, "unauthorized", "Sign in required.",
 
 // Up to 2000 item ids of at most 64 characters each is about 134 KB of JSON.
 const readCoverageJson = express.json({ limit: "160kb" });
+// A FAQ export for the import route: 300 entries of 2200 code points at 4 bytes each fit (docs/plans/faq-cms.md F10).
+const readFaqImportJson = express.json({ limit: FAQ_IMPORT_LIMIT });
 
 /**
  * A larger body for one role-protected route, read by `read` only after the caller's token is verified and the caller
  * holds one of `required` (Backend ADR-0002). Used for the xlsx import (POST /v1/admin/content/:module/imports, raw xlsx,
- * 5 MB) and Trip coverage (POST /v1/admin/content/:module/trip-coverage, JSON, 160 KB), both admin-only. Everything else
+ * 5 MB), Trip coverage (POST /v1/admin/content/:module/trip-coverage, JSON, 160 KB) and the FAQ import (POST
+ * /v1/admin/content/documents/faq/import, JSON, 3 MB), all admin-only. Everything else
  * keeps the 16 KB JSON-only rule. The body is read only after this middleware has verified the Firebase token and read the
  * caller's active roles from account_roles (same helpers and the same 401/403/503/429 answers as the guards; the request is
  * counted against the rate limit here, before the role lookup, and RateLimitGuard then skips it), so neither an
@@ -105,6 +109,7 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   app.use("/v1/admin/content/:module/imports", roleBodyReader(app, ["admin"], readXlsx));
   app.use("/v1/admin/content/documents/field-awards/imports", roleBodyReader(app, ["admin"], readXlsx));
   app.use("/v1/admin/content/:module/trip-coverage", roleBodyReader(app, ["admin"], readCoverageJson));
+  app.use("/v1/admin/content/documents/faq/import", roleBodyReader(app, ["admin"], readFaqImportJson));
   // Media upload: raw JPEG/PNG, 5 MB, photographer (admins pass). Only two exact paths: the collection ("/") and a well-formed
   // item's "/med-<n>/versions"; every other sub-route keeps the 16 KB JSON rule.
   const readMediaUpload = roleBodyReader(app, ["photographer"], readImage);

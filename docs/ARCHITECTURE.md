@@ -305,6 +305,42 @@ real Bunny zone: the pull zone, token key and Edge Rules are created only with t
   returns all ten in `codeSearchBoards` (ruling R-6, an exception to R-1). Fewer than ten boards at the rank: client mode. This deals
   from items, not from a release: releases deliver nothing yet, and R4 must accept or migrate these Trips. Rounds stay client facts.
 
+## Site documents: the FAQ (API 0.33.0, migration 0032, 2026-11-26)
+
+Plan `docs/plans/faq-cms.md`; client request (Josh, 2026-11-26): an FAQ he can adjust himself (SRS WB-FAQ-01, -02, -04, -05).
+
+- **Site documents vs game documents.** `content_documents` and `content_drafts` now hold two kinds. Game documents
+  (`CONTENT_DOCUMENT_NAMES`: `field-awards`, `clipper-cards`, `aircraft-tags`) feed the manifest, `catalogVersion`, the Logbook ETag
+  and `GET /v1/content/documents/:name/:version`. Site documents (`SITE_DOCUMENT_NAMES`: `faq`) share the tables, the draft lock, the
+  publish transaction and the audit row, but reach no player: they are not in the manifest and a FAQ publish changes none of those
+  bytes. `STORED_DOCUMENT_NAMES` (both) is what the name CHECKs and the staff routes accept; the game-facing code keeps the game list,
+  so `faq` is 404 on the game route. The staff list `GET /v1/admin/content/documents` stays game-only.
+- **Body and editing.** `faq.v1`: categories of `{ id, title, entries: [{ id, question, answer }] }`, plain text, strict zod on every
+  read and write, entry ids unique across the document, 30 categories and 300 entries at most. Before the first publish the base is the
+  empty body (version 0). Unlike the game documents, whose draft is a small overlay, the FAQ draft stores the whole working body
+  (`edits = { faq, history }`), because it is free structure. Staff edit with `PATCH .../faq/draft` carrying 1 to 25 operations
+  (`upsertCategory`, `removeCategory`, `moveCategory`, `upsertEntry`, `removeEntry`, `moveEntry`) applied in order, all or nothing under
+  the same draft lock and `draftVersion` fence; a category can be removed only when empty so one click cannot delete answers in bulk.
+  Publish needs at least one entry. Admin-only for now; nothing is seeded, staff transcribe client text only.
+- **Text rule.** Title, question and answer: CRLF and CR become LF, trim, non-empty, no U+0000, no lone surrogate, no control character
+  except newline, and a newline only in answers. No HTML, no Markdown.
+- **Public read.** `GET /v1/public/faq` (`@Public() @SkipClientVersion()`, the per-IP public tier) returns the version in force with
+  `ETag` (sha256 of the stored canonical bytes), `Cache-Control: no-cache` and 304 on `If-None-Match`; 404 `not_found` before the first
+  publish. An Authorization header is ignored.
+- **Dev to live copy (plan F10, user ruling 2026-11-26).** Josh (full `admin`) edits and publishes on dev; staff then
+  `GET .../faq/export` there (the published FAQ as a file `{ kind: "faq-export", format, sourceHost, sourceVersion, publishedAt,
+  sha256, categories }`, `Content-Disposition: attachment`), `POST .../faq/import` it on live into the DRAFT, review the draft, and
+  publish with the normal route. `sha256` is over the canonical bytes of `{ format, categories }` (no `version`, which differs per
+  host), so identical content has the same digest on both hosts; the importer recomputes it and refuses a mismatch (tamper check, 422
+  `content_invalid`), as it does a wrong `kind` or `format` or a body that fails the FAQ rules. The import replaces the whole draft
+  under the same lock and `draftVersion` fence (stale: 409), adds an `import` history entry and one `content_import` audit row; it
+  never touches the live version. `sourceHost` is informational and never trusted. The import route alone has a 3 MB JSON body limit
+  (300 entries of 2200 code points at 4 bytes fit); every other route keeps 16 KB.
+- **Public rate limit (proposed, awaiting user OK; no code change).** Keep the per-IP public tier and no website secret (ruling
+  2026-11-04). After the hosting move the website's server calls from one host, so every guest shares one IP budget; the website's FAQ
+  reader caches 60 s with one request in flight and serves stale on error, so the FAQ costs about one request a minute. Keep
+  `RATE_LIMIT_PUBLIC_PER_MIN` at 60 and size it at hosting together with the guest media read; `TRUST_PROXY` must equal the proxy hop count.
+
 ## Editorial desks and Plane of the Day (W1, API 0.23.0, built 2026-11-05)
 
 Plan `docs/plans/website-content.md`. The website's Aircraft Identifier and Plane of the Day desks keep their records in

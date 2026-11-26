@@ -20,7 +20,7 @@ import {
 import type {
   AccountRole,
   AdminAuditAction,
-  ContentDocumentName,
+  StoredDocumentName,
   ContentSource,
   ContentStatus,
   DeckFormat,
@@ -1014,7 +1014,7 @@ export const playerFieldAwards = pgTable(
 export const contentDocuments = pgTable(
   "content_documents",
   {
-    name: text("name").$type<ContentDocumentName>().notNull(),
+    name: text("name").$type<StoredDocumentName>().notNull(),
     version: integer("version").notNull(),
     format: text("format").notNull(),
     body: jsonb("body").notNull(),
@@ -1028,7 +1028,7 @@ export const contentDocuments = pgTable(
   },
   (t) => [
     primaryKey({ name: "content_documents_pk", columns: [t.name, t.version] }),
-    check("content_documents_name_check", sql`${t.name} IN ('field-awards', 'clipper-cards', 'aircraft-tags')`),
+    check("content_documents_name_check", sql`${t.name} IN ('field-awards', 'clipper-cards', 'aircraft-tags', 'faq')`),
     check("content_documents_version_check", sql`${t.version} >= 1`),
     check("content_documents_format_check", sql`${t.format} = ${t.name} || '.v1'`),
     check("content_documents_body_check", sql`${t.body} @> '{}'::jsonb`),
@@ -1049,14 +1049,14 @@ export const contentDocuments = pgTable(
 export const contentDrafts = pgTable(
   "content_drafts",
   {
-    name: text("name").$type<ContentDocumentName>().primaryKey(),
+    name: text("name").$type<StoredDocumentName>().primaryKey(),
     version: integer("version").notNull(),
     edits: jsonb("edits").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     updatedBy: text("updated_by").notNull(),
   },
   (t) => [
-    check("content_drafts_name_check", sql`${t.name} IN ('field-awards', 'clipper-cards', 'aircraft-tags')`),
+    check("content_drafts_name_check", sql`${t.name} IN ('field-awards', 'clipper-cards', 'aircraft-tags', 'faq')`),
     check("content_drafts_version_check", sql`${t.version} >= 1`),
     check("content_drafts_edits_check", sql`${t.edits} @> '{}'::jsonb`),
     check("content_drafts_updated_by_check", sql`length(${t.updatedBy}) BETWEEN 1 AND 256`),

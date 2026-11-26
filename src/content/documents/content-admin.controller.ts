@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Res } from "@nestjs/common";
-import type { Response } from "express";
+import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, Req, Res } from "@nestjs/common";
+import type { Request, Response } from "express";
 import { Principal } from "../../auth/firebase-auth.guard.js";
 import { Roles } from "../../auth/roles.js";
 import { ApiError } from "../../common/errors.js";
@@ -10,12 +10,13 @@ import { XLSX_MIME } from "../xlsx.js";
 import { SkipClientVersion } from "../../platform/client-version.js";
 import { ContentAdminService } from "./content-admin.service.js";
 import { EDIT_REQUESTS, publishRequest, versionOnlyRequest } from "./drafts.js";
-import { isDocumentName } from "./documents.js";
-import type { ContentDocumentName } from "./documents.js";
+import { exportSourceHost, faqImportRequest } from "./faq.js";
+import { isStoredDocumentName } from "./documents.js";
+import type { StoredDocumentName } from "./documents.js";
 
-/** An unknown document name is a 404, like an unknown route. */
-function documentName(value: string): ContentDocumentName {
-  if (!isDocumentName(value)) throw new ApiError(404, "not_found", "No such endpoint.");
+/** An unknown document name is a 404, like an unknown route. The FAQ (a site document) is a name here, not in the player routes. */
+function documentName(value: string): StoredDocumentName {
+  if (!isStoredDocumentName(value)) throw new ApiError(404, "not_found", "No such endpoint.");
   return value;
 }
 
@@ -63,6 +64,29 @@ export class ContentAdminController {
     return result;
   }
 
+  /**
+   * The published FAQ as one JSON file to carry to another host (docs/plans/faq-cms.md F10): { kind: "faq-export", format, sourceHost,
+   * sourceVersion, publishedAt, sha256, categories }. 404 before the first publish.
+   */
+  @Get("faq/export")
+  async exportFaq(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const file = await this.admin.exportFaq(exportSourceHost(req.hostname));
+    res.setHeader("Content-Disposition", `attachment; filename="faq-v${file.sourceVersion}.json"`);
+    res.setHeader("Cache-Control", "no-store");
+    return file;
+  }
+
+  /**
+   * Replaces the FAQ DRAFT with an export file. The body is JSON up to 3 MB on this route only (src/app.setup.ts, after the admin role is
+   * checked); everything inside `file` that is wrong is 422 content_invalid, a stale draftVersion 409.
+   */
+  @Post("faq/import")
+  @HttpCode(200)
+  async importFaq(@Principal() principal: string, @Body() body: unknown) {
+    const request = parse(faqImportRequest, body, "Expected { draftVersion, file: <the export> }.");
+    return this.admin.importFaq(principal, request.draftVersion, request.file);
+  }
+
   /** Every document: the version in force, the draft revision and whether a publish would change anything. */
   @Get()
   async list() {
@@ -82,7 +106,7 @@ export class ContentAdminController {
     const request = parse(
       EDIT_REQUESTS[name] as { safeParse(value: unknown): { success: true; data: { draftVersion: number } } | { success: false } },
       body,
-      `Expected { draftVersion, ${name === "field-awards" ? "awards" : name === "clipper-cards" ? "names" : "entries"}: [...] } as documented.`,
+      `Expected { draftVersion, ${name === "field-awards" ? "awards" : name === "clipper-cards" ? "names" : name === "faq" ? "operations" : "entries"}: [...] } as documented.`,
     );
     return this.admin.edit(name, principal, request.draftVersion, request);
   }

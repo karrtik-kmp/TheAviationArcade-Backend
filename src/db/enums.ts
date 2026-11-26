@@ -49,6 +49,13 @@ export const DECK_FORMATS = ["grid.v1"] as const;
 export type DeckFormat = (typeof DECK_FORMATS)[number];
 export const TRIP_OUTCOMES = ["all_correct", "not_all_correct"] as const;
 export const CONTENT_DOCUMENT_NAMES = ["field-awards", "clipper-cards", "aircraft-tags"] as const;
+/**
+ * Site documents (docs/plans/faq-cms.md F1, migration 0032): versioned like the game documents, but written for the website, never listed in the
+ * manifest, `catalogVersion` or the Logbook ETag, and not served on `GET /v1/content/documents`.
+ */
+export const SITE_DOCUMENT_NAMES = ["faq"] as const;
+/** Every name `content_documents` and `content_drafts` may hold (their name CHECKs) and the staff draft routes accept. */
+export const STORED_DOCUMENT_NAMES = [...CONTENT_DOCUMENT_NAMES, ...SITE_DOCUMENT_NAMES] as const;
 /** Account roles (Backend ADR-0002). Only an `active` row grants anything (`blocked` is a photographer-only state, plan R-d); `admin` includes every `photographer` permission. */
 export const ACCOUNT_ROLES = ["player", "photographer", "admin"] as const;
 export const ROLE_STATES = ["pending", "active", "rejected", "revoked", "blocked"] as const;
@@ -108,6 +115,8 @@ export type AdminAuditAction = (typeof ADMIN_AUDIT_ACTIONS)[number];
 export type TripStatus = (typeof TRIP_STATUSES)[number];
 export type TripOutcome = (typeof TRIP_OUTCOMES)[number];
 export type ContentDocumentName = (typeof CONTENT_DOCUMENT_NAMES)[number];
+export type SiteDocumentName = (typeof SITE_DOCUMENT_NAMES)[number];
+export type StoredDocumentName = (typeof STORED_DOCUMENT_NAMES)[number];
 export type AccountRole = (typeof ACCOUNT_ROLES)[number];
 export type RoleState = (typeof ROLE_STATES)[number];
 export type MediaReviewDecision = (typeof MEDIA_REVIEW_DECISIONS)[number];

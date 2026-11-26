@@ -225,6 +225,13 @@
       "when": 1795667032998,
       "tag": "0031_self_serve_photographer",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1795671267770,
+      "tag": "0032_faq_document",
+      "breakpoints": true
     }
   ]
 }

@@ -16,6 +16,8 @@ import { MODULE_IDS } from "../src/rules/modules.js";
 import { RANKS } from "../src/rules/ranks.js";
 import { XLSX_MIME } from "../src/content/xlsx.js";
 import { mirrorSnapshot } from "../src/ugs/mirror-policy.js";
+import { faqContentSha256 } from "../src/content/documents/faq.js";
+import { resetDocumentMemo } from "../src/content/documents/document-store.js";
 import { frozenDelete } from "./frozen-cleanup.js";
 import { clientSheet } from "./fixtures.js";
 import { seedAdmins } from "./roles-helpers.js";
@@ -1018,5 +1020,138 @@ describe("openapi contract: the staff edit and publish routes (0.11.0)", () => {
     expect(cleared.status).toBe(200);
     check("ContentDraft", cleared.body);
     check("ContentDraftList", (await request(server).get(BASE).set(staff)).body);
+  });
+});
+
+describe("openapi contract: the FAQ site document (0.33.0)", () => {
+  const ajv = new Ajv2020({ strict: false, validateFormats: false, allErrors: true });
+  ajv.addSchema({ $id: "spec", components: spec.components });
+  const validator = (schemaName: string) => ajv.compile({ $ref: `spec#/components/schemas/${schemaName}` });
+  const check = (schemaName: string, value: unknown) => {
+    const validate = validator(schemaName);
+    expect(validate(value), `${schemaName} ${JSON.stringify(validate.errors)}`).toBe(true);
+  };
+  const staff = { Authorization: `Bearer ${emulatorToken("staff")}` };
+  const FAQ = "/v1/admin/content/documents/faq";
+
+  async function cleanFaq() {
+    await sql.query("DELETE FROM content_drafts WHERE name = 'faq'");
+    await frozenDelete(sql, "admin_audit", "action IN ('content_publish', 'content_import') AND target = 'faq'");
+    const client = await sql.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE content_documents DISABLE TRIGGER content_documents_immutable");
+      await client.query("DELETE FROM content_documents WHERE name = 'faq'");
+      await client.query("ALTER TABLE content_documents ENABLE TRIGGER content_documents_immutable");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    resetDocumentMemo();
+  }
+
+  beforeAll(cleanFaq);
+  afterAll(cleanFaq);
+
+  it("real FaqPublic, FaqExport, faq ContentDraft, ContentDraftDetail and ContentPublishResult responses validate", async () => {
+    const empty = await request(server).get(`${FAQ}/draft`).set(staff);
+    expect(empty.status).toBe(200);
+    check("ContentDraftDetail", empty.body);
+    expect(empty.body.publishedVersion).toBeNull();
+
+    const edit = {
+      draftVersion: 0,
+      operations: [
+        { op: "upsertCategory", id: "general", title: "General" },
+        { op: "upsertEntry", categoryId: "general", id: "what-is-it", question: "What is it?", answer: "One.\n\nTwo." },
+      ],
+    };
+    check("FaqEditRequest", edit);
+    const edited = await request(server).patch(`${FAQ}/draft`).set(staff).send(edit);
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    check("ContentDraft", edited.body);
+    check("ContentDraftDetail", (await request(server).get(`${FAQ}/draft`).set(staff)).body);
+    check("ContentDraftList", (await request(server).get("/v1/admin/content/documents").set(staff)).body);
+
+    const published = await request(server).post(`${FAQ}/publish`).set(staff).send({ draftVersion: edited.body.draftVersion, note: "contract test" });
+    expect(published.status, JSON.stringify(published.body)).toBe(201);
+    check("ContentPublishResult", published.body);
+    expect(published.body.name).toBe("faq");
+    check("ContentDraftDetail", (await request(server).get(`${FAQ}/draft`).set(staff)).body);
+
+    const pub = await request(server).get("/v1/public/faq");
+    expect(pub.status).toBe(200);
+    check("FaqPublic", pub.body);
+    const exported = await request(server).get(`${FAQ}/export`).set(staff);
+    expect(exported.status).toBe(200);
+    check("FaqExport", exported.body);
+    check("FaqImportRequest", { draftVersion: 0, file: exported.body });
+
+    // An import answers with a faq ContentDraft.
+    const current = (await request(server).get(`${FAQ}/draft`).set(staff)).body.draftVersion;
+    const imported = await request(server).post(`${FAQ}/import`).set(staff).send({ draftVersion: current, file: exported.body });
+    expect(imported.status, JSON.stringify(imported.body)).toBe(200);
+    check("ContentDraft", imported.body);
+  });
+
+  it("the response schemas are strict", () => {
+    expect(validator("FaqPublic")({ format: "faq.v1", version: 1, publishedAt: "2026-11-26T10:00:00.000Z", categories: [], extra: 1 })).toBe(false);
+    expect(validator("FaqPublic")({ format: "faq.v1", version: 0, publishedAt: "2026-11-26T10:00:00.000Z", categories: [] })).toBe(false);
+    expect(validator("FaqExport")({ kind: "faq-backup", format: "faq.v1", sourceHost: "h", sourceVersion: 1, publishedAt: "x", sha256: "0".repeat(64), categories: [] })).toBe(false);
+    expect(validator("FaqExport")({ kind: "faq-export", format: "faq.v1", sourceHost: "h", sourceVersion: 1, publishedAt: "x", sha256: "Z".repeat(64), categories: [] })).toBe(false);
+  });
+
+  it("request schemas accept and reject the same bodies as the server", async () => {
+    const cat = { op: "upsertCategory", id: "a", title: "A" };
+    const entry = { op: "upsertEntry", categoryId: "a", id: "e", question: "Q?", answer: "A." };
+    const file = (categories: unknown[]) => ({
+      kind: "faq-export",
+      format: "faq.v1",
+      sourceHost: "dev.example.com",
+      sourceVersion: 1,
+      publishedAt: "2026-11-26T10:00:00.000Z",
+      sha256: faqContentSha256(categories as never),
+      categories,
+    });
+    const one = [{ id: "a", title: "A", entries: [{ id: "e", question: "Q?", answer: "A." }] }];
+    const ops = (...operations: unknown[]) => ({ draftVersion: 0, operations });
+    // A body the spec refuses must be a 400 on the server; one it accepts must get past the shape check (any other status).
+    const cases: { schema: string; body: unknown; ok: boolean }[] = [
+      { schema: "FaqEditRequest", body: ops(cat, entry), ok: true },
+      { schema: "FaqEditRequest", body: ops({ op: "moveCategory", id: "a", position: 29 }), ok: true },
+      { schema: "FaqEditRequest", body: ops({ op: "moveCategory", id: "a", position: 30 }), ok: false },
+      { schema: "FaqEditRequest", body: ops({ op: "moveEntry", id: "e", categoryId: "a", position: 299 }), ok: true },
+      { schema: "FaqEditRequest", body: ops({ op: "moveEntry", id: "e", categoryId: "a", position: 300 }), ok: false },
+      { schema: "FaqEditRequest", body: ops({ op: "moveEntry", id: "e", categoryId: "a", position: -1 }), ok: false },
+      { schema: "FaqEditRequest", body: ops({ op: "removeEntry", id: "e" }, { op: "removeCategory", id: "a" }), ok: true },
+      { schema: "FaqEditRequest", body: ops(), ok: false },
+      { schema: "FaqEditRequest", body: ops(...Array(26).fill(cat)), ok: false },
+      { schema: "FaqEditRequest", body: ops(...Array(25).fill(cat)), ok: true },
+      { schema: "FaqEditRequest", body: { draftVersion: -1, operations: [cat] }, ok: false },
+      { schema: "FaqEditRequest", body: ops({ ...cat, extra: 1 }), ok: false },
+      { schema: "FaqEditRequest", body: ops({ ...cat, id: "Bad Id" }), ok: false },
+      { schema: "FaqEditRequest", body: ops({ ...cat, title: "x".repeat(81) }), ok: false },
+      { schema: "FaqEditRequest", body: ops({ op: "explode", id: "a" }), ok: false },
+      { schema: "FaqEditRequest", body: { operations: [cat] }, ok: false },
+      { schema: "FaqImportRequest", body: { draftVersion: 0, file: file(one) }, ok: true },
+      { schema: "FaqImportRequest", body: { draftVersion: 0, file: file([]) }, ok: true },
+      { schema: "FaqImportRequest", body: { file: file(one) }, ok: false },
+      { schema: "FaqImportRequest", body: { draftVersion: 0 }, ok: false },
+      { schema: "FaqImportRequest", body: { draftVersion: 0, file: file(one), extra: 1 }, ok: false },
+      { schema: "FaqImportRequest", body: { draftVersion: 2_000_000_001, file: file(one) }, ok: false },
+    ];
+    for (const { schema, body, ok } of cases) {
+      const label = `${schema} ${JSON.stringify(body).slice(0, 120)}`;
+      expect(validator(schema)(body), label).toBe(ok);
+      const res =
+        schema === "FaqEditRequest"
+          ? await request(server).patch(`${FAQ}/draft`).set(staff).send(body as object)
+          : await request(server).post(`${FAQ}/import`).set(staff).send(body as object);
+      expect(res.status === 400, `server ${label} -> ${res.status} ${JSON.stringify(res.body).slice(0, 160)}`).toBe(!ok);
+      await sql.query("DELETE FROM content_drafts WHERE name = 'faq'");
+    }
   });
 });

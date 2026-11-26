@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { CONTENT_DOCUMENT_NAMES } from "../../db/enums.js";
-import type { ContentDocumentName } from "../../db/enums.js";
+import { CONTENT_DOCUMENT_NAMES, STORED_DOCUMENT_NAMES } from "../../db/enums.js";
+import type { ContentDocumentName, StoredDocumentName } from "../../db/enums.js";
 import {
   AIRCRAFT_TAGS,
   SEED_AIRCRAFT_TAG_ENTRIES,
@@ -12,6 +12,7 @@ import { CARD_MODULES, cardKeySource } from "../../rules/clipper-cards.js";
 import { FIELD_AWARD_CATALOG, FIELD_AWARD_CATALOG_SOURCE } from "../../rules/field-award-catalog.js";
 import { FIELD_AWARD_IDS, FIELD_AWARD_METRICS } from "../../rules/field-awards.js";
 import type { FieldAwardDefinition, FieldAwardMetric } from "../../rules/field-awards.js";
+import { FAQ_FORMAT, FaqValidationError, parseFaq } from "./faq.js";
 
 /**
  * The three published documents (design 7; openapi `FieldAwardCatalogDocument`, `ClipperCardCatalogDocument`,
@@ -19,17 +20,24 @@ import type { FieldAwardDefinition, FieldAwardMetric } from "../../rules/field-a
  * never typed by hand) and the validators that protect `catalogInForce` from a bad row. The bytes are `canonicalBytes` of the
  * body (canonical.ts).
  */
-export { CONTENT_DOCUMENT_NAMES };
-export type { ContentDocumentName };
+export { CONTENT_DOCUMENT_NAMES, STORED_DOCUMENT_NAMES };
+export type { ContentDocumentName, StoredDocumentName };
 
-export const DOCUMENT_FORMAT: Readonly<Record<ContentDocumentName, string>> = {
+export const DOCUMENT_FORMAT: Readonly<Record<StoredDocumentName, string>> = {
   "field-awards": "field-awards.v1",
   "clipper-cards": "clipper-cards.v1",
   "aircraft-tags": "aircraft-tags.v1",
+  faq: FAQ_FORMAT,
 };
 
+/** A GAME document name (manifest, `GET /v1/content/documents/:name/:version`). The FAQ is a site document: false for it (docs/plans/faq-cms.md F1). */
 export function isDocumentName(value: string): value is ContentDocumentName {
   return (CONTENT_DOCUMENT_NAMES as readonly string[]).includes(value);
+}
+
+/** Any name the staff draft routes and the stores accept: the game documents and the site documents. */
+export function isStoredDocumentName(value: string): value is StoredDocumentName {
+  return (STORED_DOCUMENT_NAMES as readonly string[]).includes(value);
 }
 
 export class DocumentValidationError extends Error {}
@@ -266,8 +274,16 @@ export function buildClipperCardsBody(
 }
 
 /** Validates a body for its name. Used before any insert and when a row is read for serving. */
-export function validateDocument(name: ContentDocumentName, body: unknown, expectedVersion?: number): void {
+export function validateDocument(name: StoredDocumentName, body: unknown, expectedVersion?: number): void {
   switch (name) {
+    case "faq":
+      try {
+        parseFaq(body, expectedVersion);
+      } catch (error) {
+        if (error instanceof FaqValidationError) throw new DocumentValidationError(error.message);
+        throw error;
+      }
+      return;
     case "field-awards":
       parseFieldAwards(body, expectedVersion);
       return;

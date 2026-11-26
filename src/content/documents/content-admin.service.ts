@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { ApiError } from "../../common/errors.js";
 import { DatabaseService, ExpectedRollback } from "../../database/database.module.js";
 import type { Tx } from "../../database/database.module.js";
-import type { ContentDocumentName } from "../../db/enums.js";
+import type { StoredDocumentName } from "../../db/enums.js";
 import { adminAudit } from "../../db/schema.js";
 import { SEED_COMMERCIAL_CARD_KEYS } from "../../rules/aircraft-tags.js";
 import { FIELD_AWARD_CATALOG } from "../../rules/field-award-catalog.js";
@@ -45,9 +45,22 @@ import {
 } from "./document-store.js";
 import type { Reader } from "./document-store.js";
 import { CONTENT_DOCUMENT_NAMES, DocumentValidationError, buildClipperCardsBody, validateDocument } from "./documents.js";
+import {
+  EMPTY_FAQ_WORKING,
+  FaqOperationError,
+  FaqValidationError,
+  applyFaqOperations,
+  buildFaqExport,
+  describeFaqChanges,
+  faqEntryCount,
+  parseFaqExport,
+  parseFaqWorking,
+  sameFaq,
+} from "./faq.js";
+import type { FaqChange, FaqExport, FaqOperation, FaqWorking } from "./faq.js";
 
 export type DraftView = {
-  name: ContentDocumentName;
+  name: StoredDocumentName;
   /** The version in force (what players are served); null when none exists yet (clipper-cards before its first seal). */
   publishedVersion: number | null;
   /** The revision the editors' version check compares; 0 = no draft row yet. */
@@ -58,13 +71,13 @@ export type DraftView = {
   /** Total number of differences between the document in force and what a publish would write. */
   changeCount: number;
   /** The first `MAX_LISTED_CHANGES` of them. */
-  changes: Change[];
+  changes: Array<Change | FaqChange>;
 };
 
 export type DraftDetail = DraftView & { body: Record<string, unknown> };
 
 export type PublishResult = {
-  name: ContentDocumentName;
+  name: StoredDocumentName;
   version: number;
   previousVersion: number | null;
   sha256: string;
@@ -121,6 +134,12 @@ class ExpectedRefusal extends ExpectedRollback {
   }
 }
 
+/** A faq body or draft as the working body (no version). */
+function faqWorkingOf(body: unknown): FaqWorking {
+  const { version: _version, ...rest } = body as FaqWorking & { version?: number };
+  return rest;
+}
+
 @Injectable()
 export class ContentAdminService {
   private readonly logger = new Logger("ContentAdmin");
@@ -143,7 +162,7 @@ export class ContentAdminService {
     );
   }
 
-  async get(name: ContentDocumentName): Promise<DraftDetail> {
+  async get(name: StoredDocumentName): Promise<DraftDetail> {
     return this.transaction(async (tx) => {
       const { edits, draftVersion } = await this.loadEdits(tx, name);
       const preview = await this.preview(tx, name, edits);
@@ -152,7 +171,8 @@ export class ContentAdminService {
   }
 
   /** Merges validated edits into the overlay as the next draft revision. `request` has passed EDIT_REQUESTS[name]. */
-  async edit(name: ContentDocumentName, principal: string, expected: number, request: unknown): Promise<DraftView> {
+  async edit(name: StoredDocumentName, principal: string, expected: number, request: unknown): Promise<DraftView> {
+    if (name === "faq") return this.editFaq(principal, expected, (request as { operations: FaqOperation[] }).operations);
     return this.transaction(async (tx) => {
       await lockDraft(tx, name);
       const { edits, draftVersion } = await this.loadEdits(tx, name);
@@ -167,8 +187,75 @@ export class ContentAdminService {
     });
   }
 
+  /**
+   * The FAQ edit (docs/plans/faq-cms.md F5): the operations run in order on the working body (the draft's, else the version in force,
+   * else the empty base) and the result is stored as the whole draft. One refused operation (422 content_invalid, with its index) leaves
+   * the draft as it was. The same lock and draftVersion fence as every document.
+   */
+  private async editFaq(principal: string, expected: number, operations: readonly FaqOperation[]): Promise<DraftView> {
+    return this.transaction(async (tx) => {
+      await lockDraft(tx, "faq");
+      const { edits, draftVersion } = await this.loadEdits(tx, "faq");
+      if (draftVersion !== expected) throw new ApiError(409, "version_conflict", `${SAVE_CONFLICT} Current draft version: ${draftVersion}.`);
+      const current = await this.preview(tx, "faq", edits);
+      let working: FaqWorking;
+      try {
+        working = applyFaqOperations(faqWorkingOf(current.body), operations);
+      } catch (error) {
+        if (error instanceof FaqOperationError) throw new ApiError(422, "content_invalid", `The FAQ edit was refused. ${error.message}.`);
+        throw error;
+      }
+      const merged = withHistory({ ...edits, faq: working }, principal, "edit", draftVersion + 1, new Date());
+      const preview = await this.preview(tx, "faq", merged);
+      this.assertValid("faq", preview);
+      const saved = await saveDraft(tx, "faq", draftVersion, merged, principal);
+      return this.toView("faq", saved, merged, preview);
+    });
+  }
+
+  /** The PUBLISHED FAQ as an export file (F10); 404 before the first publish. */
+  async exportFaq(sourceHost: string): Promise<FaqExport> {
+    const found = await documentInForce(this.database.db, "faq");
+    if (!found) throw new ApiError(404, "not_found", "The FAQ has not been published yet.");
+    return buildFaqExport({ sourceHost, sourceVersion: found.value.version, publishedAt: found.meta.createdAt.toISOString(), categories: found.value.categories });
+  }
+
+  /**
+   * Replaces the whole FAQ DRAFT with an export file (F10), never the version in force. Strict (422 content_invalid, nothing written), under
+   * the same lock and draftVersion fence as an edit; the history gains an `import` entry (the file's digest) and one `content_import`
+   * audit row is written in the same transaction. Publishing stays the normal publish route.
+   */
+  async importFaq(principal: string, expected: number, file: unknown): Promise<DraftView> {
+    let parsed: FaqExport;
+    try {
+      parsed = parseFaqExport(file);
+    } catch (error) {
+      if (error instanceof FaqValidationError) throw new ApiError(422, "content_invalid", error.message);
+      throw error;
+    }
+    return this.transaction(async (tx) => {
+      await lockDraft(tx, "faq");
+      const { edits, draftVersion } = await this.loadEdits(tx, "faq");
+      if (draftVersion !== expected) throw new ApiError(409, "version_conflict", `${SAVE_CONFLICT} Current draft version: ${draftVersion}.`);
+      const working: FaqWorking = { format: "faq.v1", categories: parsed.categories };
+      const merged = withHistory({ ...edits, faq: working }, principal, "import", draftVersion + 1, new Date(), parsed.sha256);
+      const preview = await this.preview(tx, "faq", merged);
+      this.assertValid("faq", preview);
+      const saved = await saveDraft(tx, "faq", draftVersion, merged, principal);
+      await tx.insert(adminAudit).values({
+        actor: principal,
+        action: "content_import",
+        target: "faq",
+        detail: { document: "faq", sourceHost: parsed.sourceHost, sourceVersion: parsed.sourceVersion, sha256: parsed.sha256, draftVersion: saved },
+        createdAt: new Date(),
+      });
+      this.logger.log(`${principal} imported a FAQ export (${parsed.sha256.slice(0, 12)} from ${parsed.sourceHost} v${parsed.sourceVersion}) into the draft`);
+      return this.toView("faq", saved, merged, preview);
+    });
+  }
+
   /** Throws away the pending edits (also the way out of a draft that no longer validates). Version-checked; no draft row = nothing to do. */
-  async discard(name: ContentDocumentName, principal: string, expected: number): Promise<DraftView> {
+  async discard(name: StoredDocumentName, principal: string, expected: number): Promise<DraftView> {
     return this.transaction(async (tx) => {
       await lockDraft(tx, name);
       const row = await findDraft(tx, name);
@@ -188,7 +275,7 @@ export class ContentAdminService {
    * content_invalid) or equals the one in force (409 nothing_to_publish). `clipper-cards` is always rebuilt from the content
    * as it is NOW, so publishing it is how a v1 sealed from a small or trial set catches up.
    */
-  async publish(name: ContentDocumentName, principal: string, expected: number, note: string | undefined, acknowledgeCardRemoval = false): Promise<PublishResult> {
+  async publish(name: StoredDocumentName, principal: string, expected: number, note: string | undefined, acknowledgeCardRemoval = false): Promise<PublishResult> {
     const result = await this.transaction(async (tx): Promise<Omit<PublishResult, "manifestVersion">> => {
       await lockDraft(tx, name);
       await lockSeed(tx); // a seed writing version 1 finishes first; the reads below then agree with each other
@@ -198,10 +285,13 @@ export class ContentAdminService {
       if (!preview.published && name === "clipper-cards" && preview.sealable === 0) {
         throw new ApiError(409, "nothing_to_publish", "There is no approved Military content to seal yet.");
       }
+      if (name === "faq" && faqEntryCount(preview.body as unknown as FaqWorking) === 0) {
+        throw new ApiError(409, "nothing_to_publish", "The FAQ has no entries; add at least one before publishing.");
+      }
       if (!preview.changed) throw new ApiError(409, "nothing_to_publish", "The draft equals the version in force; nothing to publish.");
       this.assertValid(name, preview);
       this.assertRemovalsAcknowledged(name, preview, edits);
-      const changes = describeChanges(name, preview.published, preview.body, edits);
+      const changes = this.changesOf(name, preview, edits);
       const removedCards = changes.filter((c) => c.kind === "card-removed");
       if (removedCards.length > 0 && !acknowledgeCardRemoval) {
         throw new ApiError(
@@ -407,13 +497,13 @@ export class ContentAdminService {
     return undefined;
   }
 
-  private async view(db: Reader, name: ContentDocumentName): Promise<DraftView> {
+  private async view(db: Reader, name: StoredDocumentName): Promise<DraftView> {
     const { edits, draftVersion } = await this.loadEdits(db, name);
     return this.toView(name, draftVersion, edits, await this.preview(db, name, edits));
   }
 
-  private toView(name: ContentDocumentName, draftVersion: number, edits: DraftEdits, preview: Preview): DraftView {
-    const changes = preview.changed || preview.published ? describeChanges(name, preview.published, preview.body, edits) : [];
+  private toView(name: StoredDocumentName, draftVersion: number, edits: DraftEdits, preview: Preview): DraftView {
+    const changes = preview.changed || preview.published ? this.changesOf(name, preview, edits) : [];
     return {
       name,
       publishedVersion: preview.publishedVersion,
@@ -425,30 +515,41 @@ export class ContentAdminService {
     };
   }
 
+  /** What a publish would change, per document kind. */
+  private changesOf(name: StoredDocumentName, preview: Preview, edits: DraftEdits): Array<Change | FaqChange> {
+    if (name === "faq") return describeFaqChanges(faqWorkingOf(preview.published ?? EMPTY_FAQ_WORKING), faqWorkingOf(preview.body));
+    return describeChanges(name, preview.published, preview.body, edits);
+  }
+
   /** The stored overlay, validated. A row that no longer validates (hand-edited) is 422: it cannot reach a published document; discard it. */
-  private async loadEdits(db: Reader, name: ContentDocumentName): Promise<{ edits: DraftEdits; draftVersion: number }> {
+  private async loadEdits(db: Reader, name: StoredDocumentName): Promise<{ edits: DraftEdits; draftVersion: number }> {
     const row = await findDraft(db, name);
     if (!row) return { edits: {}, draftVersion: 0 };
     try {
-      return { edits: parseStoredEdits(name, row.edits), draftVersion: row.version };
+      const edits = parseStoredEdits(name, row.edits);
+      if (name === "faq" && edits.faq) parseFaqWorking(edits.faq);
+      return { edits, draftVersion: row.version };
     } catch (error) {
-      if (!(error instanceof z.ZodError)) throw error;
-      this.logger.error(`the stored ${name} draft does not validate and is refused: ${error.issues.slice(0, 3).map((i) => i.message).join("; ")}`);
+      if (!(error instanceof z.ZodError || error instanceof FaqValidationError)) throw error;
+      this.logger.error(
+        `the stored ${name} draft does not validate and is refused: ${error instanceof z.ZodError ? error.issues.slice(0, 3).map((i) => i.message).join("; ") : error.message}`,
+      );
       throw new ApiError(422, "content_invalid", `The stored ${name} draft is not valid. Discard it (version ${row.version}) and edit again.`);
     }
   }
 
   /** What the document would be: the one in force with the overlay applied, as version `next`. Pure reads. */
-  private async preview(db: Reader, name: ContentDocumentName, edits: DraftEdits): Promise<Preview> {
+  private async preview(db: Reader, name: StoredDocumentName, edits: DraftEdits): Promise<Preview> {
     const inForce = await documentInForce(db, name);
     const publishedRow = inForce ? await findDocument(db, name, inForce.meta.version) : undefined;
     const published = publishedRow ? (publishedRow.body as Record<string, unknown>) : undefined;
-    if (!published && name !== "clipper-cards") {
+    if (!published && name !== "clipper-cards" && name !== "faq") {
       throw new ApiError(503, "service_unavailable", "Content is not ready yet. Retry shortly.", { "Retry-After": "5" });
     }
     const next = await nextDocumentVersion(db, name);
     let body: Record<string, unknown>;
     let sealable = 0;
+    let changed: boolean | undefined;
     switch (name) {
       case "field-awards":
         body = applyFieldAwardEdits(published, edits);
@@ -462,9 +563,17 @@ export class ContentAdminService {
         body = applyCardNames(derived.body, published, edits);
         break;
       }
+      case "faq": {
+        // The draft is the whole working body; without one the document in force (or the empty base) is the working body.
+        const base = published ? faqWorkingOf(published) : EMPTY_FAQ_WORKING;
+        const working = edits.faq ?? base;
+        body = { ...working };
+        changed = !sameFaq(working, base);
+        break;
+      }
     }
     body = withVersion(body, next);
-    const changed = published ? !sameContent(body, published) : sealable > 0;
+    changed ??= published ? !sameContent(body, published) : sealable > 0;
     return { published, publishedVersion: inForce?.meta.version ?? null, next, body, changed, sealable };
   }
 
@@ -477,7 +586,7 @@ export class ContentAdminService {
   }
 
   /** An edit may only name something that exists: a Card in the document (or derivable from the content), never an invented key. */
-  private async assertKnownTargets(tx: Tx, name: ContentDocumentName, edits: DraftEdits, request: unknown): Promise<void> {
+  private async assertKnownTargets(tx: Tx, name: StoredDocumentName, edits: DraftEdits, request: unknown): Promise<void> {
     if (name === "field-awards") return; // ids are an enum in the request schema
     const preview = await this.preview(tx, name === "aircraft-tags" ? "clipper-cards" : name, name === "aircraft-tags" ? {} : edits);
     const cards = new Set(((preview.body["cards"] as { key: string }[] | undefined) ?? []).map((c) => c.key));
@@ -493,7 +602,7 @@ export class ContentAdminService {
   }
 
   /** Staff may not drop a tag the client supplied unless the edit says so (`acknowledgeClientTagRemoval`). */
-  private assertRemovalsAcknowledged(name: ContentDocumentName, preview: Preview, edits: DraftEdits): void {
+  private assertRemovalsAcknowledged(name: StoredDocumentName, preview: Preview, edits: DraftEdits): void {
     if (name !== "aircraft-tags") return;
     const removals = unacknowledgedClientRemovals(preview.published, edits);
     if (removals.length === 0) return;
@@ -502,7 +611,7 @@ export class ContentAdminService {
   }
 
   /** The publish check: the existing validators (28 ids once, metrics unchanged, integer targets >= 1, unique keys, body version). */
-  private assertValid(name: ContentDocumentName, preview: Preview): void {
+  private assertValid(name: StoredDocumentName, preview: Preview): void {
     try {
       validateDocument(name, preview.body, preview.next);
     } catch (error) {

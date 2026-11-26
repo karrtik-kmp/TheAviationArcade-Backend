@@ -37,7 +37,7 @@ export default defineConfig({
       "test/typed-email.test.ts", "test/store-catalog.test.ts", "test/purchases.test.ts", "test/stores-verifier.test.ts", "test/apple-store-verifier.test.ts", "test/google-store-verifier.test.ts", "test/stores-check.test.ts", "test/key-folder.test.ts",
       "test/editorial-rules.test.ts", "test/local-day.test.ts", "test/military-preparation.test.ts", "test/release-rules.test.ts", "test/demo-seed.test.ts", "test/firebase-accounts.test.ts",
       "test/word-grid.test.ts", "test/code-search-ladder.test.ts", "test/grid-draw.test.ts", "test/grid-boards.test.ts",
-      "test/code-search-mapping.test.ts", "test/code-search-seed.test.ts",
+      "test/code-search-mapping.test.ts", "test/code-search-seed.test.ts", "test/faq.test.ts",
     ],
   },
 });

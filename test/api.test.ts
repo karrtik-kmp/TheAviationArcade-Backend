@@ -681,13 +681,13 @@ describe("authorization header and global guard", () => {
         routes.push({ method: method.toUpperCase(), path: String(layer.route.path) });
       }
     }
-    // Guard against the enumeration silently finding nothing: 66 guarded routes (incl. 46 admin (the photographer approve/reject routes went in 0.32.0) (3 of them the editorial desks, 1 the Military preparation, 4 the Military releases, 1 the audit read), 3 trips, 2 content, the Logbook, 2 role routes, 1 media read, 2 purchases, 1 store catalog) plus four public routes (two health, the guest media read, the Plane of the Day read).
-    expect(routes.length).toBe(70);
+    // Guard against the enumeration silently finding nothing: 66 guarded routes (incl. 46 admin (the photographer approve/reject routes went in 0.32.0) (3 of them the editorial desks, 1 the Military preparation, 4 the Military releases, 1 the audit read), 3 trips, 2 content, the Logbook, 2 role routes, 1 media read, 2 purchases, 1 store catalog) plus five public routes (two health, the guest media read, the Plane of the Day read, the FAQ read); the guarded count includes the FAQ export and import (admin).
+    expect(routes.length).toBe(73);
     for (const { method, path } of routes) {
       const concrete = path.replace(":roundId", randomUUID()).replace(":tripId", randomUUID()).replace(":module", "aircraft-identifier-military").replace(":name", "field-awards").replace(":version", "1").replace(":principal", "firebase:demo-airplane-games:x").replace(":role", "admin");
       const response = await send(method, concrete, {});
-      // The guest media read is public; without ?ids it answers 400 (validation), never 401. The Plane of the Day read is public and needs no query: 200.
-      const expected = path.startsWith("/v1/health") ? 200 : path === "/v1/public/media" ? 400 : path === "/v1/public/plane-of-the-day" ? 200 : 401;
+      // The guest media read is public; without ?ids it answers 400 (validation), never 401. The Plane of the Day read is public and needs no query: 200. The FAQ read is public and 404 until the first publish (the FAQ suite leaves none behind).
+      const expected = path.startsWith("/v1/health") ? 200 : path === "/v1/public/media" ? 400 : path === "/v1/public/plane-of-the-day" ? 200 : path === "/v1/public/faq" ? 404 : 401;
       expect(response.status, `${method} ${path}`).toBe(expected);
     }
   });

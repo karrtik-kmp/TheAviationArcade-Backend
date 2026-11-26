@@ -1,10 +1,31 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.32.0
+  version: 0.33.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.33.0 (FAQ managed in the CMS, client request 2026-11-26; docs/plans/faq-cms.md; ADDITIVE for the game and for every
+    request; migration 0032).** The website FAQ becomes a SITE document named `faq` (format `faq.v1`: categories of question and answer
+    entries, plain text). It is stored in `content_documents` / `content_drafts` beside the game documents but is NOT a game
+    document: it is not in `GET /v1/content/manifest`, does not touch `catalogVersion` or the Logbook `ETag`, and
+    `GET /v1/content/documents/faq/{version}` is 404. `ContentDocumentName` and every game-facing schema are unchanged. The staff list
+    `GET /v1/admin/content/documents` is unchanged (game documents only, so strict Admin parsers do not break); the FAQ is read with
+    `GET /v1/admin/content/documents/faq/draft`. Staff (admin) routes gain the name `faq` through the new schema `StoredDocumentName`
+    (the three game names plus `faq`), used by the staff path parameter and by `ContentDraft.name`, `ContentDraftDetail.name` and
+    `ContentPublishResult.name`. `PATCH /v1/admin/content/documents/faq/draft` takes `FaqEditRequest`: `{ draftVersion, operations }`,
+    1 to 25 operations (`upsertCategory`, `removeCategory`, `moveCategory`, `upsertEntry`, `removeEntry`, `moveEntry`) applied in
+    order, all or nothing (the other documents' edit bodies are unchanged). Publish (`.../faq/publish`) of a draft with no entries is
+    409 `nothing_to_publish`. New public route `GET /v1/public/faq` (no token, `ETag`, 304, `Cache-Control: no-cache`; 404
+    `not_found` before the first publish) returns the version in force. New schemas `StoredDocumentName`, `FaqDocument`, `FaqCategory`,
+    `FaqEntry`, `FaqEditRequest`, `FaqOperation` and `FaqPublic`. No new error codes. Migration 0032 only widens the two document-name
+    CHECKs to include `faq`. A strict parser of the shared `name` of the staff draft responses must accept `faq` from this version.
+    **Dev to live copy (plan F10, user ruling 2026-11-26):** two admin routes, `GET /v1/admin/content/documents/faq/export` (the published
+    FAQ as one downloadable JSON file, `FaqExport`) and `POST /v1/admin/content/documents/faq/import` (`FaqImportRequest`: replaces the
+    DRAFT with an export, never the version in force; publish stays the normal route). **The import route has its own 3 MB JSON body
+    limit; every other JSON route, the FAQ PATCH included, keeps 16 KB.** New schemas `FaqExport` and `FaqImportRequest`; new audit
+    detail on `content_import` (`document: "faq"`, `sourceHost`, `sourceVersion`, `sha256`, `draftVersion`). No new error codes.
 
     **Changelog 0.32.0 (self-serve photographer role, user ruling 2026-11-26; docs/plans/self-serve-photographer.md; BREAKING for the
     website/Admin role desk only, no change for the game; migration 0031).** Any signed-in account with a verified email may submit
@@ -376,7 +397,7 @@ info:
     - Every route except `/v1/health`, `/v1/health/ready` and the guest media read `GET /v1/public/media` needs
       `Authorization: Bearer <Firebase ID token>`.
       The manifest and the documents need a signed-in player like every other route (any player, no staff rule).
-    - Bodies are JSON only, at most 16 KB (exceptions for staff: the xlsx import, 5 MB, and Trip coverage, 160 KB). Unknown fields are rejected (400 `invalid_request`).
+    - Bodies are JSON only, at most 16 KB (exceptions for staff: the xlsx import, 5 MB, Trip coverage, 160 KB, and the FAQ import `POST /v1/admin/content/documents/faq/import`, 3 MB). Unknown fields are rejected (400 `invalid_request`).
     - Every response carries `X-Request-Id`. `/v1` responses other than `/v1/health` are `Cache-Control: no-store`.
     - Errors share one body, `Error`. Switch on `error.code`, never on `message`.
     - A path or method not listed here is 404 `not_found`.
@@ -2880,6 +2901,86 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/admin/content/documents/faq/export:
+    get:
+      tags: [admin]
+      operationId: exportFaq
+      summary: Download the published FAQ as a file (dev to live copy)
+      description: |
+        Admin only. The PUBLISHED FAQ (never the draft) as one JSON file, to be imported into the draft of another host
+        (`POST .../faq/import`). `sha256` is the digest of the canonical bytes of `{ format, categories }` only (no `version`, which
+        differs per host), so identical content has the same digest on every host. `sourceHost` is the host of this request,
+        informational only. Answers with `Content-Disposition: attachment; filename="faq-v<sourceVersion>.json"`. 404 `not_found`
+        before the first publish.
+      responses:
+        "200":
+          description: The export file.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            Content-Disposition:
+              description: 'Always `attachment; filename="faq-v<sourceVersion>.json"`.'
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FaqExport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`not_found`: no FAQ version has been published yet, so there is nothing to export."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /v1/admin/content/documents/faq/import:
+    post:
+      tags: [admin]
+      operationId: importFaq
+      summary: Replace the FAQ draft with an export file
+      description: |
+        Admin only. The dev to live copy: staff export the published FAQ on one host and import it here. The file REPLACES the whole
+        draft (never the version in force); review it with `GET .../faq/draft`, then publish with the normal publish route. Same draft
+        lock and `draftVersion` fence as the other draft writes (stale: 409 `version_conflict`). The draft history gains an `import`
+        entry and one `content_import` audit row is written (detail `document: "faq"`, `sourceHost`, `sourceVersion`, `sha256`,
+        `draftVersion`).
+
+        **Body limit: this route accepts JSON up to 3 MB** (300 entries of 2000 code points at 4 bytes each fit); every other JSON
+        route keeps 16 KB. Over 3 MB is 413.
+
+        Strict: a frame that is not `{ draftVersion, file }` with `file` an object is 400 `invalid_request`. Anything wrong INSIDE `file` is 422 `content_invalid`: unknown or missing keys, a `kind` other than
+        `faq-export`, a `format` other than `faq.v1`, a `sha256` that does not match the digest computed from `categories`, or
+        categories that fail the FAQ rules (limits and text rule on `FaqDocument`). Nothing is written on
+        any refusal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FaqImportRequest" }
+      responses:
+        "200":
+          description: The draft after the import (without `body`; read the draft for the preview), as `PATCH` returns it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentDraft" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+        "413": { $ref: "#/components/responses/BodyRejected" }
+        "415": { $ref: "#/components/responses/BodyRejected" }
+        "422": { $ref: "#/components/responses/InvalidDraft" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/admin/content/documents/{name}/draft:
     get:
       tags: [admin]
@@ -2889,6 +2990,11 @@ paths:
         Admin only. The pending edits and `body`, the document a publish would write now (the version in force with the
         edits applied, as `publishedVersion + 1`; for `clipper-cards` rebuilt from the approved Military content as it stands
         now, so it also shows Cards that were added or retired since the last publish). A preview: players are not served it.
+
+        `faq` (a site document, not a game document): before the first publish the base is the empty document
+        `{ format: "faq.v1", version: 0, categories: [] }`, so the first draft needs no seed. Its `edits` is the whole working body,
+        `{ faq: { format, categories }, history }`, and `body` is the `FaqDocument` a publish would write. `publishedVersion` is null
+        until the first publish. The FAQ is not in `GET /v1/admin/content/documents`.
       parameters:
         - $ref: "#/components/parameters/ContentDocumentNamePath"
       responses:
@@ -2929,6 +3035,18 @@ paths:
         Removing a tag the client supplied (source `client_sheet` or `client_ruling`) needs `acknowledgeClientTagRemoval: true` on that
         entry, else 422 `content_invalid`; the change then carries `removedClientTags`. Text may not contain U+0000 or an unpaired
         surrogate. The global 16 KB body limit applies, so a request near the item caps can be answered 413 before validation.
+
+        - `faq` (`FaqEditRequest`): `operations`, 1 to 25, applied in order and all or nothing; the result must be a valid `FaqDocument`
+          (limits and the text rule are on that schema). `upsertCategory` appends a new category or renames an existing one;
+          `removeCategory` removes only an EMPTY category (else 422 `content_invalid`: remove or move its entries first);
+          `moveCategory` puts it at the 0-based `position` of the resulting list; `upsertEntry` appends a new entry to `categoryId` or
+          updates the entry of that id in that category (an entry that exists in another category is 422: use `moveEntry`);
+          `removeEntry` removes it; `moveEntry` moves it within or across categories to the 0-based `position` in the target
+          category's resulting list. An unknown id, a position out of range, a duplicate id or a limit exceeded is 422
+          `content_invalid` and the message names the index of the failing operation; a shape or text-rule error is 400
+          `invalid_request`. Every accepted request is saved and returns the next `draftVersion`, even when the result equals the current
+          draft (as for the game documents): always use the returned `draftVersion`. Send one PATCH per
+          user action; on 409 read the draft again and redo the edit.
       parameters:
         - $ref: "#/components/parameters/ContentDocumentNamePath"
       requestBody:
@@ -2940,6 +3058,7 @@ paths:
                 - { $ref: "#/components/schemas/FieldAwardsDraftEdit" }
                 - { $ref: "#/components/schemas/ClipperCardsDraftEdit" }
                 - { $ref: "#/components/schemas/AircraftTagsDraftEdit" }
+                - { $ref: "#/components/schemas/FaqEditRequest" }
       responses:
         "200":
           description: The draft after the edit (without `body`; read the draft for the preview).
@@ -3030,6 +3149,11 @@ paths:
         `content_invalid` when the publish would remove a Card of `clipper-cards` and the body lacks `acknowledgeCardRemoval: true` (Cards
         players already hold stay in their Logbooks), when a staged tag edit removes a client tag without its acknowledgement, and when the document would not validate: each of the 28 Field Award ids exactly once, each award's metric
         its own, integer targets of at least 1, unique Card keys; or the stored draft is invalid.
+
+        `faq`: writes the next immutable `faq.v1` version (with its sha256, as for any document) and one `content_publish` audit row with
+        the change list. A draft with no entries at all is 409 `nothing_to_publish` (also when the draft equals the published body).
+        Publishing the FAQ touches no player and no game document: the manifest, `catalogVersion` and the Logbook `ETag` do not change
+        (`manifestVersion` in the answer is the unchanged manifest version). The public read is `GET /v1/public/faq`.
       parameters:
         - $ref: "#/components/parameters/ContentDocumentNamePath"
       requestBody:
@@ -4088,6 +4212,55 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
+  /v1/public/faq:
+    get:
+      tags: [content]
+      operationId: getPublicFaq
+      summary: Read the published FAQ, anonymously
+      description: |
+        For guests on the public website. No token is needed and an `Authorization` header, valid or not, is ignored. It is not version
+        gated. Returns the `faq.v1` version in force (staff publish it with `POST /v1/admin/content/documents/faq/publish`): categories
+        and entries in display order, plain text (render as text, never as HTML; a blank line is a paragraph break; link `https://`
+        URLs and site paths yourself). Empty categories can occur: hide them.
+
+        Caching: `ETag` is the quoted sha256 of the stored canonical bytes of this version; `Cache-Control: no-cache`, so send the tag
+        back as `If-None-Match` and an unchanged FAQ is 304 with no body. Before the first publish the route is 404 `not_found` (no
+        new error code): show "coming soon". Errors carry `Cache-Control: no-store`.
+
+        Rate limit: the per-IP public tier (`RATE_LIMIT_PUBLIC_PER_MIN`), 429 with `Retry-After`. The website calls this from its
+        server, so every guest shares that one budget: cache the answer on the server (about 60 seconds, one request in flight) and
+        keep serving the cached copy when this route fails or answers 429.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The FAQ version in force.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoCache" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FaqPublic" }
+        "304":
+          description: Matches `If-None-Match`. No body.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoCache" }
+            ETag: { $ref: "#/components/headers/ETag" }
+        "404":
+          description: "`not_found`: no FAQ version has been published yet."
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          x-error-codes: [not_found]
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
   /v1/public/plane-of-the-day:
     get:
       tags: [editorial]
@@ -4318,8 +4491,8 @@ components:
       name: name
       in: path
       required: true
-      description: A document name. Any other name is 404 `not_found`.
-      schema: { $ref: "#/components/schemas/ContentDocumentName" }
+      description: A staff-editable document name (the game documents and the site document `faq`). Any other name is 404 `not_found`.
+      schema: { $ref: "#/components/schemas/StoredDocumentName" }
 
     AccountPrincipal:
       name: principal
@@ -5258,9 +5431,11 @@ components:
       description: |
         One difference between the document in force and what a publish would write. `kind`: `award` (a Field Award field:
         `field` is title, criteria, target or hidden), `card-added`, `card-removed`, `card-renamed`, `card-items` (the content
-        items on a Card moved) or `tags` (a Card's tag list; `from` and `to` are sorted tag lists).
+        items on a Card moved) or `tags` (a Card's tag list; `from` and `to` are sorted tag lists). FAQ (0.33.0): `category-added`,
+        `category-renamed` (`field` title), `category-moved`, `category-removed`, `entry-added`, `entry-edited` (`field` question or
+        answer), `entry-moved` (`field` category or position), `entry-removed`; `key` is the category or entry id.
       properties:
-        kind: { type: string, enum: [award, card-added, card-removed, card-renamed, card-items, tags] }
+        kind: { type: string, enum: [award, card-added, card-removed, card-renamed, card-items, tags, category-added, category-renamed, category-moved, category-removed, entry-added, entry-edited, entry-moved, entry-removed] }
         key: { type: string, description: "The award id, or the Card key." }
         field: { type: string }
         from: {}
@@ -5275,9 +5450,9 @@ components:
       additionalProperties: false
       required: [name, publishedVersion, draftVersion, changed, edits, changeCount, changes]
       properties:
-        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        name: { $ref: "#/components/schemas/StoredDocumentName" }
         publishedVersion:
-          description: The version players are served. Null only for `clipper-cards` before its first seal.
+          description: The version players are served. Null only for `clipper-cards` before its first seal, and for `faq` before its first publish.
           oneOf:
             - { type: integer, minimum: 1 }
             - { type: "null" }
@@ -5302,9 +5477,9 @@ components:
       additionalProperties: false
       required: [name, publishedVersion, draftVersion, changed, edits, changeCount, changes, body]
       properties:
-        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        name: { $ref: "#/components/schemas/StoredDocumentName" }
         publishedVersion:
-          description: The version players are served. Null only for `clipper-cards` before its first seal.
+          description: The version players are served. Null only for `clipper-cards` before its first seal, and for `faq` before its first publish.
           oneOf:
             - { type: integer, minimum: 1 }
             - { type: "null" }
@@ -5314,7 +5489,8 @@ components:
           type: object
           description: |
             The pending overlay. `field-awards`: `{ awards: { <id>: { title?, criteria?, target?, hidden? } } }`; `clipper-cards`:
-            `{ names: { <cardKey>: name } }`; `aircraft-tags`: `{ tags: { <cardKey>: [tag] } }`. Empty when there is no draft.
+            `{ names: { <cardKey>: name } }`; `aircraft-tags`: `{ tags: { <cardKey>: [tag] } }`; `faq`: `{ faq: { format, categories }, history }`,
+            the whole working body (without `version`). Empty when there is no draft.
         changeCount: { type: integer, minimum: 0 }
         changes:
           type: array
@@ -5327,6 +5503,7 @@ components:
             - { $ref: "#/components/schemas/FieldAwardCatalogDocument" }
             - { $ref: "#/components/schemas/ClipperCardCatalogDocument" }
             - { $ref: "#/components/schemas/AircraftTagDocument" }
+            - { $ref: "#/components/schemas/FaqDocument" }
     ContentDraftList:
       type: object
       additionalProperties: false
@@ -5340,7 +5517,7 @@ components:
       additionalProperties: false
       required: [name, version, previousVersion, sha256, byteSize, draftVersion, changeCount, manifestVersion]
       properties:
-        name: { $ref: "#/components/schemas/ContentDocumentName" }
+        name: { $ref: "#/components/schemas/StoredDocumentName" }
         version: { type: integer, minimum: 1, description: The version just written. }
         previousVersion:
           oneOf:
@@ -6505,6 +6682,188 @@ components:
     ContentDocumentName:
       type: string
       enum: [field-awards, clipper-cards, aircraft-tags]
+    StoredDocumentName:
+      description: |
+        A document staff can edit and publish: the three game documents (`ContentDocumentName`) and the site document `faq`. Only
+        the staff routes use it. `faq` is never in the manifest and never served by `GET /v1/content/documents/{name}/{version}`.
+      type: string
+      enum: [field-awards, clipper-cards, aircraft-tags, faq]
+    FaqId:
+      type: string
+      pattern: "^[a-z0-9-]{1,64}$"
+    FaqEntry:
+      type: object
+      additionalProperties: false
+      required: [id, question, answer]
+      properties:
+        id: { $ref: "#/components/schemas/FaqId" }
+        question: { type: string, minLength: 1, maxLength: 200, description: "1 to 200 code points. One line (no newline). Same text rule as the document." }
+        answer:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: "1 to 2000 code points. A newline is allowed here and only here: a blank line is a paragraph break. Same text rule as the document."
+    FaqCategory:
+      type: object
+      additionalProperties: false
+      required: [id, title, entries]
+      properties:
+        id: { $ref: "#/components/schemas/FaqId" }
+        title: { type: string, minLength: 1, maxLength: 80, description: "1 to 80 code points. One line (no newline)." }
+        entries:
+          type: array
+          description: In display order. May be empty (the website hides an empty category).
+          items: { $ref: "#/components/schemas/FaqEntry" }
+    FaqDocument:
+      description: |
+        The `faq.v1` document (a site document, not a game document). The server checks it on every read and write. Limits: ids match
+        `^[a-z0-9-]{1,64}$`; category ids are unique; entry ids are unique across the WHOLE document (the website anchors `#faq-<id>` on one
+        page); at most 30 categories and 300 entries in all; `title` 1 to 80, `question` 1 to 200, `answer` 1 to 2000 code points.
+        An empty category is allowed. Before the first publish the base is `{ format: "faq.v1", version: 0, categories: [] }`.
+
+        **Text rule** (title, question, answer; the same on every write): CRLF and a lone CR become LF; the text is trimmed and must
+        not be empty; no U+0000 and no unpaired surrogate; no control character other than newline (a tab or a bell is 400), no U+2028/U+2029 and no bidi control (U+200E, U+200F, U+061C, U+202A–U+202E, U+2066–U+2069); a newline
+        is allowed only in `answer`. Plain text: a blank line is a paragraph break; the website links `https://` URLs and site paths. No
+        HTML and no Markdown.
+      type: object
+      additionalProperties: false
+      required: [format, version, categories]
+      properties:
+        format: { type: string, const: faq.v1 }
+        version: { type: integer, minimum: 0, description: "0 = the empty base before the first publish; 1 and up = a published version." }
+        categories:
+          type: array
+          maxItems: 30
+          items: { $ref: "#/components/schemas/FaqCategory" }
+    FaqPublic:
+      description: The FAQ version in force, as served by `GET /v1/public/faq`. Plain text only; render it as text, never as HTML.
+      type: object
+      additionalProperties: false
+      required: [format, version, publishedAt, categories]
+      properties:
+        format: { type: string, const: faq.v1 }
+        version: { type: integer, minimum: 1 }
+        publishedAt: { type: string, format: date-time, description: When this version was published. }
+        categories:
+          type: array
+          maxItems: 30
+          items: { $ref: "#/components/schemas/FaqCategory" }
+    FaqExport:
+      description: |
+        The file `GET /v1/admin/content/documents/faq/export` returns and `POST .../faq/import` takes back. It is the published FAQ plus
+        provenance. `sha256` is over the canonical JSON bytes (UTF-8, sorted keys, no whitespace) of `{ format, categories }`, so the
+        same content has the same digest on every host; the importer recomputes it and refuses a mismatch (tamper check).
+      type: object
+      additionalProperties: false
+      required: [kind, format, sourceHost, sourceVersion, publishedAt, sha256, categories]
+      properties:
+        kind: { type: string, const: faq-export }
+        format: { type: string, const: faq.v1 }
+        sourceHost: { type: string, description: "The host that served the export. Informational only; never trusted." }
+        sourceVersion: { type: integer, minimum: 1, description: "The FAQ version on the source host (versions differ per host)." }
+        publishedAt: { type: string, format: date-time, description: When the source host published that version. }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        categories:
+          type: array
+          maxItems: 30
+          items: { $ref: "#/components/schemas/FaqCategory" }
+    FaqImportRequest:
+      description: The `POST /v1/admin/content/documents/faq/import` body. Up to 3 MB on this route only.
+      type: object
+      additionalProperties: false
+      required: [draftVersion, file]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000, description: "The draft revision you read (0 = no draft yet)." }
+        file: { $ref: "#/components/schemas/FaqExport" }
+    FaqOperation:
+      description: |
+        One edit step, chosen by `op`. All strict (any other field is 400). Applied in order against the working body; see
+        `PATCH /v1/admin/content/documents/{name}/draft` for the semantics and errors.
+      oneOf:
+        - { $ref: "#/components/schemas/FaqUpsertCategory" }
+        - { $ref: "#/components/schemas/FaqRemoveCategory" }
+        - { $ref: "#/components/schemas/FaqMoveCategory" }
+        - { $ref: "#/components/schemas/FaqUpsertEntry" }
+        - { $ref: "#/components/schemas/FaqRemoveEntry" }
+        - { $ref: "#/components/schemas/FaqMoveEntry" }
+      discriminator:
+        propertyName: op
+        mapping:
+          upsertCategory: "#/components/schemas/FaqUpsertCategory"
+          removeCategory: "#/components/schemas/FaqRemoveCategory"
+          moveCategory: "#/components/schemas/FaqMoveCategory"
+          upsertEntry: "#/components/schemas/FaqUpsertEntry"
+          removeEntry: "#/components/schemas/FaqRemoveEntry"
+          moveEntry: "#/components/schemas/FaqMoveEntry"
+    FaqUpsertCategory:
+      description: A new category id is appended; an existing one is renamed (its entries and position are kept).
+      type: object
+      additionalProperties: false
+      required: [op, id, title]
+      properties:
+        op: { type: string, const: upsertCategory }
+        id: { $ref: "#/components/schemas/FaqId" }
+        title: { type: string, minLength: 1, maxLength: 80 }
+    FaqRemoveCategory:
+      description: Only an EMPTY category can be removed (else 422 `content_invalid`); remove or move its entries first.
+      type: object
+      additionalProperties: false
+      required: [op, id]
+      properties:
+        op: { type: string, const: removeCategory }
+        id: { $ref: "#/components/schemas/FaqId" }
+    FaqMoveCategory:
+      type: object
+      additionalProperties: false
+      required: [op, id, position]
+      properties:
+        op: { type: string, const: moveCategory }
+        id: { $ref: "#/components/schemas/FaqId" }
+        position: { type: integer, minimum: 0, maximum: 29, description: "0-based index in the resulting category list; beyond the end is 422." }
+    FaqUpsertEntry:
+      description: |
+        A new entry id is appended to the category `categoryId`; an existing entry in that category is updated. An id that exists in
+        another category is 422 `content_invalid` (use `moveEntry`).
+      type: object
+      additionalProperties: false
+      required: [op, categoryId, id, question, answer]
+      properties:
+        op: { type: string, const: upsertEntry }
+        categoryId: { $ref: "#/components/schemas/FaqId" }
+        id: { $ref: "#/components/schemas/FaqId" }
+        question: { type: string, minLength: 1, maxLength: 200 }
+        answer: { type: string, minLength: 1, maxLength: 2000 }
+    FaqRemoveEntry:
+      type: object
+      additionalProperties: false
+      required: [op, id]
+      properties:
+        op: { type: string, const: removeEntry }
+        id: { $ref: "#/components/schemas/FaqId" }
+    FaqMoveEntry:
+      description: Moves the entry within its category or into another one.
+      type: object
+      additionalProperties: false
+      required: [op, id, categoryId, position]
+      properties:
+        op: { type: string, const: moveEntry }
+        id: { $ref: "#/components/schemas/FaqId" }
+        categoryId: { $ref: "#/components/schemas/FaqId", description: The target category. }
+        position: { type: integer, minimum: 0, maximum: 299, description: "0-based index in the target category's resulting entry list; beyond the end is 422." }
+    FaqEditRequest:
+      description: |
+        The `PATCH /v1/admin/content/documents/faq/draft` body. The operations are applied in order against the working body and the
+        result is validated as a `FaqDocument`; any failure writes nothing. The 16 KB body cap fits one maximal answer.
+      type: object
+      additionalProperties: false
+      required: [draftVersion, operations]
+      properties:
+        draftVersion: { type: integer, minimum: 0, maximum: 2000000000, description: "The draft revision you read (0 = no draft yet)." }
+        operations:
+          type: array
+          minItems: 1
+          maxItems: 25
+          items: { $ref: "#/components/schemas/FaqOperation" }
     ManifestModule:
       type: object
       additionalProperties: false

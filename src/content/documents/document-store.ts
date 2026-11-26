@@ -1,5 +1,5 @@
 import { Logger } from "@nestjs/common";
-import { and, desc, eq, max, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, max, sql } from "drizzle-orm";
 import type { Database, DatabaseService, Tx } from "../../database/database.module.js";
 import { contentDocuments, contentItems } from "../../db/schema.js";
 import type { ContentDocumentRow } from "../../db/schema.js";
@@ -7,6 +7,7 @@ import { SEED_COMMERCIAL_CARD_KEYS } from "../../rules/aircraft-tags.js";
 import { militaryCardKey } from "../../rules/clipper-cards.js";
 import { compareIds } from "../content-modules.js";
 import { canonicalBytes, sha256Hex } from "./canonical.js";
+import { parseFaq } from "./faq.js";
 import {
   DOCUMENT_FORMAT,
   buildAircraftTagsBody,
@@ -18,7 +19,7 @@ import {
   parseFieldAwards,
   validateDocument,
 } from "./documents.js";
-import type { ContentDocumentName } from "./documents.js";
+import type { ContentDocumentName, StoredDocumentName } from "./documents.js";
 
 /**
  * The ONLY file that writes `content_documents` (rows are immutable; test/content-documents.test.ts keeps it so).
@@ -61,6 +62,7 @@ export type ParsedDocuments = {
   "field-awards": ReturnType<typeof parseFieldAwards>;
   "aircraft-tags": ReturnType<typeof parseAircraftTags>;
   "clipper-cards": ReturnType<typeof parseClipperCards>;
+  faq: ReturnType<typeof parseFaq>;
 };
 
 // Rows are immutable (trigger + single writer), so a verdict for (name, version, sha256) never changes: it is computed once
@@ -77,7 +79,7 @@ export function resetDocumentMemo(): void {
   verdicts.clear();
 }
 
-function verify<N extends ContentDocumentName>(row: ContentDocumentRow): ParsedDocuments[N] {
+function verify<N extends StoredDocumentName>(row: ContentDocumentRow): ParsedDocuments[N] {
   validations += 1;
   verifiedBytes(row); // shape, then the digest and length of the canonical bytes
   switch (row.name) {
@@ -87,10 +89,12 @@ function verify<N extends ContentDocumentName>(row: ContentDocumentRow): ParsedD
       return parseAircraftTags(row.body, row.version) as ParsedDocuments[N];
     case "clipper-cards":
       return parseClipperCards(row.body, row.version) as ParsedDocuments[N];
+    case "faq":
+      return parseFaq(row.body, row.version) as ParsedDocuments[N];
   }
 }
 
-export type InForce<N extends ContentDocumentName> = {
+export type InForce<N extends StoredDocumentName> = {
   meta: DocumentMeta;
   value: ParsedDocuments[N];
   /** How many newer rows were skipped as invalid. */
@@ -104,7 +108,7 @@ export type InForce<N extends ContentDocumentName> = {
  * first time a (name, version, sha256) is seen. A bad row is logged once per (name, version, sha256). Undefined when no
  * row of the name is valid.
  */
-export async function documentInForce<N extends ContentDocumentName>(db: Reader, name: N): Promise<InForce<N> | undefined> {
+export async function documentInForce<N extends StoredDocumentName>(db: Reader, name: N): Promise<InForce<N> | undefined> {
   for (let skipped = 0; ; skipped++) {
     const [meta] = await db
       .select(META_COLUMNS)
@@ -141,12 +145,17 @@ export async function documentsInForce(db: Reader): Promise<DocumentMeta[]> {
   return out;
 }
 
+/** True when any GAME document row exists (a site document such as `faq` does not count: the manifest seed is for the game tables). */
 export async function anyDocument(db: Reader): Promise<boolean> {
-  const [row] = await db.select({ version: contentDocuments.version }).from(contentDocuments).limit(1);
+  const [row] = await db
+    .select({ version: contentDocuments.version })
+    .from(contentDocuments)
+    .where(inArray(contentDocuments.name, [...CONTENT_DOCUMENT_NAMES]))
+    .limit(1);
   return row !== undefined;
 }
 
-export async function findDocument(db: Reader, name: ContentDocumentName, version: number): Promise<ContentDocumentRow | undefined> {
+export async function findDocument(db: Reader, name: StoredDocumentName, version: number): Promise<ContentDocumentRow | undefined> {
   const [row] = await db
     .select()
     .from(contentDocuments)
@@ -155,12 +164,12 @@ export async function findDocument(db: Reader, name: ContentDocumentName, versio
 }
 
 /** The version a publish would write: one above the highest stored row of the name, valid or not (0 rows = 1). Read under the publish lock. */
-export async function nextDocumentVersion(db: Reader, name: ContentDocumentName): Promise<number> {
+export async function nextDocumentVersion(db: Reader, name: StoredDocumentName): Promise<number> {
   const [row] = await db.select({ top: max(contentDocuments.version) }).from(contentDocuments).where(eq(contentDocuments.name, name));
   return (row?.top ?? 0) + 1;
 }
 
-export type NewDocument = { name: ContentDocumentName; version: number; body: unknown; createdBy: string; note?: string };
+export type NewDocument = { name: StoredDocumentName; version: number; body: unknown; createdBy: string; note?: string };
 
 /**
  * Inserts one immutable version. The body is validated and serialised here, so the stored digest and length are the
