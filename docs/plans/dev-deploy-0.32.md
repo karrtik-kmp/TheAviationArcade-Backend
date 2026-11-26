@@ -48,14 +48,19 @@ which the account's next call activates (plan S2). Use it anyway if you prefer a
    sudo -u postgres pg_dump -Fc -d airplane_games_dev | sudo tee /var/backups/aviation-arcade/dev-$(date +%F-%H%M)-pre-0.32.dump >/dev/null
    sudo ls -l /var/backups/aviation-arcade/
    ```
-3. **Deploy** `main` (BACKEND_ZIP_URL in `setup.conf` points at the `main` archive; today's tip is `ce3797a`, code from `99a84ce`):
+3. **Deploy, pinned to the reviewed commit.** `main` moved on after this plan: another session pushed API 0.33.0 (FAQ,
+   migration 0032, `c0a2b62`), which this plan did not check. A plain `sudo ./backend-deploy.sh dev` would take it too. So
+   deploy the archive of `9dd181d` (0.32.0, migrations up to 0031):
    ```bash
-   sudo ./backend-deploy.sh dev
+   curl -fL -o /tmp/backend-9dd181d.zip https://github.com/karrtik-kmp/TheAviationArcade-Backend/archive/9dd181d410b2ee253ec949917268dc325e31c51a.zip
+   sudo ./backend-deploy.sh dev --zip /tmp/backend-9dd181d.zip
    ```
+   (The script unwraps the archive's one top-level folder.) To take 0.33.0 as well, run plain `sudo ./backend-deploy.sh dev`
+   and expect **33** migrations and `0.33.0` in steps 4-5; 0032 only widens two name CHECKs, so it is additive.
    Judge the migrate step by its exit code, not the missing spinner line (TASKS 6.3).
 4. **Check on the server:**
    ```bash
-   sudo -u postgres psql -d airplane_games_dev -Atc "select count(*) from drizzle.__drizzle_migrations"   # expect 32
+   sudo -u postgres psql -d airplane_games_dev -Atc "select count(*) from drizzle.__drizzle_migrations"   # expect 32 (33 with 0.33.0)
    sudo -u postgres psql -d airplane_games_dev -Atc "select action, count(*) from admin_audit where action='role_self_activate' group by 1"
    sudo -u postgres psql -d airplane_games_dev -Atc "select state, count(*) from account_roles where role='photographer' group by 1"
    curl -fsS http://127.0.0.1:3001/v1/health/ready
