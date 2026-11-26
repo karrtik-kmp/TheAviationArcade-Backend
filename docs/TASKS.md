@@ -251,7 +251,7 @@ cleanup on a hosted database now needs `DISABLE TRIGGER` (also sign-off).
 
 | # | Job | State | Notes |
 |---|---|---|---|
-| 6.10 | Firebase Anonymous guests as players (`FIREBASE_ANONYMOUS_PLAYERS`; a token naming `anonymous` with an `email`/`google.com` identity is a linked account whatever the flag), `players.anonymous_since` cleared on the first account `PUT /v1/me`, per-IP guest creation limit (`GUEST_CREATE_PER_IP_PER_HOUR`, IPv6 /64, needs `TRUST_PROXY` in production), 403 `account_required` on purchases, the Miles shop and the photographer role; server-stored Callsigns (`GET /v1/callsigns/{value}/availability`, `POST /v1/callsigns/claim`, `profile` on `PUT /v1/me`), migration 0033 (API 0.34.0) [MG-PRF-02, OI-07, OI-16 in part] | **Done (local)** 2026-11-26, branch `claude/determined-murdock-2cfda7`; not deployed | User rulings 2026-11-26 (Unity ADR-0006 amendment). Brief from the Unity S4/S5 orchestrator. Plan [plans/guest-callsign.md](plans/guest-callsign.md) (plan gate: senior-lead and backend-expert, approve with changes, folded in). ASSUMPTIONs (tests named so): 20 new guests per IP per hour; the Miles hint pack counts as buying; reserved Callsigns (staff names, PILOT, GUEST); first claim and first change free, then 30 days. UGS (`PUT /v1/me/ugs-link`) unchanged: the external id is the Firebase uid, which the link keeps (inferred from the UGS OIDC docs, not tested live). Verification in the verification log. |
+| 6.10 | Firebase Anonymous guests as players (`FIREBASE_ANONYMOUS_PLAYERS`; a token naming `anonymous` with an `email`/`google.com` identity is a linked account whatever the flag), `players.anonymous_since` cleared on the first account `PUT /v1/me`, per-IP guest creation limit (`GUEST_CREATE_PER_IP_PER_HOUR`, IPv6 /64, needs `TRUST_PROXY` in production), 403 `account_required` on purchases, the Miles shop and the photographer role; server-stored Callsigns (`GET /v1/callsigns/{value}/availability`, `POST /v1/callsigns/claim`, `profile` on `PUT /v1/me`), migration 0033 (API 0.34.0) [MG-PRF-02, OI-07, OI-16 in part] | **Done (local)** 2026-11-26, on `main` (`8a8e867`); **on hosted dev** (0.34.0 deploy, 2026-11-26), not prod | User rulings 2026-11-26 (Unity ADR-0006 amendment). Brief from the Unity S4/S5 orchestrator. Plan [plans/guest-callsign.md](plans/guest-callsign.md) (plan gate: senior-lead and backend-expert, approve with changes, folded in). ASSUMPTIONs (tests named so): 20 new guests per IP per hour; the Miles hint pack counts as buying; reserved Callsigns (staff names, PILOT, GUEST); first claim and first change free, then 30 days. UGS (`PUT /v1/me/ugs-link`) unchanged: the external id is the Firebase uid, which the link keeps (inferred from the UGS OIDC docs, not tested live). Verification in the verification log. |
 
 ### Follow-ups (2026-11-04)
 
@@ -685,6 +685,21 @@ See README "Open questions". Also: Apple's App Store guidelines generally requir
 when Google sign-in is offered; the project rule currently allows only email/password and Google.
 
 ## Verification log
+
+- 2026-11-26 (hosted dev, deploy to API 0.34.0, user sign-off; the user ran
+  [dev-deploy-0.34](plans/dev-deploy-0.34.md) on the server as root, pinned to `8a8e867`, with `FIREBASE_ANONYMOUS_PLAYERS=true`
+  added to the dev env file first). Dev was 0.33.0 before. Public checks (this session, no token):
+  - `/api/v1/health` 200 and `/api/v1/health/ready` 200 `{"status":"ready"}`;
+  - `/api/docs/openapi.yaml` `version: 0.34.0`;
+  - `GET /v1/callsigns/ABCD/availability` and `POST /v1/callsigns/claim` with no token: 401 `unauthorized` (404 before);
+  - `PUT /v1/me` with no token, and with an unsigned token: 401;
+  - `GET /v1/public/plane-of-the-day` 200.
+
+  The server started with guests on, so the `TRUST_PROXY` start-up rule passed. **Not yet recorded:**
+  - the server-side numbers of runbook steps 1 and 5 (migrations 33 → 34, the backup file);
+  - the Firebase console Anonymous provider;
+  - a real guest token's `PUT /v1/me` (201, `profile.guest: true`) and the claims before and after a link (step 8, plan G1
+    ASSUMPTION).
 
 - 2026-11-26 (local, guests and Callsigns wave 6.10, API 0.34.0, branch `claude/determined-murdock-2cfda7` in a worktree as the
   Unity orchestrator's brief asked). Run in PowerShell in the worktree, Postgres up (docker compose, port 5433), the worktree's
