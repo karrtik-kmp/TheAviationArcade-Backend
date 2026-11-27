@@ -280,8 +280,10 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 **Update 2026-11-27:** checked again against the SRS as edited after the first pass (FAQ ruling) and against API 0.34.0 and
 `drizzle/` 0000-0033 (6.9, 6.10, both on hosted dev). Added AD-FAQ-01, AD-FAQ-02, SH-15, NFR-06 and NFR-09; split the FAQ out of
 the website Backlog row and out of SH-11. All 142 B-owned SRS IDs now have a row. Where the SRS is behind this repo (guests under
-OI-07, the §6 deploy note at 0.30.0, SH-15 "planned", MG-PRG-07/08, Military on `/v1`, SH-03/04/07) the root SRS has to change, not
-this table.
+§2.4, MG-PRF-02 and OI-07; the §6 deploy note at 0.30.0 and other "not on dev" notes; SH-15 and AD-FAQ "planned"; OI-30; OI-16) the
+root SRS has to change, not this table: brief [../docs/briefs/srs-backend-corrections.md](../../docs/briefs/srs-backend-corrections.md)
+(2026-11-27). MG-PRG-07/08, MG-MOD-08 and SH-03/04/07 were already corrected in the SRS; "SRS says …" notes on those rows below
+are history.
 
 ### 3.1 Player profile (MG-PRF)
 
