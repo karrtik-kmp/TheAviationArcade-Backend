@@ -277,12 +277,18 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 **Backlog** = no order, no work started in this pass. The SRS IDs are also added in square brackets to the existing rows above (3.1, 3.2,
 3.3, 5.x, 6.x, Phase 4 and 7).
 
+**Update 2026-11-27:** checked again against the SRS as edited after the first pass (FAQ ruling) and against API 0.34.0 and
+`drizzle/` 0000-0033 (6.9, 6.10, both on hosted dev). Added AD-FAQ-01, AD-FAQ-02, SH-15, NFR-06 and NFR-09; split the FAQ out of
+the website Backlog row and out of SH-11. All 142 B-owned SRS IDs now have a row. Where the SRS is behind this repo (guests under
+OI-07, the §6 deploy note at 0.30.0, SH-15 "planned", MG-PRG-07/08, Military on `/v1`, SH-03/04/07) the root SRS has to change, not
+this table.
+
 ### 3.1 Player profile (MG-PRF)
 
 | SRS ID | Requirement (server side) | State | Evidence / next |
 |---|---|---|---|
 | MG-PRF-01 | Profile after sign-in | Done | `PUT /v1/me` handshake (201 first call, then 200), principal from a verified token; Phase 2. App sign-in is G |
-| MG-PRF-02 | Guest users | Done (local), API 0.34.0 | User rulings 2026-11-26 reverse OI-07 / Unity ADR-0006 D1: Firebase Anonymous guests are players behind `FIREBASE_ANONYMOUS_PLAYERS` (6.10) |
+| MG-PRF-02 | Guest users | Done, API 0.34.0; on hosted dev, flag not yet verified with a guest token | User rulings 2026-11-26 reverse OI-07 / Unity ADR-0006 D1: Firebase Anonymous guests are players behind `FIREBASE_ANONYMOUS_PLAYERS` (6.10). The SRS row and OI-07 still say out of scope (no guests); the root SRS has to follow the ruling |
 | MG-PRF-03 | Avatar and profile customization | Backlog, blocked by OI-15 | No avatar catalog supplied; no profile field in `players` |
 | MG-PRF-04 | Statistics and career overview | Done (route) | `GET /v1/me/logbook` (5.K, API 0.10.0). SRS says planned; the app only has to call it |
 | MG-PRF-05 | Rank, SP, progress to next rank | Done | `GET /v1/me/progress` (`nextRank`, `src/players/progress-view.ts:43`) |
@@ -428,6 +434,8 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 | AD-USR-04 | Statistics dashboard | Backlog, blocked by OI-22 (metrics) | |
 | AD-USR-05 | Manage memberships | Partial; manual grants blocked by OI-25 | Read-only snapshot (P-D, API 0.21.0) |
 | AD-USR-06 | Staff role and photo-submission controls | Done (backend) | API 0.32.0: grant / revoke admin, revoke / block / unblock photographer; approve / reject removed. `GET /v1/admin/role-requests` stays (admin and blocked lists). The Admin still has to drop its screens |
+| AD-FAQ-01 | Edit and publish the FAQ | Done (backend), on hosted dev | 6.9 (API 0.33.0, migration 0032): staff `PATCH` by operations on the `faq` draft, publish needs one entry; one `content_publish` audit row per publish carries who edited the draft. Who edits: Josh with full `admin` (ruling 2026-11-26). Nothing published yet; the Admin desk is A |
+| AD-FAQ-02 | Copy the FAQ from dev to live | Done (backend), on hosted dev | 6.9: `GET /v1/admin/content/documents/faq/export` on dev, `POST .../faq/import` into the live draft (3 MB body limit, plan F10), then publish on live. Live is never edited from dev (OI-19 FAQ half). Not walked end to end: there is no live backend yet |
 | AD-COM-01 | Forum moderation | Backlog | SH-13; OI-04 decided in scope |
 
 ### 5 Website, server side
@@ -455,7 +463,9 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 | WB-FCP-06, 07 | Wallpaper and photo pack downloads | Backlog, blocked by OI-17 | |
 | WB-FCP-08 | Partner discounts | Backlog, blocked by OI-18 | |
 | WB-FCP-09 | Membership synced with the app | See MG-FCP-12 | |
-| WB-MKT, WB-PTR, WB-FAQ-01...03 and 05, WB-CON | Marketplace, partners, FAQ, contact | Backlog, only if OI-19 puts the data or mail in the backend | SH-11; contact mail also needs the client's SMTP service and a spam rule (WB-CON-05) |
+| WB-FAQ-01, 02, 04, 05 | FAQ, search, account support, subscription information | Done (backend), on hosted dev | 6.9: public `GET /v1/public/faq` (ETag, 304, 404 before the first publish) returns the published `faq` document; search runs on the website over that document. Account support and subscription answers are entries in it; a private support or recovery workflow is not backend work. Text from the client (website CQ-1, CQ-5) |
+| WB-FAQ-03 | Gameplay guides | Done (backend storage); waits for client text | Guides fit as a category of question / answer entries in `faq.v1`; a long-form guide format with sections or images is not modelled. Change only if the client's guides need it (website CQ-5) |
+| WB-MKT, WB-PTR, WB-CON | Marketplace, partners, contact | Backlog, only if OI-19 puts the data or mail in the backend | SH-11; contact mail also needs the client's SMTP service and a spam rule (WB-CON-05) |
 | WB-COM-01 | Community forum | Backlog | SH-13 (Phase 7); OI-04 decided in scope |
 
 ### 6 Shared (SH) and non-functional (NFR)
@@ -472,10 +482,13 @@ server runs only what the 6.3 deploys shipped). **Blocked by OI-xx** = waits for
 | SH-08 | Bunny media, published-only anonymous reads | Done | 5.R (`GET /v1/public/media`, ADR-0001) |
 | SH-09 | Read-only UGS progress copy | Done | 5.1; proven on UGS `development` 2026-11-02, not `production` |
 | SH-10 | Audit of every staff write | Done | `GET /v1/admin/audit` (5.S W4), audit rows per write |
-| SH-11 | Tables for products, partners, FAQ, tiers, downloads, contact | Backlog (depends on OI-02 decided, OI-17, OI-18, OI-19) | |
+| SH-11 | Tables for products, partners, tiers, downloads, contact | Backlog (depends on OI-02 decided, OI-17, OI-18, OI-19) | The FAQ is no longer part of it: it is the `faq` content document (SH-15) |
 | SH-12 | Leaderboards | Blocked by OI-16 | |
 | SH-13 | Forum storage | Backlog | Phase 7 |
 | SH-14 | Public Picture of the Day reads | Partial | Today's entry built; the archive with paging, search and a consented handle is Backlog |
+| SH-15 | Site-only `faq` document: staff writes, public read, outside the game manifest | Done, on hosted dev | 6.9 (API 0.33.0, migration 0032). Stored in `content_documents` / `content_drafts`, left out of `GET /v1/content/manifest`. SRS says planned and queued behind the deploy; it is deployed to dev (0.33.0, then 0.34.0), not prod |
+| NFR-06 | Security rules; no secrets committed | Done (standing rule) | Principal from a verified token only, roles from `account_roles`, strict request schemas, `.env*` ignored except `.env.example` (CLAUDE.md). Rules, not a deliverable; reviewed per wave |
+| NFR-09 | Hostinger hosting, dev and prod separated | Partial | Hosted dev (`dev.api.`) runs API 0.34.0 with its own database; Bunny is split by environment (dev and local share `airplanegames-dev`, prod gets another zone; Decisions 2026-11-23). No prod backend yet; `api.` waits for the user's sign-off (`../server/`) |
 | NFR-07 | Photographer privacy and erasure | Partial | Handle and full name are owner-private; `instagramDisplayConsent` stored (6.5); owner or admin can erase by PATCH. Not built: a dedicated erase route, and what happens to submissions when `DELETE /v1/me` runs (plan `photo-submission-v2.md`, question 5); the public read's `instagram` is staff-typed and not gated by consent |
 | NFR-08 | Idempotent purchase grants, transient errors stay pending | Done (client-driven retry) | One grant per store transaction (store claims, tombstones, wave P); a transient store failure is 503 / `pending`; Google acknowledge retry is background and bounded. The durable sweeper is P4 |
 
