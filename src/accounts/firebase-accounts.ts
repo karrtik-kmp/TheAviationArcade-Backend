@@ -48,7 +48,22 @@ export interface FirebaseAccounts {
    * did not name.
    */
   ensureEmailVerified(uid: string, expectedEmail: string | null): Promise<EnsureVerifiedResult>;
+  /**
+   * Session-cookie revocation state (docs/plans/session-cookies.md C5): the account's `disabled` flag and `validSince` (seconds;
+   * undefined = never revoked). One try, no retry; `signal` bounds the OAuth token mint and the lookup together. The not-configured
+   * stub answers `not_configured`; the real client never does.
+   */
+  lookupSessionState(uid: string, signal: AbortSignal): Promise<SessionStateResult>;
 }
+
+export type SessionStateResult =
+  | { kind: "found"; disabled: boolean; validSince: number | undefined }
+  | { kind: "not_found" }
+  | { kind: "unavailable" }
+  | { kind: "not_configured" };
+
+/** At most one failure log per key, then a suppressed count every 30 s. */
+const LOG_THROTTLE_MS = 30_000;
 
 /** Nest token of the FirebaseAccounts provider (AccountsModule). */
 export const FIREBASE_ACCOUNTS = Symbol("FIREBASE_ACCOUNTS");
@@ -62,12 +77,34 @@ const IAT_SKEW_S = 30;
 const JWT_LIFETIME_S = 3600;
 
 type Json = Record<string, unknown>;
-type Call = { kind: "ok"; body: Json } | { kind: "http"; status: number; code: string } | { kind: "failed" };
+/** `body` is undefined when a 200 answer was not a JSON object. */
+type Call = { kind: "ok"; body: Json | undefined } | { kind: "http"; status: number; code: string } | { kind: "failed" };
 type Account = { email: string | undefined; emailVerified: boolean; disabled: boolean };
 
 /** The configured client, or one that always answers `not_configured`. */
 export function firebaseAccountsFor(config: FirebaseAdminConfig | undefined, options?: { fetch?: typeof fetch; now?: () => number }): FirebaseAccounts {
-  return config === undefined ? { ensureEmailVerified: async () => ({ kind: "not_configured" }) } : new IdentityToolkitAccounts(config, options);
+  return config === undefined
+    ? { ensureEmailVerified: async () => ({ kind: "not_configured" }), lookupSessionState: async () => ({ kind: "not_configured" }) }
+    : new IdentityToolkitAccounts(config, options);
+}
+
+/** Resolves to `undefined` as soon as `signal` aborts; otherwise to the promise's value. Never rejects (the promise must not). */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(undefined);
+      },
+    );
+  });
 }
 
 export class IdentityToolkitAccounts implements FirebaseAccounts {
@@ -77,6 +114,9 @@ export class IdentityToolkitAccounts implements FirebaseAccounts {
   private readonly base: string;
   private cached: { value: string; expiresAt: number } | undefined;
   private keyPromise: Promise<CryptoKey> | undefined;
+  /** The one token mint in flight, shared by all callers. Never rejects. */
+  private minting: Promise<string | undefined> | undefined;
+  private readonly logState = new Map<string, { lastAt: number; suppressed: number }>();
 
   constructor(
     private readonly config: FirebaseAdminConfig,
@@ -102,7 +142,7 @@ export class IdentityToolkitAccounts implements FirebaseAccounts {
       const update = await this.call("accounts:update", { localId: uid, email: account.email, emailVerified: true });
       if (update.kind === "http" && update.code === "USER_NOT_FOUND") return { kind: "not_found" };
       if (update.kind !== "ok") return this.unavailable("accounts:update", update);
-      if (update.body.emailVerified === true) return { kind: "ok", emailVerification: "verified" };
+      if (update.body?.emailVerified === true) return { kind: "ok", emailVerification: "verified" };
       // The answer did not carry the flag: read the account back, so the grant never reports a verification that did not happen.
       const after = await this.lookup(uid);
       if (after.kind !== "found") return after.kind === "not_found" ? after : { kind: "unavailable" };
@@ -118,7 +158,8 @@ export class IdentityToolkitAccounts implements FirebaseAccounts {
   private async lookup(uid: string): Promise<{ kind: "found"; account: Account } | { kind: "not_found" } | { kind: "unavailable" }> {
     const call = await this.call("accounts:lookup", { localId: [uid] });
     if (call.kind !== "ok") return this.unavailable("accounts:lookup", call);
-    const users = Array.isArray(call.body.users) ? call.body.users : [];
+    const rawUsers = call.body?.users;
+    const users: unknown[] = Array.isArray(rawUsers) ? rawUsers : [];
     const user = users.find((u): u is Json => typeof u === "object" && u !== null && (u as Json).localId === uid);
     if (!user) return { kind: "not_found" };
     return {
@@ -151,30 +192,88 @@ export class IdentityToolkitAccounts implements FirebaseAccounts {
     return retry ? this.callOnce(method, body) : first;
   }
 
-  private async callOnce(method: "accounts:lookup" | "accounts:update", body: Json): Promise<Call> {
-    const token = await this.accessToken();
+  /** `signal` (the request path's deadline) bounds both the token mint wait and the POST; without it each has its own 5 s timeout. */
+  private async callOnce(method: "accounts:lookup" | "accounts:update", body: Json, signal?: AbortSignal): Promise<Call> {
+    const token = await this.accessToken(signal);
     if (token === undefined) return { kind: "failed" };
     try {
       const response = await this.fetchFn(`${this.base}/${method}`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, accept: "application/json", "content-type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+        signal: signal ?? AbortSignal.timeout(CALL_TIMEOUT_MS),
       });
       if (response.status === 401) this.cached = undefined;
       const parsed = await readJson(response);
-      if (response.ok) return { kind: "ok", body: parsed ?? {} };
+      if (response.ok) return { kind: "ok", body: parsed };
       return { kind: "http", status: response.status, code: errorCode(parsed) };
     } catch {
       return { kind: "failed" };
     }
   }
 
-  /** `owner` for the emulator; otherwise a cached OAuth access token. Undefined when it cannot be minted (logged). */
-  private async accessToken(): Promise<string | undefined> {
+  async lookupSessionState(uid: string, signal: AbortSignal): Promise<SessionStateResult> {
+    try {
+      const call = await this.callOnce("accounts:lookup", { localId: [uid] }, signal);
+      if (call.kind === "failed") return this.sessionUnavailable("network_token_or_deadline");
+      if (call.kind === "http") return this.sessionUnavailable(`status=${call.status} code=${call.code}`);
+      const body = call.body;
+      if (body === undefined) return this.sessionUnavailable("malformed_body");
+      const rawUsers = body.users;
+      if (rawUsers !== undefined && !Array.isArray(rawUsers)) return this.sessionUnavailable("malformed_users");
+      const users: unknown[] = rawUsers ?? [];
+      const user = users.find((u): u is Json => typeof u === "object" && u !== null && (u as Json).localId === uid);
+      if (!user) return { kind: "not_found" };
+      const disabled = user.disabled === undefined ? false : typeof user.disabled === "boolean" ? user.disabled : undefined;
+      if (disabled === undefined) return this.sessionUnavailable("malformed_disabled");
+      let validSince: number | undefined;
+      if (user.validSince !== undefined) {
+        if (typeof user.validSince !== "string" || !/^[0-9]{1,15}$/.test(user.validSince)) return this.sessionUnavailable("malformed_valid_since");
+        validSince = Number(user.validSince);
+      }
+      return { kind: "found", disabled, validSince };
+    } catch {
+      return this.sessionUnavailable("unexpected");
+    }
+  }
+
+  private sessionUnavailable(detail: string): { kind: "unavailable" } {
+    this.logThrottled("session_lookup", `accounts:lookup (session state) outcome=unavailable ${detail}`);
+    return { kind: "unavailable" };
+  }
+
+  /** The first failure of a kind logs at once; later ones are counted and reported at most every 30 s. */
+  private logThrottled(key: string, message: string): void {
+    const now = this.now();
+    const state = this.logState.get(key);
+    if (state === undefined) {
+      this.logState.set(key, { lastAt: now, suppressed: 0 });
+      this.logger.error(message);
+    } else if (now - state.lastAt >= LOG_THROTTLE_MS) {
+      const count = state.suppressed;
+      state.lastAt = now;
+      state.suppressed = 0;
+      this.logger.error(count > 0 ? `${message} (+${count} similar suppressed)` : message);
+    } else {
+      state.suppressed += 1;
+    }
+  }
+
+  /** `owner` for the emulator; otherwise a cached OAuth access token shared by all callers. Undefined when it cannot be minted (logged) or `signal` aborts first. */
+  private async accessToken(signal?: AbortSignal): Promise<string | undefined> {
     if (this.config.kind === "emulator") return "owner";
     const cached = this.cached;
     if (cached && cached.expiresAt - EXPIRY_MARGIN_MS > this.now()) return cached.value;
+    // One mint in flight for everyone: a caller whose signal aborts stops waiting but never cancels it for the others.
+    this.minting ??= this.mint().finally(() => {
+      this.minting = undefined;
+    });
+    return signal === undefined ? this.minting : raceAbort(this.minting, signal);
+  }
+
+  /** Mints a token (its own 5 s timeout) and caches it. Never rejects. */
+  private async mint(): Promise<string | undefined> {
+    if (this.config.kind === "emulator") return "owner";
     const config = this.config;
     try {
       this.keyPromise ??= importPKCS8(config.privateKeyPem, "RS256");
@@ -203,13 +302,13 @@ export class IdentityToolkitAccounts implements FirebaseAccounts {
       const value = typeof parsed?.access_token === "string" && parsed.access_token.length > 0 ? parsed.access_token : undefined;
       const expiresIn = typeof parsed?.expires_in === "number" ? parsed.expires_in : 0;
       if (!response.ok || value === undefined || expiresIn <= 0) {
-        this.logger.error(`firebase-admin token exchange failed status=${response.status} (check FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE)`);
+        this.logThrottled("mint", `firebase-admin token exchange failed status=${response.status} (check FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE)`);
         return undefined;
       }
       this.cached = { value, expiresAt: this.now() + expiresIn * 1000 };
       return value;
     } catch {
-      this.logger.error("firebase-admin token exchange failed (key import, signing or network); check FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE");
+      this.logThrottled("mint", "firebase-admin token exchange failed (key import, signing or network); check FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE");
       return undefined;
     }
   }

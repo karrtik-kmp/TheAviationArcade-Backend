@@ -12,6 +12,9 @@ const THROTTLER_NAME = "default";
 /** Requests already counted by the pre-body role check (app.setup.ts); RateLimitGuard must not count them again. */
 const countedEarly = new WeakSet<object>();
 
+/** True once this request was counted by countAuthenticatedRequest (so neither authenticate() nor RateLimitGuard counts it again). */
+export const alreadyCounted = (req: object): boolean => countedEarly.has(req);
+
 /**
  * The rate-limit count for an authenticated request that is answered or read before Nest's guards run (the upload
  * pre-reader). Same storage, window, limit, key and 429 as RateLimitGuard, so a request counts exactly once: this marks `req`
@@ -71,7 +74,7 @@ export function throttlerOptions(
 @Injectable()
 export class RateLimitGuard extends ThrottlerGuard {
   protected override async shouldSkip(context: ExecutionContext): Promise<boolean> {
-    return countedEarly.has(context.switchToHttp().getRequest<object>());
+    return alreadyCounted(context.switchToHttp().getRequest<object>());
   }
 
   protected override async getTracker(req: Record<string, any>): Promise<string> {

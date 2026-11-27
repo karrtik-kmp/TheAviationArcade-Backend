@@ -1,10 +1,29 @@
 openapi: 3.1.0
 info:
   title: Airplane Games backend API
-  version: 0.34.0
+  version: 0.35.0
   description: |
     Contract for the Unity client. The code is the source of truth; `test/openapi.e2e.test.ts` fails when
     this file and the code drift (routes, error codes, enums, sample responses).
+
+    **Changelog 0.35.0 (Apple accounts and Firebase session cookies for the website; user ruling 2026-11-27;
+    docs/plans/session-cookies.md; ADDITIVE: no request, response or game behaviour changes).** **Apple:** an `apple.com` ID token
+    (`sign_in_provider: apple.com`) is an account like email/password and Google (it can buy and, with a verified email, submit
+    photos; landed in 696fe9e). An `anonymous` token whose `firebase.identities` hold `apple.com` (besides `email` or
+    `google.com`) is a linked account whatever `FIREBASE_ANONYMOUS_PLAYERS` says. **Session cookies (website only):** the website
+    may send a Firebase session cookie value as `Authorization: Bearer` (new security scheme `firebaseSessionCookie`), accepted
+    ONLY on nine operations: `getMyRoles` (`GET /v1/me/roles`), `requestPhotographerRole` (`POST /v1/me/roles/photographer`),
+    `getProgress` (`GET /v1/me/progress`), `listMedia` (`GET /v1/admin/media`), `getMedia` (`GET /v1/admin/media/{mediaId}`),
+    `uploadMedia` (`POST /v1/admin/media`), `uploadMediaVersion` (`POST /v1/admin/media/{mediaId}/versions`), `editMedia`
+    (`PATCH /v1/admin/media/{mediaId}`) and `stateMediaRights` (`PUT /v1/admin/media/{mediaId}/rights`); each lists both schemes
+    as alternatives. Any other route answers 401 `unauthorized` to a session cookie (review, publish and withdraw stay ID-token
+    only). A cookie has issuer `https://session.firebase.google.com/<projectId>`, the same audience, RS256, and a lifetime of at most
+    14 days; providers `password`, `google.com` and `apple.com` only (a guest or a linked-anonymous cookie is 401, flag or not).
+    The server checks the account on every request (Firebase Admin lookup, cached up to 60 s): a disabled, unknown or revoked account
+    (`auth_time` before the account's `validSince`) is 401, and a disable or revoke can take up to 60 s to bite. Fail closed with
+    503 `auth_unavailable`: Google (keys or account lookup) unreachable or slow, `Retry-After: 5`; or no Firebase Admin credential
+    configured on the server, `Retry-After: 60`. The worst case for one request is about 6 s (3 s key refresh plus 3 s lookup).
+    Cookie requests count against the same per-principal rate limit. Game ID tokens and every other behaviour are unchanged.
 
     **Changelog 0.34.0 (server-backed guests and Callsigns, user rulings 2026-11-26; docs/plans/guest-callsign.md; requests ADDITIVE,
     RESPONSES BREAKING for strict `PUT /v1/me` readers and strict error parsers; migration 0033).** **Guests:** with
@@ -658,6 +677,9 @@ paths:
       description: |
         Any signed-in caller. Every role row of the caller in any state (`player`, `photographer`, `admin`, in that order). A
         `pending`, `rejected`, `revoked` or `blocked` row grants nothing. No query parameters (any is 400).
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: The caller's rows (empty before the first `PUT /v1/me`).
@@ -685,6 +707,9 @@ paths:
         `changed: true`, audit action `role_self_activate`, `decidedBy` = the caller); an `active` row is never touched (200,
         `changed: false`). An account whose `photographer` row is `blocked` gets 403 `forbidden` and nothing is written (a block is
         per principal, never matched by email); so does the shared demo account.
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: Already `active`; nothing changed.
@@ -732,6 +757,9 @@ paths:
         `GET /v1/me/logbook`, not here (contract round 2).
       parameters:
         - $ref: "#/components/parameters/XClientVersion"
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: Progress.
@@ -3371,6 +3399,9 @@ paths:
             schema: { type: string, format: binary, maxLength: 5242880 }
           image/png:
             schema: { type: string, format: binary, maxLength: 5242880 }
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: Replay of an `Idempotency-Key` this caller already used with the same bytes; the item as it stands now.
@@ -3452,6 +3483,9 @@ paths:
           in: query
           required: false
           schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: A page of items.
@@ -3480,6 +3514,9 @@ paths:
         No query parameters. Exempt from the client version gate.
       parameters:
         - $ref: "#/components/parameters/MediaIdPath"
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: The item.
@@ -3553,6 +3590,9 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/MediaEditRequest" }
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: The item as it is now.
@@ -3640,6 +3680,9 @@ paths:
             schema: { type: string, format: binary, maxLength: 5242880 }
           image/png:
             schema: { type: string, format: binary, maxLength: 5242880 }
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: Replay of an `Idempotency-Key` this caller already used for the same operation, item and bytes; the item as it stands now.
@@ -3720,6 +3763,9 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/MediaRightsRequest" }
+      security:
+        - firebaseBearer: []
+        - firebaseSessionCookie: []
       responses:
         "200":
           description: The item as it is now.
@@ -4565,8 +4611,18 @@ components:
       scheme: bearer
       bearerFormat: Firebase ID token
       description: |
-        Firebase ID token (email/password or Google). The server derives the player from the verified token
+        Firebase ID token (email/password, Google or Apple). The server derives the player from the verified token
         only; no ID, role or name is ever read from a request.
+    firebaseSessionCookie:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Firebase session cookie value (website only; issuer `https://session.firebase.google.com/<projectId>`), sent as
+        `Authorization: Bearer`. Offered as an alternative to `firebaseBearer` on exactly nine operations (the role, progress and
+        media routes the website calls); on any other route it is 401. Providers password, google.com and apple.com only. The server
+        looks the account up on every request (cached up to 60 s): disabled or revoked is 401; Google or the server's Firebase Admin
+        credential unavailable is 503 `auth_unavailable`. Game clients keep using `firebaseBearer`.
 
   parameters:
     XClientVersion:
@@ -4987,7 +5043,9 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     ServiceUnavailable:
       description: |
-        `auth_unavailable`: the Google signing keys could not be fetched (on the UGS link route, the UGS keys too). `service_unavailable`: database
+        `auth_unavailable`: the Google signing keys could not be fetched (on the UGS link route, the UGS keys too); for a session cookie
+        (0.35.0) also the account lookup failed or timed out (`Retry-After: 5`) or the server has no Firebase Admin credential
+        (`Retry-After: 60`). `service_unavailable`: database
         unreachable or timed out (also readiness failing). Both carry `Retry-After`; retry later with the
         same token and the same request.
       headers:

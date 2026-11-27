@@ -117,9 +117,158 @@ describe("IdentityToolkitAccounts (service account)", () => {
   });
 });
 
+describe("IdentityToolkitAccounts.lookupSessionState", () => {
+  const state = (replies: Reply[], uid = "u1") => {
+    const f = fake(replies);
+    return { f, result: () => new IdentityToolkitAccounts(config, { fetch: f.fetchFn }).lookupSessionState(uid, AbortSignal.timeout(3000)) };
+  };
+
+  it("reads disabled and validSince (seconds string) by uid, with one try", async () => {
+    const { f, result } = state([user({ disabled: true, validSince: "1700000000" })]);
+    expect(await result()).toEqual({ kind: "found", disabled: true, validSince: 1700000000 });
+    expect(JSON.parse(f.calls()[0]?.body ?? "")).toEqual({ localId: ["u1"] });
+  });
+
+  it("absent disabled is false and absent validSince is undefined", async () => {
+    expect(await state([user({})]).result()).toEqual({ kind: "found", disabled: false, validSince: undefined });
+    expect(await state([user({ disabled: false, validSince: "0" })]).result()).toEqual({ kind: "found", disabled: false, validSince: 0 });
+  });
+
+  it("no matching localId, or no users field, is not_found", async () => {
+    expect(await state([{ status: 200, json: {} }]).result()).toEqual({ kind: "not_found" });
+    expect(await state([{ status: 200, json: { users: [] } }]).result()).toEqual({ kind: "not_found" });
+    expect(await state([{ status: 200, json: { users: [{ localId: "other" }] } }]).result()).toEqual({ kind: "not_found" });
+  });
+
+  it("strict parsing: anything malformed is unavailable", async () => {
+    const bad: unknown[] = [
+      { users: "nope" },
+      { users: {} },
+      [1, 2],
+      "text",
+      null,
+    ];
+    for (const json of bad) expect(await state([{ status: 200, json }]).result()).toEqual({ kind: "unavailable" });
+    for (const disabled of ["true", 1, null, {}]) expect(await state([user({ disabled })]).result()).toEqual({ kind: "unavailable" });
+    for (const validSince of [1700000000, "", "-1", "1.5", "12a", "1234567890123456", null, " 1"]) {
+      expect(await state([user({ validSince })]).result()).toEqual({ kind: "unavailable" });
+    }
+    expect(await state([user({ validSince: "123456789012345" })]).result()).toEqual({ kind: "found", disabled: false, validSince: 123456789012345 });
+  });
+
+  it("a non-JSON 200 body is unavailable", async () => {
+    const fetchFn = (async (input: string | URL | Request) =>
+      String(input).includes("oauth2")
+        ? new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 })
+        : new Response("<html>", { status: 200 })) as typeof fetch;
+    expect(await new IdentityToolkitAccounts(config, { fetch: fetchFn }).lookupSessionState("u1", AbortSignal.timeout(3000))).toEqual({ kind: "unavailable" });
+  });
+
+  it("any non-200 is unavailable and is not retried (not even 500, 401 or a thrown fetch)", async () => {
+    for (const reply of [{ status: 500, json: {} }, { status: 401, json: {} }, { status: 403, json: { error: { message: "PERMISSION_DENIED" } } }, { status: 400, json: notFoundError.json }, "throw"] as Reply[]) {
+      const { f, result } = state([reply, user({})]);
+      expect(await result()).toEqual({ kind: "unavailable" });
+      expect(f.calls()).toHaveLength(1);
+    }
+  });
+
+  it("a failed token exchange is unavailable after a single exchange and no lookup", async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls += 1;
+      return new Response("{}", { status: 400 });
+    }) as typeof fetch;
+    expect(await new IdentityToolkitAccounts(config, { fetch: fetchFn }).lookupSessionState("u1", AbortSignal.timeout(3000))).toEqual({ kind: "unavailable" });
+    expect(calls).toBe(1);
+  });
+
+  it("an aborted signal while the token mint is slow gives unavailable at once; the mint is shared and still completes for others", async () => {
+    let release: (() => void) | undefined;
+    let tokens = 0;
+    const fetchFn = (async (input: string | URL | Request) => {
+      if (String(input).includes("oauth2")) {
+        tokens += 1;
+        await new Promise<void>((resolve) => (release = resolve));
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify(user({}).json), { status: 200 });
+    }) as typeof fetch;
+    const accounts = new IdentityToolkitAccounts(config, { fetch: fetchFn });
+    const controller = new AbortController();
+    const first = accounts.lookupSessionState("u1", controller.signal);
+    const second = accounts.lookupSessionState("u1", AbortSignal.timeout(5000));
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    expect(await first).toEqual({ kind: "unavailable" });
+    release?.();
+    expect(await second).toEqual({ kind: "found", disabled: false, validSince: undefined });
+    expect(tokens).toBe(1);
+  });
+
+  it("concurrent cold callers share one token mint; a failed mint does not poison the next caller", async () => {
+    const f = fake([user({}), user({})]);
+    const accounts = new IdentityToolkitAccounts(config, { fetch: f.fetchFn });
+    await Promise.all([accounts.lookupSessionState("u1", AbortSignal.timeout(3000)), accounts.lookupSessionState("u1", AbortSignal.timeout(3000))]);
+    expect(f.tokens()).toBe(1);
+
+    let fail = true;
+    let exchanges = 0;
+    const fetchFn = (async (input: string | URL | Request) => {
+      if (String(input).includes("oauth2")) {
+        exchanges += 1;
+        return fail ? new Response("{}", { status: 500 }) : new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify(user({}).json), { status: 200 });
+    }) as typeof fetch;
+    const flaky = new IdentityToolkitAccounts(config, { fetch: fetchFn });
+    expect(await flaky.lookupSessionState("u1", AbortSignal.timeout(3000))).toEqual({ kind: "unavailable" });
+    fail = false;
+    expect(await flaky.lookupSessionState("u1", AbortSignal.timeout(3000))).toEqual({ kind: "found", disabled: false, validSince: undefined });
+    expect(exchanges).toBe(2);
+  });
+
+  it("failure logs carry no uid, token or body, and are throttled", async () => {
+    const { Logger } = await import("@nestjs/common");
+    const { vi } = await import("vitest");
+    const spy = vi.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    try {
+      let clock = 1_000_000;
+      const fetchFn = (async (input: string | URL | Request) =>
+        String(input).includes("oauth2")
+          ? new Response(JSON.stringify({ access_token: "secret-token", expires_in: 3600 }), { status: 200 })
+          : new Response(JSON.stringify({ error: { message: "PERMISSION_DENIED : secret detail" } }), { status: 403 })) as typeof fetch;
+      const accounts = new IdentityToolkitAccounts(config, { fetch: fetchFn, now: () => clock });
+      for (let i = 0; i < 5; i += 1) await accounts.lookupSessionState("uid-secret", AbortSignal.timeout(3000));
+      expect(spy).toHaveBeenCalledTimes(1);
+      clock += 31_000;
+      await accounts.lookupSessionState("uid-secret", AbortSignal.timeout(3000));
+      expect(spy).toHaveBeenCalledTimes(2);
+      const lines = spy.mock.calls.map((c) => String(c[0]));
+      expect(lines[0]).toContain("status=403");
+      expect(lines[0]).toContain("PERMISSION_DENIED");
+      expect(lines[1]).toContain("4 similar suppressed");
+      for (const line of lines) expect(line).not.toMatch(/uid-secret|secret-token|secret detail/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("firebaseAccountsFor", () => {
   it("without configuration answers not_configured", async () => {
     expect(await firebaseAccountsFor(undefined).ensureEmailVerified("u1", null)).toEqual({ kind: "not_configured" });
+    expect(await firebaseAccountsFor(undefined).lookupSessionState("u1", AbortSignal.timeout(3000))).toEqual({ kind: "not_configured" });
+  });
+
+  it("the emulator form looks up session state with Bearer owner and no token exchange", async () => {
+    const f = fake([user({ validSince: "5" })]);
+    const accounts = firebaseAccountsFor({ kind: "emulator", projectId: "demo-airplane-games", host: "127.0.0.1:9199" }, { fetch: f.fetchFn });
+    expect(await accounts.lookupSessionState("u1", AbortSignal.timeout(3000))).toEqual({ kind: "found", disabled: false, validSince: 5 });
+    expect(f.seen[0]).toMatchObject({
+      url: "http://127.0.0.1:9199/identitytoolkit.googleapis.com/v1/projects/demo-airplane-games/accounts:lookup",
+      auth: "Bearer owner",
+    });
+    expect(f.tokens()).toBe(0);
   });
 
   it("the emulator form calls http://<host>/identitytoolkit.googleapis.com/v1/projects/<demo project> with Bearer owner", async () => {

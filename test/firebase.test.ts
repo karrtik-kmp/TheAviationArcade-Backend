@@ -79,6 +79,19 @@ describe("verifyFirebaseToken", () => {
     ).rejects.toBeInstanceOf(InvalidTokenError);
   });
 
+  it("keeps verifyFirebaseToken the ID-token path: it refuses a session-cookie issuer", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const cookie = await new SignJWT({ auth_time: now - 60, firebase: { sign_in_provider: "password" } })
+      .setProtectedHeader({ alg: "RS256", kid: "test" })
+      .setIssuer(`https://session.firebase.google.com/${PROJECT}`)
+      .setAudience(PROJECT)
+      .setSubject("uid-123")
+      .setIssuedAt(now - 60)
+      .setExpirationTime(now + 3600)
+      .sign(privateKey);
+    await expect(verifyFirebaseToken(cookie, production, resolver)).rejects.toBeInstanceOf(InvalidTokenError);
+  });
+
   it("rejects an expired token", async () => {
     const token = await signed({}, PROJECT, -1);
     await expect(verifyFirebaseToken(token, production, resolver)).rejects.toThrow();

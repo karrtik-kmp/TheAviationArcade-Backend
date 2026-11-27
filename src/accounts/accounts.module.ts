@@ -4,6 +4,7 @@ import type { AppConfig } from "../config/config.module.js";
 import { AdminRolesController, MyRolesController } from "./accounts.controller.js";
 import { FIREBASE_ACCOUNTS, firebaseAccountsFor } from "./firebase-accounts.js";
 import { RoleStore } from "./role-store.js";
+import { SessionRevocation } from "./session-revocation.js";
 
 /** Global so PlayersService can issue `player` at sign-in without PlayersModule importing it. Role registration, admin decisions and the role store (Backend ADR-0002). RolesGuard itself lives in src/auth/roles.ts. */
 @Global()
@@ -11,9 +12,10 @@ import { RoleStore } from "./role-store.js";
   controllers: [MyRolesController, AdminRolesController],
   providers: [
     RoleStore,
+    SessionRevocation,
     // Firebase admin access for the admin grant (ADR-0002 follow-up 2026-11-19); answers not_configured when config.firebaseAdmin is unset.
     { provide: FIREBASE_ACCOUNTS, inject: [APP_CONFIG], useFactory: (config: AppConfig) => firebaseAccountsFor(config.firebaseAdmin) },
   ],
-  exports: [RoleStore],
+  exports: [RoleStore, SessionRevocation],
 })
 export class AccountsModule {}

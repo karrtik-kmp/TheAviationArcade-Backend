@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AccountRequired } from "../auth/account-required.js";
 import { Principal } from "../auth/firebase-auth.guard.js";
 import { Roles } from "../auth/roles.js";
+import { SessionCookieAllowed } from "../auth/session-cookie.decorator.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { APP_CONFIG } from "../config/config.module.js";
@@ -134,6 +135,7 @@ function adminView(row: RoleRow) {
 export class MyRolesController {
   constructor(private readonly roles: RoleStore) {}
 
+  @SessionCookieAllowed()
   @Get()
   async mine(@Principal() principal: string, @Query(new ZodValidationPipe(emptyQuery, "Expected no query parameters.")) _query: Record<string, never>) {
     return { roles: (await this.roles.rolesOf(principal)).map(ownView) };
@@ -146,6 +148,7 @@ export class MyRolesController {
    */
   // A guest has no verified email: 403 account_required (0.34.0) says why, instead of `forbidden`.
   @AccountRequired()
+  @SessionCookieAllowed()
   @Post("photographer")
   async activatePhotographer(
     @Principal() principal: string,

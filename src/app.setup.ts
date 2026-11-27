@@ -1,10 +1,10 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import type { NestExpressApplication } from "@nestjs/platform-express";
-import { AuthUnavailableError, verifyFirebaseToken } from "./auth/firebase.js";
+import { SessionRevocation } from "./accounts/session-revocation.js";
+import { authenticate } from "./auth/authenticate.js";
 import { RolesService } from "./auth/roles.js";
 import type { AccountRole } from "./db/enums.js";
-import { ApiError } from "./common/errors.js";
 import { APP_CONFIG } from "./config/config.module.js";
 import type { AppConfig } from "./config/config.module.js";
 import { requestContext } from "./common/request-context.js";
@@ -25,7 +25,6 @@ function noStore(req: Request, res: Response, next: NextFunction): void {
 const readXlsx = express.raw({ type: XLSX_MIME, limit: MAX_UPLOAD_BYTES });
 const readImage = express.raw({ type: ["image/jpeg", "image/png"], limit: MAX_MEDIA_BYTES });
 const MEDIA_VERSIONS_PATH = /^\/med-[1-9][0-9]{0,14}\/versions\/?$/;
-const UNAUTHORIZED =() => new ApiError(401, "unauthorized", "Sign in required.", { "WWW-Authenticate": "Bearer" });
 
 // Up to 2000 item ids of at most 64 characters each is about 134 KB of JSON.
 const readCoverageJson = express.json({ limit: "160kb" });
@@ -47,39 +46,36 @@ function roleBodyReader(
   app: NestExpressApplication,
   required: readonly AccountRole[],
   read: (req: Request, res: Response, next: NextFunction) => void,
+  /** True only for the media upload reader: a Firebase session cookie may authenticate it (docs/plans/session-cookies.md C8). */
+  sessionCookies = false,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const token = /^bearer (\S+)$/i.exec(req.header("authorization") ?? "")?.[1];
     if (req.method !== "POST" || !token) return next();
     const config = app.get<AppConfig>(APP_CONFIG);
-    verifyFirebaseToken(token, {
-      projectId: config.firebaseProjectId,
-      emulator: config.emulatorTokens,
-      anonymousPlayers: config.anonymousPlayers,
-    }).then(
-      (identity) => {
+    const storage = app.get<ThrottlerStorage>(ThrottlerStorage);
+    // Same order as the guard (C6): verify, cookie rules, count (cookies), Admin key, revocation. A revoked cookie is refused before any byte is read.
+    authenticate(token, { config, revocation: app.get(SessionRevocation), storage }, req, sessionCookies).then(
+      ({ identity, kind }) => {
         // A throwaway view of the request: the guards set the real identity later from the same token.
         const probe = {
           principal: identity.principal,
           email: identity.email,
           emailVerified: identity.emailVerified,
           anonymous: identity.anonymous,
+          credentialKind: kind,
         } as Request;
         // Count the request against the rate limit first, exactly as RateLimitGuard would (it then skips this request), so a
-        // caller refused below is still counted and a flood of refusals cannot run unlimited role queries.
-        countAuthenticatedRequest(app.get<ThrottlerStorage>(ThrottlerStorage), config, identity.principal, req)
+        // caller refused below is still counted and a flood of refusals cannot run unlimited role queries. A session cookie was
+        // already counted inside authenticate().
+        (kind === "idToken" ? countAuthenticatedRequest(storage, config, identity.principal, req) : Promise.resolve())
           .then(() => app.get(RolesService).authorize(probe, required))
           .then(
             () => read(req, res, next),
             (error: unknown) => next(error),
           );
       },
-      (error: unknown) => {
-        if (error instanceof AuthUnavailableError) {
-          return next(new ApiError(503, "auth_unavailable", "Sign-in is temporarily unavailable. Retry shortly.", { "Retry-After": "5" }));
-        }
-        next(UNAUTHORIZED());
-      },
+      (error: unknown) => next(error),
     );
   };
 }
@@ -121,7 +117,7 @@ export function configureApp(app: NestExpressApplication, options: { trustProxy?
   app.use("/v1/admin/content/documents/faq/import", roleBodyReader(app, ["admin"], readFaqImportJson));
   // Media upload: raw JPEG/PNG, 5 MB, photographer (admins pass). Only two exact paths: the collection ("/") and a well-formed
   // item's "/med-<n>/versions"; every other sub-route keeps the 16 KB JSON rule.
-  const readMediaUpload = roleBodyReader(app, ["photographer"], readImage);
+  const readMediaUpload = roleBodyReader(app, ["photographer"], readImage, true);
   app.use("/v1/admin/media", (req: Request, res: Response, next: NextFunction) =>
     req.path === "/" || MEDIA_VERSIONS_PATH.test(req.path) ? readMediaUpload(req, res, next) : next(),
   );

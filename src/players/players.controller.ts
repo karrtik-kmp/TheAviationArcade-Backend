@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { SkipClientVersion } from "../platform/client-version.js";
 import { Principal } from "../auth/firebase-auth.guard.js";
+import { SessionCookieAllowed } from "../auth/session-cookie.decorator.js";
 import { ApiError } from "../common/errors.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { RANKS } from "../rules/ranks.js";
@@ -47,6 +48,7 @@ export class PlayersController {
     await this.players.deletePlayer(principal);
   }
 
+  @SessionCookieAllowed()
   @Get("progress")
   async progress(@Principal() principal: string) {
     const player = await this.players.getPlayer(principal);

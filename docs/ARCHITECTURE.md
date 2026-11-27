@@ -606,3 +606,29 @@ what A3 observed for password accounts).
 **Not built:** clean-up of abandoned guests and the Callsigns they hold (squatting risk accepted for now; Firebase's own
 auto-delete of anonymous users after 30 days needs Identity Platform and does not touch this database, so a guest deleted there
 would leave an orphan player row and Callsign here).
+
+## Session cookies (0.35.0, docs/plans/session-cookies.md)
+
+The website keeps its members signed in with a Firebase session cookie and forwards it as `Authorization: Bearer`. Decisions:
+
+- **Kind choice.** `verifyCredential` (`src/auth/firebase.ts`) reads the unverified `iss` only to pick a validator: exactly
+  `https://session.firebase.google.com/<projectId>` is a session cookie, anything else goes down the ID-token path. Each kind
+  verifies against its own fixed issuer and its own keys (RS256 only; the cookie keys are Google's X.509 map, cached by
+  `max-age`, refetched at most once a minute on an unknown `kid`). A cookie key never validates an ID token and vice versa.
+  Providers are password, google.com and apple.com; guests and linked-anonymous tokens are refused as cookies.
+- **Allowlist.** `@SessionCookieAllowed()` on nine handlers (never a class): `GET /v1/me/roles`,
+  `POST /v1/me/roles/photographer`, `GET /v1/me/progress` and the six website media routes (list, get, upload, new version,
+  edit, rights). Anywhere else (including media review, publish and withdraw) a cookie is 401 before any lookup. A test pins the
+  list from controller metadata.
+- **Revocation authority.** Firebase is asked, per request, through `SessionRevocation` (`src/accounts`): a disabled or unknown
+  account, or `auth_time` before the account's `validSince`, is 401. Definitive answers are cached per project and uid for 60 s
+  (10,000 entries): an OK is reused, a refusal is cached as a refusal, an error is never cached. So a disable or revoke can take
+  up to **60 s** to bite after a cached OK.
+- **Fail closed.** Google unreachable or slow, or a malformed lookup answer: 503 `auth_unavailable`, `Retry-After: 5`. No
+  Firebase Admin credential on the server: 503 `auth_unavailable`, `Retry-After: 60` (an operator error must not look like a
+  bad cookie, or the website would clear every member's cookie). Cookie requests are counted against the per-principal rate
+  limit before any lookup.
+- **Latency.** One 3 s deadline covers the OAuth token mint plus the lookup, and a key refresh has its own 3 s: worst case
+  about **6 s** for one request, normally nothing (cached) or at most 3 s.
+- **Logging.** `Authorization` is never logged (the request log has rid, ip, method, route pattern, status and time only); a test
+  asserts the log line carries no bearer.

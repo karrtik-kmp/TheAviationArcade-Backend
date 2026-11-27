@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { z } from "zod";
 import { Principal } from "../../auth/firebase-auth.guard.js";
 import { CallerRoles, Roles } from "../../auth/roles.js";
+import { SessionCookieAllowed } from "../../auth/session-cookie.decorator.js";
 import { ApiError } from "../../common/errors.js";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe.js";
 import { MEDIA_PUBLISHABLE_RIGHTS, MEDIA_REVIEW_DECISIONS, MEDIA_V2_STATEMENT } from "../../db/enums.js";
@@ -153,6 +154,7 @@ export class MediaController {
   constructor(private readonly media: MediaService) {}
 
   /** Newest first; a photographer sees their own items, an admin all. */
+  @SessionCookieAllowed()
   @Get()
   list(
     @Principal() principal: string,
@@ -167,6 +169,7 @@ export class MediaController {
   }
 
   /** The item, its version history and a signed preview link (404 for another photographer's item). */
+  @SessionCookieAllowed()
   @Get(":mediaId")
   get(
     @Principal() principal: string,
@@ -182,6 +185,7 @@ export class MediaController {
    * token and role are verified). 201 for a new item, 200 when the Idempotency-Key was already used with the same bytes, statement
    * and submission. The v2 statement needs the X-Submission header (docs/plans/photo-submission-v2.md D2); v1 refuses it.
    */
+  @SessionCookieAllowed()
   @Post()
   async upload(
     @Principal() principal: string,
@@ -203,6 +207,7 @@ export class MediaController {
    * A new file version of an item, fenced by `?revision=`. OWNER ONLY: a non-owner admin gets 403, a non-owner photographer 404.
    * 201 new, 200 replay of the same Idempotency-Key, item, bytes, statement and submission.
    */
+  @SessionCookieAllowed()
   @Post(":mediaId/versions")
   async uploadVersion(
     @Principal() principal: string,
@@ -229,6 +234,7 @@ export class MediaController {
   }
 
   /** Edit the draft version's licence, description and title and the item's private submission fields (see MediaService.edit). */
+  @SessionCookieAllowed()
   @Patch(":mediaId")
   async edit(
     @Principal() principal: string,
@@ -242,6 +248,7 @@ export class MediaController {
   }
 
   /** State the rights for the draft: v1 for a draft that has none, or move to the v2 agreement with a new draft version (owner only; see MediaService.setRights). */
+  @SessionCookieAllowed()
   @Put(":mediaId/rights")
   setRights(
     @Principal() principal: string,

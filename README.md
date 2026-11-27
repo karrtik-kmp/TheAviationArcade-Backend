@@ -476,6 +476,8 @@ the backend never reads it back. Off unless all `UGS_*` settings are given. Desi
   (403 `account_required`), and new guests are limited per IP (`GUEST_CREATE_PER_IP_PER_HOUR`, default 20; needs
   `TRUST_PROXY` behind a proxy). No email or display name is stored here. The Callsign (a public name tag, not a
   credential) is stored on the player: unique ignoring case, freed when the player is deleted.
+  The website may also send a Firebase session cookie as the Bearer on its nine routes (roles, progress, media; revalidated
+  against Firebase on each request; 0.35.0, [plans/session-cookies.md](docs/plans/session-cookies.md)); game tokens are unchanged.
 - **The server is authoritative for the economy.** The client reports only what happened in a Round.
   Perfect Streak, First Class Pass and Pleasure Cruise are decided server-side, and request bodies are
   strict, so extra fields are rejected.

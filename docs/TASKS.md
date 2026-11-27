@@ -704,6 +704,15 @@ Open: Backend `CLAUDE.md`, the root `CLAUDE.md` and `website/AGENTS.md` still li
 
 ## Verification log
 
+- 2026-11-27 (local, Firebase session cookies, API 0.35.0; plan [session-cookies](plans/session-cookies.md), brief
+  `../docs/briefs/backend-session-cookie-credential.md`, website plan D2/D3/S1). Plan gate: senior-lead and backend-expert,
+  both "approve with changes", folded in. Built in four slices (verifier, revocation, wiring, contract); independent code review
+  "ship after fixes", six fixes applied (handler-only allowlist read, three tests that passed vacuously, one shared
+  rate-limit mark). Results: `npm run typecheck` clean; `npx vitest run` 60 files / 1485 tests; `npm run test:e2e` 71 files /
+  1548 tests (run by the implementer after the fixes; `session-cookie.e2e` and `openapi.e2e` re-run here, 59 tests). Not
+  verified: a real cookie from `airplane-games-9fe1e` (claims, `kid`, the X.509 key map) and a real `accounts:lookup`
+  `validSince`; whether dev.api has `FIREBASE_ADMIN_SERVICE_ACCOUNT_FILE` set (without it session cookies answer 503 there).
+  Not deployed.
 - 2026-11-27 (local, Apple sign-in): `apple.com` accepted as an account provider and as a linking identity (`src/auth/firebase.ts`).
   `npx vitest run test/firebase.test.ts test/guests.test.ts` and `npm run typecheck` pass (independent code review: ship after
   fixes, applied). Not verified on real Apple tokens; the linked-identity key is an ASSUMPTION test (plan G1 dev check).

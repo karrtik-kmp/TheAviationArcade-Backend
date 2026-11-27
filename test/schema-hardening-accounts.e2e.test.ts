@@ -33,7 +33,10 @@ const operator: RoleActor = { kind: "operator", id: "hardening-test" };
 const adminPrincipal = demoPrincipal(`hard-admin-${randomUUID()}`);
 const adminActor: RoleActor = { kind: "admin", principal: adminPrincipal };
 // Firebase is faked: the admin grant only needs "ok".
-const accounts: FirebaseAccounts = { ensureEmailVerified: async () => ({ kind: "ok", emailVerification: "no_email" }) };
+const accounts: FirebaseAccounts = {
+  ensureEmailVerified: async () => ({ kind: "ok", emailVerification: "no_email" }),
+  lookupSessionState: async () => ({ kind: "not_configured" }),
+};
 
 beforeAll(async () => {
   sql = new pg.Pool({ connectionString: process.env.DATABASE_URL });

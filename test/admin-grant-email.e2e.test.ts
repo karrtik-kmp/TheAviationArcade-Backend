@@ -63,6 +63,7 @@ beforeAll(async () => {
       await duringFirebase?.();
       return result;
     },
+    lookupSessionState: (uid, signal) => real.lookupSessionState(uid, signal),
   });
 });
 

@@ -12,6 +12,8 @@ declare module "express-serve-static-core" {
     emailVerified?: boolean;
     /** Set by FirebaseAuthGuard: the verified token is a Firebase Anonymous guest (docs/plans/guest-callsign.md G1). */
     anonymous?: boolean;
+    /** Set by FirebaseAuthGuard / the upload pre-reader: which kind of Firebase credential authenticated this request. */
+    credentialKind?: "idToken" | "sessionCookie";
     /** The caller's ACTIVE roles, set by RolesGuard on @Roles() routes only (read from account_roles for this request). */
     roles?: readonly AccountRole[];
   }

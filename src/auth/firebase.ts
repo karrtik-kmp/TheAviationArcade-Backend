@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, decodeJwt, decodeProtectedHeader, errors, jwtVerify } from "jose";
+import { createRemoteJWKSet, decodeJwt, decodeProtectedHeader, errors, importX509, jwtVerify } from "jose";
 import type { JWTPayload, JWTVerifyGetKey } from "jose";
 
 /**
@@ -28,6 +28,8 @@ export type FirebaseIdentity = {
    * no `email` / `google.com` / `apple.com` login. A token that still names `anonymous` after `linkWithCredential` is an account (see guestFor).
    */
   anonymous: boolean;
+  /** The token's `auth_time` claim in seconds; a session cookie is compared with the account's `validSince` (docs/plans/session-cookies.md C5). */
+  authTime: number;
 };
 
 export type FirebaseTokenOptions = {
@@ -125,7 +127,19 @@ function guestFor(provider: unknown, identities: unknown, anonymousPlayers: bool
   return anonymousPlayers ? true : undefined;
 }
 
-function validateIdentity(claims: JWTPayload, projectId: string, anonymousPlayers: boolean): FirebaseIdentity {
+/** Longest session cookie Firebase issues: two weeks (docs/plans/session-cookies.md C2). */
+const MAX_SESSION_COOKIE_SECONDS = 1_209_600;
+
+export type CredentialKind = "idToken" | "sessionCookie";
+
+const sessionIssuer = (projectId: string): string => `https://session.firebase.google.com/${projectId}`;
+
+function validateIdentity(
+  claims: JWTPayload,
+  projectId: string,
+  anonymousPlayers: boolean,
+  kind: CredentialKind = "idToken",
+): FirebaseIdentity {
   const now = Math.floor(Date.now() / 1000);
   const { sub, exp, iat } = claims;
   const authTime = claims.auth_time;
@@ -133,11 +147,23 @@ function validateIdentity(claims: JWTPayload, projectId: string, anonymousPlayer
     claims.firebase !== null && typeof claims.firebase === "object" && !Array.isArray(claims.firebase)
       ? (claims.firebase as Record<string, unknown>)
       : undefined;
-  const anonymous = guestFor(firebase?.sign_in_provider, firebase?.identities, anonymousPlayers);
+  // A session cookie is a member credential: never a guest, whatever the flag says; `anonymous` (even linked) is refused.
+  const provider = firebase?.sign_in_provider;
+  const anonymous =
+    kind === "sessionCookie"
+      ? typeof provider === "string" && ALLOWED_PROVIDERS.has(provider)
+        ? false
+        : undefined
+      : guestFor(provider, firebase?.identities, anonymousPlayers);
+  const expectedIssuer = kind === "sessionCookie" ? sessionIssuer(projectId) : `https://securetoken.google.com/${projectId}`;
+  const lifetimeBad =
+    kind === "sessionCookie" &&
+    (typeof exp !== "number" || typeof iat !== "number" || exp <= iat || exp - iat > MAX_SESSION_COOKIE_SECONDS);
 
   if (
+    lifetimeBad ||
     claims.aud !== projectId ||
-    claims.iss !== `https://securetoken.google.com/${projectId}` ||
+    claims.iss !== expectedIssuer ||
     typeof sub !== "string" ||
     sub.length === 0 ||
     sub.length > 128 ||
@@ -162,6 +188,7 @@ function validateIdentity(claims: JWTPayload, projectId: string, anonymousPlayer
     emailVerified: claims.email_verified === true,
     email: typeof claims.email === "string" && claims.email.length <= 320 ? claims.email : undefined,
     anonymous,
+    authTime,
   };
 }
 
@@ -219,6 +246,160 @@ export async function verifyFirebaseToken(
     if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid) {
       throw new AuthUnavailableError();
     }
+    if (!(error instanceof errors.JOSEError)) throw new AuthUnavailableError();
+    return invalidToken();
+  }
+}
+
+// ---- Session cookies (docs/plans/session-cookies.md C1-C3, C7) ----
+
+const SESSION_KEYS_URL = "https://www.googleapis.com/identitytoolkit/v3/relyingparty/publicKeys";
+const KEY_FETCH_TIMEOUT_MS = 3_000;
+const KEY_MIN_AGE_MS = 60_000;
+const KEY_MAX_AGE_MS = 86_400_000;
+const KEY_STALE_GRACE_MS = 3_600_000;
+const KEY_REFETCH_COOLDOWN_MS = 60_000;
+const KEY_FAILURE_BACKOFF_MS = 5_000;
+const MAX_KEY_COUNT = 50;
+const MAX_KID_LENGTH = 128;
+
+export type SessionKeyOptions = {
+  fetch?: typeof fetch;
+  /** Milliseconds since the epoch; tests inject a clock. */
+  now?: () => number;
+};
+
+/**
+ * The key resolver for Firebase session cookies. Google publishes them as a `{ kid: X.509 PEM }` map (not a JWKS), cached by
+ * `Cache-Control: max-age`. One fetch in flight; an unknown `kid` refetches at most once a minute (inside the cooldown it is a 503,
+ * so a random kid cannot make the website clear real members' cookies); any fetch/parse/import failure is AuthUnavailableError, the
+ * last good set is served for up to an hour past its expiry, and a failure backs off for 5 s before the next fetch.
+ */
+export function sessionCookieKeys(options: SessionKeyOptions = {}): JWTVerifyGetKey {
+  const fetchImpl = options.fetch ?? fetch;
+  const clock = options.now ?? Date.now;
+  let keys: Map<string, CryptoKey> | undefined;
+  let expiresAt = 0;
+  let lastFetchAt: number | undefined;
+  let backoffUntil = 0;
+  let inflight: Promise<void> | undefined;
+
+  async function load(): Promise<void> {
+    try {
+      const response = await fetchImpl(SESSION_KEYS_URL, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
+      if (!response.ok) throw new AuthUnavailableError();
+      const body: unknown = await response.json();
+      if (body === null || typeof body !== "object" || Array.isArray(body)) throw new AuthUnavailableError();
+      const entries = Object.entries(body as Record<string, unknown>);
+      if (entries.length === 0 || entries.length > MAX_KEY_COUNT) throw new AuthUnavailableError();
+      const next = new Map<string, CryptoKey>();
+      for (const [kid, pem] of entries) {
+        if (typeof pem !== "string") throw new AuthUnavailableError();
+        next.set(kid, await importX509(pem, "RS256"));
+      }
+      const directive = /(?:^|[\s,])max-age=(\d+)(?=$|[\s,])/i.exec(response.headers.get("cache-control") ?? "");
+      const ageMs = directive ? Math.min(Math.max(Number(directive[1]) * 1000, KEY_MIN_AGE_MS), KEY_MAX_AGE_MS) : KEY_MIN_AGE_MS;
+      const t = clock();
+      keys = next;
+      expiresAt = t + ageMs;
+      lastFetchAt = t;
+      backoffUntil = 0;
+    } catch {
+      backoffUntil = clock() + KEY_FAILURE_BACKOFF_MS;
+      throw new AuthUnavailableError();
+    }
+  }
+
+  function refresh(): Promise<void> {
+    if (inflight) return inflight;
+    if (clock() < backoffUntil) return Promise.reject(new AuthUnavailableError());
+    inflight = load().finally(() => {
+      inflight = undefined;
+    });
+    return inflight;
+  }
+
+  return async (protectedHeader) => {
+    const kid = protectedHeader.kid;
+    if (typeof kid !== "string" || kid.length === 0 || kid.length > MAX_KID_LENGTH) {
+      throw new errors.JWSInvalid("Session cookie kid is missing or malformed.");
+    }
+    if (keys && clock() < expiresAt) {
+      const known = keys.get(kid);
+      if (known) return known;
+      // Unknown kid on a fresh set: refetch at most once per cooldown, otherwise a rotation cannot be told from a forged kid.
+      if (lastFetchAt !== undefined && clock() - lastFetchAt < KEY_REFETCH_COOLDOWN_MS) throw new AuthUnavailableError();
+      await refresh();
+      const after = keys?.get(kid);
+      if (after) return after;
+      throw new errors.JWKSNoMatchingKey();
+    }
+    try {
+      await refresh();
+    } catch (error) {
+      // A failed refresh: the last good set still serves for an hour past its expiry (a kid it lacks is undecidable, so 503).
+      const stale = keys !== undefined && clock() < expiresAt + KEY_STALE_GRACE_MS ? keys.get(kid) : undefined;
+      if (stale) return stale;
+      throw error;
+    }
+    const fresh = keys?.get(kid);
+    if (fresh) return fresh;
+    throw new errors.JWKSNoMatchingKey();
+  };
+}
+
+const defaultSessionKeys = sessionCookieKeys();
+
+/**
+ * Verify a website credential: a Firebase ID token or a Firebase session cookie. The unverified `iss` only chooses the path (exact
+ * match on the session issuer); each path then verifies with its own fixed issuer, key set and RS256 only. Key parameters are for
+ * tests only. Throws InvalidTokenError (401) or AuthUnavailableError (503). Revocation is not checked here.
+ */
+export async function verifyCredential(
+  token: string,
+  options: FirebaseTokenOptions,
+  keysForTests?: { idToken?: JWTVerifyGetKey; sessionCookie?: JWTVerifyGetKey },
+): Promise<{ identity: FirebaseIdentity; kind: CredentialKind }> {
+  if (token.length === 0 || token.length > 24_000 || !options.projectId.trim()) return invalidToken();
+  let unverifiedIssuer: unknown;
+  try {
+    unverifiedIssuer = decodeJwt(token).iss;
+  } catch {
+    return invalidToken();
+  }
+  if (unverifiedIssuer !== sessionIssuer(options.projectId)) {
+    return { identity: await verifyFirebaseToken(token, options, keysForTests?.idToken), kind: "idToken" };
+  }
+
+  let header;
+  try {
+    header = decodeProtectedHeader(token);
+  } catch {
+    return invalidToken();
+  }
+  if (header.alg === "none") {
+    if (!options.emulator || options.projectId !== EMULATOR_PROJECT_ID) return invalidToken();
+    let claims;
+    try {
+      claims = decodeJwt(token);
+    } catch {
+      return invalidToken();
+    }
+    return { identity: validateIdentity(claims, options.projectId, false, "sessionCookie"), kind: "sessionCookie" };
+  }
+  if (header.alg !== "RS256") return invalidToken();
+  try {
+    const { payload } = await jwtVerify(token, keysForTests?.sessionCookie ?? defaultSessionKeys, {
+      algorithms: ["RS256"],
+      issuer: sessionIssuer(options.projectId),
+      audience: options.projectId,
+      requiredClaims: ["sub", "iat", "exp", "auth_time"],
+      clockTolerance: 0,
+    });
+    return { identity: validateIdentity(payload, options.projectId, false, "sessionCookie"), kind: "sessionCookie" };
+  } catch (error) {
+    if (error instanceof InvalidTokenError || error instanceof AuthUnavailableError) throw error;
+    if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid) throw new AuthUnavailableError();
     if (!(error instanceof errors.JOSEError)) throw new AuthUnavailableError();
     return invalidToken();
   }
