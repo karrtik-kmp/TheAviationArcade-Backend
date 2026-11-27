@@ -42,16 +42,31 @@ describe("guest test (G1)", () => {
   });
 
   it("other identity keys (phone, ...) and empty lists leave the token a guest", async () => {
-    for (const identities of [{ phone: ["+15550100"] }, { email: [] }, { "google.com": [] }, { email: [], phone: ["+1"] }]) {
+    for (const identities of [{ phone: ["+15550100"] }, { email: [] }, { "google.com": [] }, { email: [], phone: ["+1"] }, { "apple.com": [] }]) {
       expect((await verifyFirebaseToken(anonymous(identities), guestsOn)).anonymous).toBe(true);
       await expect(verifyFirebaseToken(anonymous(identities), guestsOff)).rejects.toBeInstanceOf(InvalidTokenError);
     }
   });
 
   it("an anonymous token with malformed identities is refused (401) even with guests on", async () => {
-    for (const identities of [null, [], "email", { email: "a@sites.test" }, { email: [1] }, { "google.com": [""] }]) {
+    for (const identities of [null, [], "email", { email: "a@sites.test" }, { email: [1] }, { "google.com": [""] }, { "apple.com": "x" }]) {
       await expect(verifyFirebaseToken(anonymous(identities), guestsOn)).rejects.toBeInstanceOf(InvalidTokenError);
     }
+  });
+
+  // ASSUMPTION (plan G1): Firebase names an Apple link `apple.com` in `identities`; check a real linked token on dev.
+  it("ASSUMPTION: an anonymous token linked to Apple is a linked ACCOUNT, whatever the flag says", async () => {
+    for (const identities of [{ "apple.com": ["001234.abcd"] }, { email: ["x@privaterelay.appleid.com"], "apple.com": ["1"] }]) {
+      for (const options of [guestsOn, guestsOff]) {
+        expect((await verifyFirebaseToken(anonymous(identities), options)).anonymous).toBe(false);
+      }
+    }
+    await expect(verifyFirebaseToken(anonymous({ "apple.com": [""] }), guestsOn)).rejects.toBeInstanceOf(InvalidTokenError);
+    expect((await verifyFirebaseToken(anonymous({ "apple.com": [] }), guestsOn)).anonymous).toBe(true);
+  });
+
+  it("apple.com tokens are accounts", async () => {
+    expect((await verifyFirebaseToken(emulatorToken("uid-a", DEMO, "apple.com"), guestsOff)).anonymous).toBe(false);
   });
 
   it("password and google.com tokens stay accounts, with or without identities", async () => {
@@ -61,7 +76,7 @@ describe("guest test (G1)", () => {
   });
 
   it("every other provider is still refused", async () => {
-    for (const provider of ["phone", "custom", "apple.com", "Anonymous"]) {
+    for (const provider of ["phone", "custom", "facebook.com", "Apple.com", "Anonymous"]) {
       await expect(verifyFirebaseToken(emulatorToken("uid-x", DEMO, provider), guestsOn)).rejects.toBeInstanceOf(InvalidTokenError);
     }
   });

@@ -126,7 +126,7 @@ a follow-up.
 4. **Firebase console (the user):** enable the Anonymous provider in `airplane-games-9fe1e`. Linking email to an anonymous user
    can fail while email-enumeration protection is on (firebase-js-sdk #7675), so check it there. Then confirm the **ASSUMPTION** in
    G1 on real tokens:
-   - Decode a guest's ID token before and after linking, for email/password and for Google. Record `sign_in_provider`,
+   - Decode a guest's ID token before and after linking, for email/password, for Google and for Apple. Record `sign_in_provider`,
      `identities`, `email` and `email_verified`.
    - Check that an anonymous user cannot gain `identities.email` without linking an email credential. If it can, count `email`
      only with `email_verified` (code review, 2026-11-26).

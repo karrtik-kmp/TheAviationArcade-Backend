@@ -94,6 +94,19 @@ describe("verifyFirebaseToken", () => {
     await expect(verifyFirebaseToken(token, production, resolver)).resolves.toBeTruthy();
   });
 
+  it("accepts Apple sign-in as an account, not a guest", async () => {
+    const token = await signed({ firebase: { sign_in_provider: "apple.com" } });
+    const identity = await verifyFirebaseToken(token, production, resolver);
+    expect(identity.anonymous).toBe(false);
+  });
+
+  it("still rejects other federated providers", async () => {
+    for (const provider of ["facebook.com", "github.com", "twitter.com", "phone"]) {
+      const token = await signed({ firebase: { sign_in_provider: provider } });
+      await expect(verifyFirebaseToken(token, production, resolver)).rejects.toBeInstanceOf(InvalidTokenError);
+    }
+  });
+
   it("rejects unsigned tokens unless emulator mode is on", async () => {
     const token = emulatorToken("uid-123", PROJECT);
     await expect(verifyFirebaseToken(token, production, resolver)).rejects.toThrow();

@@ -9,8 +9,11 @@ const FIREBASE_JWKS = new URL(
   "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
 );
 
-/** Product login is Firebase email/password and Google (project rule); `anonymous` guests only when the caller enables them. */
-const ALLOWED_PROVIDERS = new Set(["password", "google.com"]);
+/**
+ * Product login is Firebase email/password, Google and Apple (project rule; Apple added 2026-11-27 for the app's
+ * Sign in with Apple); `anonymous` guests only when the caller enables them.
+ */
+const ALLOWED_PROVIDERS = new Set(["password", "google.com", "apple.com"]);
 const ANONYMOUS_PROVIDER = "anonymous";
 
 export type FirebaseIdentity = {
@@ -22,7 +25,7 @@ export type FirebaseIdentity = {
   email: string | undefined;
   /**
    * A Firebase Anonymous guest (docs/plans/guest-callsign.md G1): `sign_in_provider` is `anonymous` and `firebase.identities` holds
-   * no `email` / `google.com` login. A token that still names `anonymous` after `linkWithCredential` is an account (see guestFor).
+   * no `email` / `google.com` / `apple.com` login. A token that still names `anonymous` after `linkWithCredential` is an account (see guestFor).
    */
   anonymous: boolean;
 };
@@ -86,12 +89,12 @@ function invalidToken(): never {
   throw new InvalidTokenError();
 }
 
-/** The identity keys that make an `anonymous`-provider token a linked account: the two product logins (project rule). */
-const LINKED_IDENTITY_KEYS = ["email", "google.com"] as const;
+/** The identity keys that make an `anonymous`-provider token a linked account: the three product logins (project rule). */
+const LINKED_IDENTITY_KEYS = ["email", "google.com", "apple.com"] as const;
 
 /**
- * Whether `firebase.identities` shows a linked product login: `email` or `google.com` as a non-empty array of strings. Other keys
- * (phone, ...) do not count. `malformed` when the map, or one of those two keys, has the wrong shape.
+ * Whether `firebase.identities` shows a linked product login: `email`, `google.com` or `apple.com` as a non-empty array of strings.
+ * Other keys (phone, ...) do not count. `malformed` when the map, or one of those keys, has the wrong shape.
  */
 function linkedIdentity(identities: unknown): boolean | "malformed" {
   if (identities === undefined) return false;
@@ -107,8 +110,8 @@ function linkedIdentity(identities: unknown): boolean | "malformed" {
 }
 
 /**
- * The guest test (docs/plans/guest-callsign.md G1). `password` and `google.com` tokens are accounts, as before. An `anonymous` token
- * whose identities hold `email` or `google.com` is a LINKED account (whatever FIREBASE_ANONYMOUS_PLAYERS says: Firebase documents no
+ * The guest test (docs/plans/guest-callsign.md G1). `password`, `google.com` and `apple.com` tokens are accounts. An `anonymous` token
+ * whose identities hold `email`, `google.com` or `apple.com` is a LINKED account (whatever FIREBASE_ANONYMOUS_PLAYERS says: Firebase documents no
  * promise that `sign_in_provider` changes on `linkWithCredential`, and a rollback of the flag must not lock linked players out). Any
  * other `anonymous` token is a guest, accepted only with the flag. Undefined = refuse the token.
  */

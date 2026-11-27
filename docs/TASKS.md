@@ -697,10 +697,16 @@ are history.
 ## Open questions for Josh
 
 See README "Open questions". Also: Apple's App Store guidelines generally require Sign in with Apple
-when Google sign-in is offered; the project rule currently allows only email/password and Google.
+when Google sign-in is offered. Resolved 2026-11-27 (user: "let it finish Apple"): the backend accepts `apple.com` tokens as accounts.
+Open: account deletion must revoke the Apple token (App Store guideline 5.1.1(v)). Not done by the backend; decide whether the
+Unity client revokes (Firebase `revokeAccessToken` with the authorization code) before `DELETE /v1/me`, or the backend does.
+Open: Backend `CLAUDE.md`, the root `CLAUDE.md` and `website/AGENTS.md` still list only email/password and Google as providers.
 
 ## Verification log
 
+- 2026-11-27 (local, Apple sign-in): `apple.com` accepted as an account provider and as a linking identity (`src/auth/firebase.ts`).
+  `npx vitest run test/firebase.test.ts test/guests.test.ts` and `npm run typecheck` pass (independent code review: ship after
+  fixes, applied). Not verified on real Apple tokens; the linked-identity key is an ASSUMPTION test (plan G1 dev check).
 - 2026-11-26 (hosted dev, deploy to API 0.34.0, user sign-off; the user ran
   [dev-deploy-0.34](plans/dev-deploy-0.34.md) on the server as root, pinned to `8a8e867`, with `FIREBASE_ANONYMOUS_PLAYERS=true`
   added to the dev env file first). Dev was 0.33.0 before. Public checks (this session, no token):

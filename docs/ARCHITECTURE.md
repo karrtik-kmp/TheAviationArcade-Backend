@@ -580,17 +580,18 @@ The database refuses change on these (trigger pattern of migration 0024: a BEFOR
   Round needs it (`militaryKeyOf`, `src/rounds/rounds.service.ts:457-461`, design 3.5), only where it is still NULL. It is derived
   data, not a staff edit, so it must not look like one or conflict with a staff edit's base version.
 
-## Sign in with Apple (if the project rule changes)
+## Sign in with Apple (adopted 2026-11-27)
 
-Unity native SIWA with nonce → Firebase `apple.com` credential → normal Firebase ID token. Backend
-change: add `apple.com` to the allowed providers + tests. Never merge accounts by email server-side.
-Account deletion must revoke the Apple token.
+Unity native SIWA with nonce → Firebase `apple.com` credential → normal Firebase ID token. The backend accepts `apple.com`
+as an account provider, and an `apple.com` identity makes an `anonymous` token a linked account (`src/auth/firebase.ts`).
+Never merge accounts by email server-side. Account deletion must revoke the Apple token (App Store guideline 5.1.1(v)); the
+backend does not do that today, see docs/TASKS.md.
 
 ## Guests and Callsigns (0.34.0, docs/plans/guest-callsign.md)
 
 User rulings 2026-11-26: every launch starts as a Firebase Anonymous guest, which is a real player; linking keeps the uid, so the
 principal never changes and nothing is merged or moved (a link clash is refused in the app). The guest test lives in
-`src/auth/firebase.ts` (`guestFor`): `anonymous` with no `email`/`google.com` identity = guest (needs `FIREBASE_ANONYMOUS_PLAYERS`);
+`src/auth/firebase.ts` (`guestFor`): `anonymous` with no `email`/`google.com`/`apple.com` identity = guest (needs `FIREBASE_ANONYMOUS_PLAYERS`);
 `anonymous` WITH one of them = linked account, whatever the flag, because Firebase documents no promise that `sign_in_provider`
 changes on `linkWithCredential`. Guests cannot buy or submit photos (`@AccountRequired()`, 403 `account_required`); new guests are
 limited per client IP in the shared rate-limit store. `players.anonymous_since` and the Callsign columns are profile fields written
